@@ -20,13 +20,17 @@ import {
   addProfile,
   buildInstallSpec,
   buildSpawnSpec,
+  claudeDirs,
   cliVersion,
   envPreview,
   expandHome,
   getConfig,
   getKindConfig,
+  firstRun,
   getState,
   hasProfile,
+  installCommand,
+  missingInstallTool,
   isLoggedIn,
   kindBinaryPath,
   listConfigs,
@@ -37,6 +41,8 @@ import {
   updateKindConfig,
   updateProfile
 } from './profiles'
+import { listMcp, listSkills } from './extensions'
+import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
@@ -48,7 +54,7 @@ import { allowRoot, isAllowedPath } from './fileProtocol'
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { RunRequest } from '@shared/types'
+import type { OnboardingState, RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
 
 const assertId = (x: unknown): ProfileId => {
@@ -189,6 +195,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   /** Silent install in the `install:<kind>` session (real HOME); never touches account sessions. */
   ipcMain.handle(IPC.cliInstall, (_e, kind: unknown, update = false): SessionId => {
     const k = assertKind(kind)
+    const tool = missingInstallTool(k, update === true)
+    if (tool) throw new Error(t('main.needNode', { tool, cmd: installCommand(k, update === true) }))
     const sid = installSessionId(k)
     ptys.start(sid, 'install', buildInstallSpec(k, update === true), 120, 32)
     return sid
@@ -328,6 +336,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     allowRoot(r.filePaths[0])
     return r.filePaths[0]
   })
+  // ---- skills / MCP (local config files only; no CLI, no model call) -----------------
+  const cwdArg = (cwd: unknown): string | null => (typeof cwd === 'string' && cwd.trim() ? cwd : null)
+  ipcMain.handle(IPC.extSkills, (_e, id: unknown, cwd: unknown, refresh: unknown) => listSkills(assertId(id), cwdArg(cwd), refresh === true))
+  ipcMain.handle(IPC.extMcp, (_e, id: unknown, cwd: unknown, refresh: unknown) => listMcp(assertId(id), cwdArg(cwd), refresh === true))
+
+  // ---- onboarding ------------------------------------------------------------------------
+  ipcMain.handle(IPC.onboardingGet, (): OnboardingState => ({ completed: readSettings().onboardingCompleted === true, firstRun }))
+  ipcMain.handle(IPC.onboardingSet, (_e, done: unknown) => writeSettings({ onboardingCompleted: done === true }))
+
   ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
   ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
     if (typeof p === 'string' && isAllowedPath(p)) shell.showItemInFolder(p)
@@ -345,7 +362,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       chrome: process.versions.chrome,
       version: app.getVersion(),
       arch: process.arch,
-      osVersion: process.getSystemVersion()
+      osVersion: process.getSystemVersion(),
+      claudeDirs: claudeDirs().map((n) => `~/${n}`)
     }
   })
 

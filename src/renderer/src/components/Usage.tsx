@@ -305,40 +305,46 @@ export function UsageView() {
       )}
 
       <SectionTitle>{t('usage.detailSection')}</SectionTitle>
-      <div className={`overflow-hidden ${CARD}`}>
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
-              <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
-              <th className="px-4 py-2 text-right font-medium">{t('usage.colToday')}</th>
-              <th className="px-4 py-2 text-right font-medium">{t('usage.colWeek')}</th>
-              <th className="px-4 py-2 text-right font-medium">{t('usage.colTotal')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {profiles.map((p) => {
-              const u = snap?.accounts[p.id]
-              return (
-                <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2.5">
-                      <KindAvatar kind={p.kind} size={22} />
-                      <span className="truncate font-medium text-ink">{p.name}</span>
-                    </div>
-                  </td>
-                  {cell(u?.today)}
-                  {cell(u?.week)}
-                  {cell(u?.total)}
+      {!profiles.length ? (
+        <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noData')}</div>
+      ) : (
+        <>
+          <div className={`overflow-hidden ${CARD}`}>
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
+                  <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
+                  <th className="px-4 py-2 text-right font-medium">{t('usage.colToday')}</th>
+                  <th className="px-4 py-2 text-right font-medium">{t('usage.colWeek')}</th>
+                  <th className="px-4 py-2 text-right font-medium">{t('usage.colTotal')}</th>
                 </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">
-        {t('usage.footnote', { days: snap?.claudeDays ?? 30 })}
-        {snap?.backfill === 'running' && t('usage.backfillRunning')}
-      </p>
+              </thead>
+              <tbody>
+                {profiles.map((p) => {
+                  const u = snap?.accounts[p.id]
+                  return (
+                    <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2.5">
+                          <KindAvatar kind={p.kind} size={22} />
+                          <span className="truncate font-medium text-ink">{p.name}</span>
+                        </div>
+                      </td>
+                      {cell(u?.today)}
+                      {cell(u?.week)}
+                      {cell(u?.total)}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">
+            {t('usage.footnote', { days: snap?.claudeDays ?? 30 })}
+            {snap?.backfill === 'running' && t('usage.backfillRunning')}
+          </p>
+        </>
+      )}
     </div>
   )
 }

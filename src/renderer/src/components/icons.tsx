@@ -217,3 +217,17 @@ export const IconDatabase = (p: P) => (
     <path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3" />
   </svg>
 )
+
+export const IconPlug = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M9 3v4.5M15 3v4.5" />
+    <path d="M6.5 7.5h11v3.5a5.5 5.5 0 0 1-11 0V7.5Z" />
+    <path d="M12 16.5V21" />
+  </svg>
+)
+export const IconSlash = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+    <path d="m14.5 7.5-5 9" />
+  </svg>
+)

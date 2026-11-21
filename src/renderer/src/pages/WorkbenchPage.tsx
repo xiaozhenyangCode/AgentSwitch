@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { ModelOption, ProfileId, ProfileState } from '@shared/types'
+import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import { McpButton, SlashMenu, filterSkills } from '../components/Extensions'
+import { useSkills } from '../state/extensions'
+import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
@@ -254,6 +257,7 @@ export function WorkbenchPage() {
         participants={participants}
         busy={isThreadBusy(thread)}
         threadId={thread?.id ?? null}
+        projectDir={ctx.projectDir}
         onHeight={setComposerH}
         onSend={onSend}
         onStop={() => thread && stop(thread.id)}
@@ -377,7 +381,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
 // ---- empty state -------------------------------------------------------------------------
 
 function EmptyState({ projectDir, onPickProject, participants }: { projectDir: string | null; onPickProject: () => void; participants: ProfileId[] }) {
-  const { navigate } = useApp()
+  const { navigate, profiles } = useApp()
   const ready = useSortedAccounts().filter((p) => isReady(p) && participants.includes(p.id))
   return (
     <div className="flex flex-1 flex-col items-center justify-center pb-10 text-center">
@@ -405,9 +409,16 @@ function EmptyState({ projectDir, onPickProject, participants }: { projectDir: s
           ))}
         </div>
       ) : (
-        <button className="mt-8 flex items-center gap-1 text-[14px] font-medium text-accent hover:text-accent-hover" onClick={() => navigate('engines')}>
-          {t('wb.noReady')} <IconArrowRight size={15} />
-        </button>
+        <div className="mt-8 flex flex-col items-center gap-2">
+          <button className="flex items-center gap-1 text-[14px] font-medium text-accent hover:text-accent-hover" onClick={() => (profiles.length ? navigate('engines') : openOnboarding())}>
+            {profiles.length ? t('wb.noReady') : t('wb.openGuide')} <IconArrowRight size={15} />
+          </button>
+          {profiles.length > 0 && (
+            <button className="text-[12px] text-ink-3 hover:text-ink-2" onClick={openOnboarding}>
+              {t('wb.orGuide')}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
@@ -840,6 +851,7 @@ function Composer({
   participants,
   busy,
   threadId,
+  projectDir,
   onHeight,
   onSend,
   onStop
@@ -850,6 +862,8 @@ function Composer({
   participants: ProfileId[]
   busy: boolean
   threadId: string | null
+  /** Project folder: decides which project-level skills / MCP servers apply. */
+  projectDir: string | null
   onHeight: (h: number) => void
   onSend: (text: string, attachments: Attachment[]) => void
   onStop: () => void
@@ -863,6 +877,11 @@ function Composer({
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
+  /** / menu: skills and custom commands of the lead account in this project. */
+  const [slash, setSlash] = useState<{ start: number; query: string; index: number } | null>(null)
+  const skills = useSkills(driver?.id ?? null, projectDir, !!slash)
+  const skillItems = skills.data?.items ?? []
+  const slashMatches = useMemo(() => (slash ? filterSkills(skillItems, slash.query) : []), [slash, skillItems])
   const ta = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -933,8 +952,18 @@ function Composer({
     const d = dismissed.current
     if (d && d.value === value && d.caret === caret) return
     dismissed.current = null
-    const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(value.slice(0, caret))
-    if (!m) return setMention(null)
+    const before = value.slice(0, caret)
+    const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
+    if (!m) {
+      setMention(null)
+      // `/` (or full-width `／`) at the start of a line or after a space opens the skill menu
+      const sl = /(?:^|\s)[/／]([^\s/／]{0,48})$/.exec(before)
+      if (!sl) return setSlash(null)
+      // no account at all: the menu still opens, showing its empty state
+      const at = caret - sl[1].length - 1
+      return setSlash((cur) => (cur && cur.start === at && cur.query === sl[1] ? cur : { start: at, query: sl[1], index: 0 }))
+    }
+    setSlash(null)
     const start = caret - m[1].length - 1
     setMention((cur) => (cur && cur.start === start && cur.query === m[1] ? cur : { start, query: m[1], index: 0, sub: null, subIndex: 0 }))
   }
@@ -956,6 +985,22 @@ function Composer({
       const el = ta.current
       if (!el) return
       const pos = mention.start + token.length
+      el.focus()
+      el.setSelectionRange(pos, pos)
+    })
+  }
+
+  /** Replaces `/query` with the skill's trigger (`/name` or `$name`) followed by a space. */
+  const insertSkill = (it: SkillItem) => {
+    if (!slash) return
+    const caret = ta.current?.selectionStart ?? text.length
+    const token = `${it.insert} `
+    setText(text.slice(0, slash.start) + token + text.slice(caret))
+    setSlash(null)
+    requestAnimationFrame(() => {
+      const el = ta.current
+      if (!el) return
+      const pos = slash.start + token.length
       el.focus()
       el.setSelectionRange(pos, pos)
     })
@@ -1014,6 +1059,23 @@ function Composer({
         return setMention(null)
       }
     }
+    if (slash && !mention && !composing) {
+      const n = slashMatches.length
+      if (n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault()
+        const d = e.key === 'ArrowDown' ? 1 : -1
+        return setSlash((x) => x && { ...x, index: (x.index + d + n) % n })
+      }
+      if (n && (e.key === 'Enter' || e.key === 'Tab')) {
+        e.preventDefault()
+        return insertSkill(slashMatches[Math.min(slash.index, n - 1)])
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        dismissed.current = { value: e.currentTarget.value, caret: e.currentTarget.selectionStart }
+        return setSlash(null)
+      }
+    }
     if (e.key !== 'Enter' || composing) return
     const mod = e.metaKey || e.ctrlKey
     // enter: Enter sends, Shift+Enter newline. mod-enter: ⌘+Enter sends, Enter newline.
@@ -1026,6 +1088,19 @@ function Composer({
   return (
     <div ref={wrap} className="pointer-events-none absolute inset-x-0 bottom-0 bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)] px-8 pt-8 pb-6">
       <div className="pointer-events-auto relative mx-auto max-w-[820px]">
+        {!mention && slash && (
+          <div className="absolute bottom-full left-0 z-30 mb-2">
+            <SlashMenu
+              account={driver}
+              items={slashMatches}
+              total={skillItems.length}
+              loading={skills.loading}
+              active={Math.min(slash.index, Math.max(0, slashMatches.length - 1))}
+              onPick={insertSkill}
+              onHover={(i) => setSlash((x) => x && { ...x, index: i })}
+            />
+          </div>
+        )}
         {mention && (
           <div className="absolute bottom-full left-0 z-30 mb-2 flex items-end gap-2">
             <div className={popover + ' w-72'}>
@@ -1146,7 +1221,10 @@ function Composer({
               const el = e.currentTarget
               if (!composingRef.current && el.selectionStart === el.selectionEnd) syncMention(el.value, el.selectionStart)
             }}
-            onBlur={() => setMention(null)}
+            onBlur={() => {
+              setMention(null)
+              setSlash(null)
+            }}
             onKeyDown={onKey}
             onPaste={(e) => {
               const files = [...e.clipboardData.files]
@@ -1163,6 +1241,7 @@ function Composer({
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
             <QuotaDot driver={driver} model={driverModel} onSwitch={(id) => onDriver(id, null)} />
             {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
+            <McpButton account={driver} cwd={projectDir} />
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
             <button
               onClick={() => fileInput.current?.click()}

@@ -9,6 +9,8 @@ import { WorkbenchPage } from './pages/WorkbenchPage'
 import { EnginesPage } from './pages/EnginesPage'
 import { UsagePage } from './pages/UsagePage'
 import { SettingsPage } from './pages/SettingsPage'
+import { OnboardingPage } from './pages/OnboardingPage'
+import { useOnboarding } from './state/onboarding'
 import { useEffect } from 'react'
 import { useI18n } from './state/i18n'
 import { useStartThread } from './state/threads'
@@ -35,16 +37,23 @@ function MenuBridge() {
 function Shell() {
   const { page, drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
   const configProfile = configId ? byId(configId) : undefined
+  const onboarding = useOnboarding()
 
   return (
     <div className="flex h-full">
-      <NavRail />
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
-        <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
-          {page === 'workbench' ? <WorkbenchPage /> : page === 'usage' ? <UsagePage /> : page === 'settings' ? <SettingsPage /> : <EnginesPage />}
-        </div>
-        <DebugDrawer />
-      </main>
+      {onboarding ? (
+        <OnboardingPage />
+      ) : (
+        <>
+          <NavRail />
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+            <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
+              {page === 'workbench' ? <WorkbenchPage /> : page === 'usage' ? <UsagePage /> : page === 'settings' ? <SettingsPage /> : <EnginesPage />}
+            </div>
+            <DebugDrawer />
+          </main>
+        </>
+      )}
 
       {loginId && byId(loginId) && <LoginModal key={loginId} profileId={loginId} />}
       {configProfile && info && (

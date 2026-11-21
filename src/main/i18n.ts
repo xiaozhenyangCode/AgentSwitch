@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readSettings, writeSettings } from './appSettings'
 import { IPC } from '@shared/types'
 import { isLanguagePref, resolveLocale, translate, type I18nState, type LanguagePref, type Locale, type MsgKey, type Vars } from '@shared/i18n'
 
@@ -9,17 +8,6 @@ import { isLanguagePref, resolveLocale, translate, type I18nState, type Language
  * Stored in userData/settings.json. The main process uses it for menus, dialogs and the
  * errors / notices it sends to the UI; the renderer reads it synchronously before first paint.
  */
-
-const file = (): string => join(app.getPath('userData'), 'settings.json')
-
-function readSettings(): Record<string, unknown> {
-  try {
-    const j = JSON.parse(readFileSync(file(), 'utf8'))
-    return j && typeof j === 'object' ? j : {}
-  } catch {
-    return {}
-  }
-}
 
 const systemTags = (): string[] => {
   try {
@@ -49,11 +37,7 @@ export function initI18n(onChange: () => void): void {
     if (!isLanguagePref(p)) throw new Error('bad language')
     pref = p
     locale = null
-    try {
-      writeFileSync(file(), JSON.stringify({ ...readSettings(), language: pref }, null, 2))
-    } catch (err) {
-      console.error('[i18n] save failed', err)
-    }
+    writeSettings({ language: pref })
     const s = i18nState()
     for (const w of BrowserWindow.getAllWindows()) w.webContents.send(IPC.i18nChanged, s)
     onChange()

@@ -6,6 +6,9 @@ import {
   type DeleteThreadRequest,
   type ThemeMode,
   type MenuCommand,
+  type McpList,
+  type OnboardingState,
+  type SkillList,
   type ThemeState,
   type DeleteThreadResult,
   type ChatEvent,
@@ -118,6 +121,15 @@ const api = {
   },
   /** Native menu bar commands (About, Settings…, New Chat, Search). */
   onMenu: (cb: (cmd: MenuCommand) => void) => subscribe(IPC.menuCommand, cb),
+  /** Skills / MCP servers an account would load in a project (read from local config files). */
+  ext: {
+    skills: (id: ProfileId, cwd: string | null, refresh = false): Promise<SkillList> => ipcRenderer.invoke(IPC.extSkills, id, cwd, refresh),
+    mcp: (id: ProfileId, cwd: string | null, refresh = false): Promise<McpList> => ipcRenderer.invoke(IPC.extMcp, id, cwd, refresh)
+  },
+  onboarding: {
+    get: (): Promise<OnboardingState> => ipcRenderer.invoke(IPC.onboardingGet),
+    set: (completed: boolean): Promise<void> => ipcRenderer.invoke(IPC.onboardingSet, completed)
+  },
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.openExternal, url),

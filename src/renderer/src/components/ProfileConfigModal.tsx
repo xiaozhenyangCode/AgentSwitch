@@ -1,3 +1,4 @@
+import { useApp } from '../state/AppContext'
 import { useEffect, useState, type ReactNode } from 'react'
 import type { EnvPreview, ProfileConfig, ProfileKind, ProfileState, PtyMode } from '@shared/types'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
@@ -44,6 +45,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Props) {
+  const { info } = useApp()
   const { list: models, loading: modelsLoading, refresh: refreshModels } = useModels(profile.id)
   const [form, setForm] = useState<ProfileConfig>(profile)
   const [envText, setEnvText] = useState(envToText(profile.extraEnv))
@@ -60,10 +62,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   const presets: { label: string; value: string }[] = [
     { label: t('cfg.isolatedDir'), value: isolated },
     ...(profile.kind === 'claude'
-      ? [
-          { label: '~/.claude', value: '~/.claude' },
-          { label: '~/.claude2', value: '~/.claude2' }
-        ]
+      ? [...new Set(['~/.claude', ...(info?.claudeDirs ?? [])])].map((d) => ({ label: d, value: d }))
       : profile.kind === 'codex'
         ? [{ label: '~/.codex', value: '~/.codex' }]
         : [{ label: t('cfg.realHome'), value: '~' }])

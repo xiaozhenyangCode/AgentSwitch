@@ -80,8 +80,18 @@ interface AppState {
   toast: (t: Omit<Toast, 'id'>) => void
   dismissToast: (id: number) => void
 
-  install: (kind: ProfileKind, update?: boolean) => Promise<void>
+  install: (kind: ProfileKind, update?: boolean) => Promise<InstallResult>
 }
+
+/** ok: the CLI is on PATH afterwards. error: why it could not start / failed (for inline help). */
+export interface InstallResult {
+  ok: boolean
+  cancelled?: boolean
+  error?: string
+}
+
+/** `Error invoking remote method 'x': Error: msg` → `msg` */
+export const ipcError = (e: unknown): string => String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '')
 
 const Ctx = createContext<AppState | null>(null)
 
@@ -199,7 +209,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- silent install ---------------------------------------------------------------
   const install = useCallback(
-    async (kind: ProfileKind, update = false) => {
+    async (kind: ProfileKind, update = false): Promise<InstallResult> => {
       const sid = installSessionId(kind)
       const name = KIND_META[kind].cli
       const verb = update ? t('install.verbUpdate') : t('install.verbInstall')
@@ -214,21 +224,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         await window.agentswitch.cli.install(kind, update)
       } catch (e) {
-        toast({ kind: 'error', title: t('install.startFailed', { name, verb }), desc: String(e) })
-        return
+        const error = ipcError(e)
+        toast({ kind: 'error', title: t('install.startFailed', { name, verb }), desc: error })
+        return { ok: false, error }
       }
       const code = await done
       const s = await refresh()
       const ok = !!s.kinds.find((k) => k.kind === kind)?.binaryPath
-      if (code === 0 && ok) toast({ kind: 'success', title: t('install.done', { name, verb }) })
-      else if (code === -1) toast({ kind: 'info', title: t('install.cancelled', { name, verb }) })
-      else
-        toast({
-          kind: 'error',
-          title: t('install.failed', { name, verb }),
-          desc: ok ? t('install.exitCode', { verb, code }) : t('install.notFound', { code }),
-          action: { label: t('install.viewLog'), run: () => openDrawer(sid) }
-        })
+      if (code === 0 && ok) {
+        toast({ kind: 'success', title: t('install.done', { name, verb }) })
+        return { ok: true }
+      }
+      if (code === -1) {
+        toast({ kind: 'info', title: t('install.cancelled', { name, verb }) })
+        return { ok: false, cancelled: true }
+      }
+      const error = ok ? t('install.exitCode', { verb, code }) : t('install.notFound', { code })
+      toast({ kind: 'error', title: t('install.failed', { name, verb }), desc: error, action: { label: t('install.viewLog'), run: () => openDrawer(sid) } })
+      return { ok: false, error }
     },
     [refresh, toast, openDrawer]
   )

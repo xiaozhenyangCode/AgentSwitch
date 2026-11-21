@@ -409,6 +409,10 @@ export const IPC = {
   pickProject: 'dialog:pickProject',
   showInFolder: 'shell:showInFolder',
   showDataDir: 'shell:showDataDir',
+  extSkills: 'ext:skills',
+  extMcp: 'ext:mcp',
+  onboardingGet: 'onboarding:get',
+  onboardingSet: 'onboarding:set',
   modelsList: 'models:list',
   attachStage: 'attach:stage',
   chatSend: 'chat:send',
@@ -440,6 +444,8 @@ export interface AppInfo {
   arch: string
   /** macOS product version, e.g. 15.5. */
   osVersion: string
+  /** Claude config dirs found in the home folder (`~/.claude`, `~/.claude2`, ...). */
+  claudeDirs: string[]
 }
 
 /** Native menu items the renderer acts on. */
@@ -467,4 +473,58 @@ export interface ThemeState {
   mode: ThemeMode
   /** Effective appearance right now. */
   dark: boolean
+}
+
+// ---- skills / MCP (read-only discovery from local config files) -------------------------
+
+/** Where a skill or MCP server comes from. `builtin`: shipped with the CLI itself. */
+export type ExtSource = 'project' | 'global' | 'plugin' | 'builtin'
+
+export interface SkillItem {
+  /** As the CLI shows it, e.g. `review` or `figma:figma-use` (plugin skills in Claude). */
+  name: string
+  description: string
+  source: ExtSource
+  plugin?: string
+  kind: 'skill' | 'command'
+  /** Token put into the prompt: `/name` (claude, agy) or `$name` (codex). */
+  insert: string
+}
+
+export interface SkillList {
+  items: SkillItem[]
+  /** Config files that existed but could not be parsed (skipped). */
+  errors: number
+}
+
+export type McpTransport = 'stdio' | 'http' | 'sse'
+/** on: loaded; off: disabled in config; pending: project server not approved yet (Claude). */
+export type McpState = 'on' | 'off' | 'pending'
+
+export interface McpServer {
+  name: string
+  source: ExtSource
+  transport: McpTransport
+  state: McpState
+  plugin?: string
+  /** Claude "local" scope: stored per project in .claude.json, private to this user. */
+  local?: boolean
+  /** Claude managed (system-wide) config. */
+  managed?: boolean
+}
+
+export interface McpList {
+  servers: McpServer[]
+  /** The account's config folder that was read (~-relative). */
+  configDir: string
+  project: string | null
+  errors: number
+  /** Claude: claude.ai connectors may add servers that exist only remotely. */
+  remoteNote: boolean
+}
+
+export interface OnboardingState {
+  completed: boolean
+  /** userData had no config yet when this run started (a brand-new install). */
+  firstRun: boolean
 }

@@ -14,7 +14,7 @@ import {
   type ProfileStatus,
   type PtyMode
 } from '@shared/types'
-import { getBaseEnv, realHome, strippedVarNames } from './shellEnv'
+import { findOnPath, getBaseEnv, realHome, strippedVarNames } from './shellEnv'
 import { loadStore, saveStore, type StoreData } from './store'
 import { t } from './i18n'
 
@@ -97,11 +97,37 @@ function detectExisting(): ProfileConfig[] {
     })
 
   const h = (p: string) => join(realHome, p)
-  if (existsSync(h('.claude'))) add('claude', '~/.claude', defaultName('claude', 1))
-  if (existsSync(h('.claude2'))) add('claude', '~/.claude2', defaultName('claude', existsSync(h('.claude')) ? 2 : 1))
+  claudeDirs().forEach((name, i) => add('claude', `~/${name}`, defaultName('claude', i + 1)))
   if (hasAgySetup(realHome)) add('gemini', '~', defaultName('gemini', 1))
   if (existsSync(h('.codex/auth.json')) || existsSync(h('.codex/config.toml'))) add('codex', '~/.codex', defaultName('codex', 1))
   return out
+}
+
+/**
+ * Claude config dirs in the home folder: `~/.claude` plus extra ones people create for a second
+ * account (`~/.claude2`, `~/.claude-work`, ...), recognised by Claude's own files inside.
+ * Nothing is hard-coded beyond the `.claude` prefix.
+ */
+export function claudeDirs(): string[] {
+  let names: string[]
+  try {
+    names = readdirSync(realHome)
+  } catch {
+    return []
+  }
+  const looksLikeClaude = (dir: string) =>
+    ['settings.json', '.claude.json', '.credentials.json', 'projects', 'history.jsonl'].some((f) => existsSync(join(dir, f)))
+  return names
+    .filter((n) => /^\.claude([0-9]+|[-_][\w-]+)?$/.test(n))
+    .filter((n) => {
+      const p = join(realHome, n)
+      try {
+        return statSync(p).isDirectory() && (n === '.claude' || looksLikeClaude(p))
+      } catch {
+        return false
+      }
+    })
+    .sort((a, b) => (a === '.claude' ? -1 : b === '.claude' ? 1 : a.localeCompare(b, undefined, { numeric: true })))
 }
 
 /** agy (Antigravity CLI) already used with this HOME: signed in, or has CLI state. */
@@ -110,9 +136,13 @@ const hasAgySetup = (home: string): boolean =>
 
 const MIGRATIONS = ['agy-import']
 
+/** true when this run created the account store (a brand-new install). */
+export let firstRun = false
+
 export function initProfiles(): void {
   const loaded = loadStore()
   if (!loaded) {
+    firstRun = true
     store = { version: 2, profiles: detectExisting(), kinds: {}, migrations: [...MIGRATIONS] }
     persist()
     return
@@ -463,10 +493,26 @@ export interface SpawnSpec {
   injected: Record<string, string>
 }
 
+export function installCommand(kind: ProfileKind, update = false): string {
+  const k = getKindConfig(kind)
+  return (update && k.updateCommand.trim()) || k.installCommand
+}
+
+const NODE_TOOLS = ['npm', 'npx', 'pnpm', 'yarn', 'bun', 'node']
+
+/**
+ * A package-manager install (e.g. `npm install -g ...`) needs that tool on PATH. Returns the
+ * missing tool's name, or null when the command can run.
+ */
+export function missingInstallTool(kind: ProfileKind, update = false): string | null {
+  const first = installCommand(kind, update).trim().split(/\s+/)[0] ?? ''
+  if (!NODE_TOOLS.includes(first)) return null
+  return findOnPath(first) ? null : first
+}
+
 /** Install: real HOME + login shell so installers write to the user's global prefix / PATH. */
 export function buildInstallSpec(kind: ProfileKind, update = false): SpawnSpec {
-  const k = getKindConfig(kind)
-  const cmd = (update && k.updateCommand.trim()) || k.installCommand
+  const cmd = installCommand(kind, update)
   return { shell: SHELL, args: ['-ilc', cmd], env: getBaseEnv(), cwd: realHome, injected: {} }
 }
 

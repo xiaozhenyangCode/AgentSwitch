@@ -4,6 +4,7 @@ import { LOCALES, LOCALE_NAMES, type LanguagePref } from '@shared/i18n'
 import { useApp, type SettingsSection } from '../state/AppContext'
 import { setLanguage, t, useI18n } from '../state/i18n'
 import { setThemeMode, useTheme } from '../state/theme'
+import { openOnboarding } from '../state/onboarding'
 import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settings'
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from '../components/common'
@@ -150,6 +151,13 @@ function General() {
               ...profiles.map((p) => ({ value: p.id, label: isReady(p) ? p.name : `${p.name} (${t('status.notLoggedIn')})` }))
             ]}
           />
+        </Row>
+      </Group>
+      <Group>
+        <Row label={t('set.onboarding')} hint={t('set.onboardingHint')}>
+          <button className={btn} onClick={openOnboarding}>
+            {t('set.onboardingOpen')}
+          </button>
         </Row>
       </Group>
     </>

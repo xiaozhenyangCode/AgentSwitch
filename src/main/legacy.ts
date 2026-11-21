@@ -7,6 +7,13 @@ import { join } from 'node:path'
  * the old userData folder, the old project run folder and the old image protocol.
  */
 
+/**
+ * Development / testing: AGENTSWITCH_USER_DATA points userData at a scratch folder (with
+ * AGENTSWITCH_HOME this simulates a brand-new Mac). No AgentMux migration happens then.
+ */
+const testUserData = process.env.AGENTSWITCH_USER_DATA
+if (testUserData) app.setPath('userData', testUserData)
+
 /** userData of the AgentMux era (left in place after migration, never deleted). */
 export const LEGACY_USER_DATA = join(app.getPath('appData'), 'agentmux')
 /** Project run folder of the AgentMux era (old runs / outputs / handoffs stay readable). */
@@ -50,6 +57,7 @@ const same = (a: string, b: string): boolean => {
 export function migrateUserData(): void {
   const dst = app.getPath('userData')
   const src = LEGACY_USER_DATA
+  if (testUserData) return
   if (existsSync(join(dst, 'config.json')) || !existsSync(join(src, 'config.json')) || same(src, dst)) return
   try {
     // config.json last: an interrupted copy is retried on the next start
