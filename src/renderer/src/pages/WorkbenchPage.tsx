@@ -15,6 +15,7 @@ import { QuotaDot } from '../components/Usage'
 import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
+import { CollapsibleBody } from '../components/CollapsibleBody'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
@@ -145,6 +146,8 @@ export function WorkbenchPage() {
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const messages = useMemo(() => threadMessages(thread), [thread])
+  // the newest reply starts expanded; older long replies start folded
+  const lastReplyId = useMemo(() => [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null, [messages])
   // imported history is not persisted: re-read it from the CLI files when the thread opens
   useEffect(() => {
     if (!thread?.imported || thread.history || thread.historyState) return
@@ -326,7 +329,7 @@ export function WorkbenchPage() {
             ) : (
               <div className="space-y-6">
                 <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
-                  {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} />))}
+                  {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId} />))}
                 </MarkdownBase.Provider>
               </div>
             )}
@@ -549,33 +552,11 @@ function renderWithMentions(text: string, mentions: AgentRef[]): ReactNode[] {
 const FOLD_PX = 140
 
 function UserText({ msg }: { msg: UserMessage }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [long, setLong] = useState(false)
-  const [open, setOpen] = useState(false)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const check = () => setLong(el.scrollHeight > FOLD_PX + 40)
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [msg.text])
-  const folded = long && !open
   return (
-    <div className="relative max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
-      <div ref={ref} className="overflow-hidden px-4 py-2.5 whitespace-pre-wrap select-text" style={folded ? { maxHeight: FOLD_PX } : undefined}>
-        {renderWithMentions(msg.text, msg.mentions)}
-      </div>
-      {folded && <div className="pointer-events-none absolute inset-x-0 bottom-8 h-12 rounded-b-md bg-gradient-to-b from-accent/0 to-accent" />}
-      {long && (
-        <div className={`flex justify-end px-2 pb-1.5 ${folded ? 'relative' : ''}`}>
-          <button onClick={() => setOpen((o) => !o)} className="flex h-6 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-white/85 hover:bg-white/15 hover:text-white">
-            {open ? t('wb.collapse') : t('wb.expandAll')}
-            <IconChevronDown size={12} className={open ? 'rotate-180' : ''} />
-          </button>
-        </div>
-      )}
+    <div className="max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
+      <CollapsibleBody threshold={FOLD_PX + 40} collapsedHeight={FOLD_PX} fadeClass="to-accent" tone="bubble" className="overflow-hidden rounded-[inherit]">
+        <div className="px-4 py-2.5 whitespace-pre-wrap select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
+      </CollapsibleBody>
     </div>
   )
 }
@@ -710,9 +691,14 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
   )
 }
 
-function AssistantBlock({ msg }: { msg: AssistantMessage }) {
+/** Finished replies taller than this fold to REPLY_FOLD_PX (never while streaming). */
+const REPLY_FOLD_AT = 360
+const REPLY_FOLD_PX = 300
+
+function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest?: boolean }) {
   const streaming = msg.status === 'streaming'
   useTicker(streaming)
+  const rootRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
   const [detailsSeq, setDetailsSeq] = useState(0)
   const detailsRef = useRef<HTMLDivElement>(null)
@@ -736,7 +722,7 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
     )
 
   return (
-    <div className="flex gap-3 pr-10">
+    <div ref={rootRef} className="flex scroll-mt-16 gap-3 pr-10">
       <div className="pt-0.5">
         <KindAvatar kind={msg.agent.kind} size={28} />
       </div>
@@ -750,7 +736,9 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
             )}
           </div>
           {msg.content ? (
-            <Markdown text={msg.content} />
+            <CollapsibleBody threshold={REPLY_FOLD_AT} collapsedHeight={REPLY_FOLD_PX} defaultOpen={latest || streaming} disabled={streaming} fadeClass="to-canvas" anchor={rootRef}>
+              <Markdown text={msg.content} />
+            </CollapsibleBody>
           ) : streaming ? (
             msg.activity.length === 0 && !(msg.thinking && !msg.thinking.endedAt) && (
               <div className="flex h-6 items-center gap-1">
