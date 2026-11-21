@@ -114,27 +114,31 @@ function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; model?: str
         <IconChevronDown size={11} />
       </button>
       {open && (
-        <div className="absolute top-7 left-0 z-30 w-[300px] rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
-          {q.groups.map((g) => {
-            const five = liveWindow(g.fiveHour)
-            const seven = liveWindow(g.sevenDay)
-            const cur = g.key === eff.group?.key
-            return (
-              <div key={g.key} className={`rounded-lg px-2.5 py-2 ${cur ? 'bg-accent/[0.06]' : ''}`}>
-                <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink">
-                  {g.name}
-                  {cur && <span className="rounded bg-accent/10 px-1 text-[10.5px] font-medium text-accent">{t('usage.currentModel')}</span>}
+        // right-aligned to the chip (it sits at the card's right edge) so the panel opens inwards;
+        // pt bridges the gap so moving the pointer onto it doesn't close the hover popover
+        <div className="absolute top-full right-0 z-40 w-[360px] max-w-[calc(100vw-64px)] pt-1.5">
+          <div className="max-h-[min(420px,60vh)] overflow-y-auto rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_36px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+            {q.groups.map((g) => {
+              const five = liveWindow(g.fiveHour)
+              const seven = liveWindow(g.sevenDay)
+              const cur = g.key === eff.group?.key
+              return (
+                <div key={g.key} className={`rounded-lg px-2.5 py-2 ${cur ? 'bg-accent/[0.06]' : ''}`}>
+                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink">
+                    {g.name}
+                    {cur && <span className="rounded bg-accent/10 px-1 text-[10.5px] font-medium text-accent">{t('usage.currentModel')}</span>}
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] text-ink-3" title={g.models.join(', ')}>
+                    {g.models.join(' · ')}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <QuotaMeter kind="gemini" label="5h" w={g.fiveHour ? five : null} stale={false} />
+                    <QuotaMeter kind="gemini" label="7d" w={g.sevenDay ? seven : null} stale={false} />
+                  </div>
                 </div>
-                <div className="mt-0.5 truncate text-[11px] text-ink-3" title={g.models.join(', ')}>
-                  {g.models.join(' · ')}
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                  <QuotaMeter kind="gemini" label="5h" w={g.fiveHour ? five : null} stale={false} />
-                  <QuotaMeter kind="gemini" label="7d" w={g.sevenDay ? seven : null} stale={false} />
-                </div>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
