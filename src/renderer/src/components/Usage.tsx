@@ -90,7 +90,7 @@ function useOutsideClose(open: boolean, close: () => void) {
 }
 
 /** agy: chip naming the quota group in use; hover / click shows every group. */
-export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; model?: string | null }) {
+function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; model?: string | null }) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const close = useCallback(() => {
@@ -142,14 +142,14 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
 }
 
 /** "今日 61M · $0.186" (cost only when the CLI reported one). */
-export const todayBrief = (u: AccountUsage | undefined) => {
+const todayBrief = (u: AccountUsage | undefined) => {
   const tt = u?.today
   if (!tt) return t('usage.today', { n: 0 })
   return t('usage.today', { n: fmtTokens(tokenSum(tt)) }) + (tt.costUsd > 0 ? ` · ${fmtCost(tt.costUsd)}` : '')
 }
 
 /** The two fixed-width quota cells of an account row (5h | 7d); one spanning note when there is no data. */
-export function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null }) {
+function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null }) {
   const q = u?.quota
   if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">{t('usage.noQuota')}</div>
   const eff = effectiveQuota(u, model)

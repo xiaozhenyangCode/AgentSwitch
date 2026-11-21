@@ -109,16 +109,14 @@ export const ja: Dict = {
   'eng.noAccounts': '{name} のアカウントはまだありません',
   'eng.addAccount': '{name} アカウントを追加',
   'eng.renamed': '「{name}」に名前を変更しました',
-  'eng.whereImported': '既存のローカル設定 · {dir}',
-  'eng.whereOwn': '専用の設定フォルダ · {dir}',
+  'eng.whereImported': 'ローカル設定 · {dir}',
+  'eng.whereOwn': '専用フォルダ · {dir}',
   'eng.dblRename': 'ダブルクリックで名前を変更',
-  'eng.weekTotal': '今週 {week} · 累計 {total}',
-  'eng.loginToUse': 'ログインすると使えます',
   'eng.login': 'ログイン',
   'eng.loggingIn': 'ログイン中…',
   'eng.installFirst': '先にコマンドラインツールをインストールしてください',
   'eng.relogin': '再ログイン',
-  'eng.accountSettings': 'アカウント設定…',
+  'eng.accountSettings': 'アカウント設定',
   'eng.deleteAccount': 'アカウントを削除…',
 
   'usage.title': '使用量と上限',
@@ -692,5 +690,11 @@ export const ja: Dict = {
   'proj.pickOther': '別のフォルダを選択…',
   'proj.none': 'プロジェクトなし（一般の会話）',
   'nav.newInProject': '{name} で新しい会話',
-  'nav.newNoProject': '新しい会話（プロジェクトなし）'
+  'nav.newNoProject': '新しい会話（プロジェクトなし）',
+  'eng.permCli': 'CLI に従う',
+  'eng.permEdits': 'プロジェクト内のみ編集',
+  'eng.permFull': 'すべて許可',
+  'eng.defaultModelHint': '既定のモデル（クリックで変更）',
+  'eng.permHint': '会話実行時の権限モード（クリックで変更）',
+  'eng.openTerminal': 'ターミナルを開く'
 }

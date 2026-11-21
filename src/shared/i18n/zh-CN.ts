@@ -119,16 +119,14 @@ export const zhCN = {
   'eng.noAccounts': '还没有 {name} 账号',
   'eng.addAccount': '添加 {name} 账号',
   'eng.renamed': '已重命名为「{name}」',
-  'eng.whereImported': '本机已有配置 · {dir}',
-  'eng.whereOwn': '独立配置目录 · {dir}',
+  'eng.whereImported': '本机配置 · {dir}',
+  'eng.whereOwn': '独立目录 · {dir}',
   'eng.dblRename': '双击重命名',
-  'eng.weekTotal': '本周 {week} · 累计 {total}',
-  'eng.loginToUse': '登录后即可使用',
   'eng.login': '登录',
   'eng.loggingIn': '登录中…',
   'eng.installFirst': '请先安装命令行工具',
   'eng.relogin': '重新登录',
-  'eng.accountSettings': '账号设置…',
+  'eng.accountSettings': '账号设置',
   'eng.deleteAccount': '删除账号…',
 
   // ---- usage & quota
@@ -716,5 +714,11 @@ export const zhCN = {
   'proj.pickOther': '选择其他文件夹…',
   'proj.none': '不绑定项目（通用对话）',
   'nav.newInProject': '在 {name} 中新建对话',
-  'nav.newNoProject': '新建通用对话'
+  'nav.newNoProject': '新建通用对话',
+  'eng.permCli': '沿用 CLI',
+  'eng.permEdits': '仅项目内编辑',
+  'eng.permFull': '完全放行',
+  'eng.defaultModelHint': '默认模型（点击修改）',
+  'eng.permHint': '对话运行时的权限模式（点击修改）',
+  'eng.openTerminal': '打开终端'
 } as const

@@ -109,16 +109,14 @@ export const en: Dict = {
   'eng.noAccounts': 'No {name} accounts yet',
   'eng.addAccount': 'Add {name} Account',
   'eng.renamed': 'Renamed to “{name}”',
-  'eng.whereImported': 'Existing local configuration · {dir}',
-  'eng.whereOwn': 'Own configuration folder · {dir}',
+  'eng.whereImported': 'Local config · {dir}',
+  'eng.whereOwn': 'Own folder · {dir}',
   'eng.dblRename': 'Double-click to rename',
-  'eng.weekTotal': 'This week {week} · Total {total}',
-  'eng.loginToUse': 'Sign in to use',
   'eng.login': 'Sign In',
   'eng.loggingIn': 'Signing in…',
   'eng.installFirst': 'Install the command-line tool first',
   'eng.relogin': 'Sign In Again',
-  'eng.accountSettings': 'Account Settings…',
+  'eng.accountSettings': 'Account settings',
   'eng.deleteAccount': 'Delete Account…',
 
   'usage.title': 'Usage & Limits',
@@ -692,5 +690,11 @@ export const en: Dict = {
   'proj.pickOther': 'Choose another folder…',
   'proj.none': 'No project (general chat)',
   'nav.newInProject': 'New chat in {name}',
-  'nav.newNoProject': 'New general chat'
+  'nav.newNoProject': 'New general chat',
+  'eng.permCli': 'CLI default',
+  'eng.permEdits': 'Project edits only',
+  'eng.permFull': 'Full access',
+  'eng.defaultModelHint': 'Default model (click to change)',
+  'eng.permHint': 'Permission mode for chat runs (click to change)',
+  'eng.openTerminal': 'Open terminal'
 }

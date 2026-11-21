@@ -3,9 +3,11 @@ import { KINDS, installSessionId, type ProfileKind, type ProfileState } from '@s
 import { useApp } from '../state/AppContext'
 import { KIND_META } from '../lib/ui'
 import { KindAvatar } from '../components/common'
-import { IconDownload, IconGear, Spinner } from '../components/icons'
-import { AccountQuotaCells, QuotaGroupChip, todayBrief } from '../components/Usage'
-import { fmtTokens, tokenSum, useUsage } from '../state/usage'
+import { IconDownload, IconGear, IconSliders, Spinner } from '../components/icons'
+import { tildePath } from '../components/ProjectBar'
+import { modelLabel } from '../lib/models'
+import { useModelsVersion } from '../state/models'
+import { dims, terminals } from '../lib/terminals'
 import { t } from '../state/i18n'
 import { DialogHeader } from '../components/PageDialog'
 
@@ -18,8 +20,18 @@ const btnText =
 const btnIcon =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink active:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40'
 
-/** One grid for every account row on the page: identity | 5h | 7d | menu — columns line up across cards. */
-const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_11rem_11rem_2rem] items-center gap-x-6'
+/** One grid for every account row on the page: identity | model | permissions | actions — columns line up across cards. */
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_10rem_7.5rem_5.5rem] items-center gap-x-3'
+
+/** Small read-only meta pill (click opens the account settings). */
+const CHIP =
+  'inline-flex h-6 max-w-full min-w-0 items-center gap-1 justify-self-start rounded-md bg-black/[0.045] px-2 text-[11.5px] font-medium text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-ink dark:bg-white/[0.07] dark:hover:bg-white/[0.12]'
+
+const PERM: Record<'cli' | 'edits' | 'full', { key: 'eng.permCli' | 'eng.permEdits' | 'eng.permFull'; cls: string }> = {
+  cli: { key: 'eng.permCli', cls: '' },
+  edits: { key: 'eng.permEdits', cls: '' },
+  full: { key: 'eng.permFull', cls: '!bg-orange/12 !text-warn' }
+}
 
 const DOT_COLOR: Record<ProfileState['status'], string> = {
   idle: 'var(--green)',
@@ -34,7 +46,8 @@ const alertOf = (s: ProfileState['status'] | 'login'): { label: string; cls: str
     login: { label: t('status.loggingIn'), cls: 'bg-accent/10 text-info' },
     not_logged_in: { label: t('status.notLoggedIn'), cls: 'bg-orange/12 text-warn' },
     rate_limited: { label: t('status.rateLimited'), cls: 'bg-red/10 text-danger' },
-    uninstalled: { label: t('status.uninstalled'), cls: 'bg-black/[0.05] text-ink-3' }
+    uninstalled: { label: t('status.uninstalled'), cls: 'bg-black/[0.05] text-ink-3' },
+    running: { label: t('status.running'), cls: 'bg-accent/10 text-info' }
   })[s as 'login']
 
 export function EnginesPage({ onClose }: { onClose: () => void }) {
@@ -173,15 +186,16 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
 }
 
 function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady: boolean }) {
-  const { openLogin, openConfig, removeAccount, toast } = useApp()
+  const { openLogin, openConfig, openDrawer, removeAccount, toast } = useApp()
+  useModelsVersion() // model labels resolve once the list is cached
   const flash = useFlash((t) => t === a.id)
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(a.name)
-  const usage = useUsage()?.accounts[a.id]
   useEffect(() => setName(a.name), [a.name])
   const loggingIn = a.sessionMode === 'login'
   const alert = alertOf(loggingIn ? 'login' : a.status)
-  const where = a.imported ? t('eng.whereImported', { dir: a.resolvedConfigDir }) : t('eng.whereOwn', { dir: a.resolvedConfigDir })
+  const where = (a.imported ? t('eng.whereImported', { dir: tildePath(a.resolvedConfigDir) }) : t('eng.whereOwn', { dir: tildePath(a.resolvedConfigDir) }))
+  const perm = PERM[a.autoApprove === 'full' || a.autoApprove === 'edits' ? a.autoApprove : 'cli']
 
   const commitRename = async () => {
     setEditing(false)
@@ -191,9 +205,20 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
     toast({ kind: 'success', title: t('eng.renamed', { name: n }) })
   }
 
+  /** The account's isolated shell in the debug drawer (reuses a live one). */
+  const openTerminal = async () => {
+    try {
+      if (a.sessionMode !== 'shell') await window.agentswitch.pty.start({ profileId: a.id, mode: 'shell', ...dims(a.id) })
+      openDrawer(a.id)
+      requestAnimationFrame(() => terminals.get(a.id)?.focus())
+    } catch (e) {
+      toast({ kind: 'error', title: t('dbg.startFailed'), desc: String(e) })
+    }
+  }
+
   return (
-    <div className={`${ROW_GRID} min-h-[64px] px-4 py-3 transition-colors duration-300 ${flash ? 'bg-warn-soft' : ''}`}>
-      {/* identity + today */}
+    <div className={`${ROW_GRID} min-h-[60px] px-4 py-2.5 transition-colors duration-300 ${flash ? 'bg-warn-soft' : ''}`}>
+      {/* identity: dot · name · status, then where its config lives */}
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: loggingIn ? DOT_COLOR.running : DOT_COLOR[a.status] }} />
@@ -213,37 +238,46 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
               }}
             />
           ) : (
-            <span className="truncate text-[14px] font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={`${where}\n${t('eng.dblRename')}`}>
+            <span className="truncate text-[14px] font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={t('eng.dblRename')}>
               {a.name}
             </span>
           )}
           {alert && <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${alert.cls}`}>{alert.label}</span>}
-          {a.loggedIn && <QuotaGroupChip u={usage} model={a.defaultModel} />}
         </div>
-        <div className="mt-0.5 pl-3.5 text-[12px] text-ink-3 tabular-nums" title={usage ? t('eng.weekTotal', { week: fmtTokens(tokenSum(usage.week)), total: fmtTokens(tokenSum(usage.total)) }) : undefined}>
-          {a.loggedIn ? todayBrief(usage) : t('eng.loginToUse')}
+        <div className="mt-0.5 truncate pl-3.5 text-[12px] text-ink-3" title={a.resolvedConfigDir}>
+          {where}
         </div>
       </div>
 
-      {/* 5h | 7d, or the login call to action */}
-      {a.loggedIn ? (
-        <AccountQuotaCells kind={a.kind} u={usage} model={a.defaultModel} />
-      ) : (
-        <div className="col-span-2 flex justify-end">
+      {/* core config: default model · permissions */}
+      <button className={CHIP} onClick={() => openConfig(a.id)} title={t('eng.defaultModelHint')}>
+        <span className="truncate">{modelLabel(a.defaultModel, a.id)}</span>
+      </button>
+      <button className={`${CHIP} ${perm.cls}`} onClick={() => openConfig(a.id)} title={t('eng.permHint')}>
+        <span className="truncate">{t(perm.key)}</span>
+      </button>
+
+      {/* actions */}
+      <div className="flex items-center justify-end gap-0.5">
+        {a.loggedIn ? (
+          <button className={btnIcon} onClick={() => openConfig(a.id)} title={t('eng.accountSettings')}>
+            <IconSliders size={15} />
+          </button>
+        ) : (
           <button className={btnSolid} disabled={!cliReady || loggingIn} onClick={() => openLogin(a.id)} title={cliReady ? undefined : t('eng.installFirst')}>
             {loggingIn ? t('eng.loggingIn') : t('eng.login')}
           </button>
-        </div>
-      )}
-
-      <RowMenu
-        items={[
-          ...(a.loggedIn ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }] : []),
-          { label: t('eng.accountSettings'), run: () => openConfig(a.id) },
-          { label: t('common.rename'), run: () => setEditing(true) },
-          { label: t('eng.deleteAccount'), run: () => void removeAccount(a.id), destructive: true }
-        ]}
-      />
+        )}
+        <RowMenu
+          items={[
+            ...(a.loggedIn ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }] : []),
+            ...(a.loggedIn ? [] : [{ label: t('eng.accountSettings'), run: () => openConfig(a.id) }]),
+            { label: t('eng.openTerminal'), run: () => void openTerminal() },
+            { label: t('common.rename'), run: () => setEditing(true) },
+            { label: t('eng.deleteAccount'), run: () => void removeAccount(a.id), destructive: true }
+          ]}
+        />
+      </div>
     </div>
   )
 }

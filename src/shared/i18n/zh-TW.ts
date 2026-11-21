@@ -117,16 +117,14 @@ export const zhTW: Dict = {
   'eng.noAccounts': '還沒有 {name} 帳號',
   'eng.addAccount': '新增 {name} 帳號',
   'eng.renamed': '已重新命名為「{name}」',
-  'eng.whereImported': '本機已有設定 · {dir}',
-  'eng.whereOwn': '獨立設定資料夾 · {dir}',
+  'eng.whereImported': '本機設定 · {dir}',
+  'eng.whereOwn': '獨立目錄 · {dir}',
   'eng.dblRename': '按兩下重新命名',
-  'eng.weekTotal': '本週 {week} · 累計 {total}',
-  'eng.loginToUse': '登入後即可使用',
   'eng.login': '登入',
   'eng.loggingIn': '登入中…',
   'eng.installFirst': '請先安裝命令列工具',
   'eng.relogin': '重新登入',
-  'eng.accountSettings': '帳號設定…',
+  'eng.accountSettings': '帳號設定',
   'eng.deleteAccount': '刪除帳號…',
 
   // ---- usage & quota
@@ -714,5 +712,11 @@ export const zhTW: Dict = {
   'proj.pickOther': '選擇其他資料夾…',
   'proj.none': '不綁定專案（通用對話）',
   'nav.newInProject': '在 {name} 中新增對話',
-  'nav.newNoProject': '新增通用對話'
+  'nav.newNoProject': '新增通用對話',
+  'eng.permCli': '沿用 CLI',
+  'eng.permEdits': '僅專案內編輯',
+  'eng.permFull': '完全放行',
+  'eng.defaultModelHint': '預設模型（點擊修改）',
+  'eng.permHint': '對話執行時的權限模式（點擊修改）',
+  'eng.openTerminal': '開啟終端機'
 }
