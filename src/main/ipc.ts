@@ -50,11 +50,12 @@ import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from '
 import { deleteThreadData } from './threadDelete'
 import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
-import { allowRoot, isAllowedPath } from './fileProtocol'
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { gitChanges } from './gitChanges'
+import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
+import { closeSync, mkdirSync, openSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { OnboardingState, RunRequest } from '@shared/types'
+import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
 
 const assertId = (x: unknown): ProfileId => {
@@ -207,7 +208,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const id = assertId(req.profileId)
     if (!PROFILE_MODES.includes(req.mode)) throw new Error(`bad mode ${req.mode}`)
     if (req.mode === 'test' && !req.command?.trim()) throw new Error('test mode needs a command')
-    ptys.start(id, req.mode, buildSpawnSpec(id, req.mode, req.command), req.cols, req.rows)
+    const spec = buildSpawnSpec(id, req.mode, req.command)
+    // the chat's project folder, when it still exists
+    if (typeof req.cwd === 'string' && isAbsolute(req.cwd)) {
+      try {
+        if (statSync(req.cwd).isDirectory()) spec.cwd = req.cwd
+      } catch {
+        /* moved or deleted: keep the home folder */
+      }
+    }
+    ptys.start(id, req.mode, spec, req.cols, req.rows)
     if (req.mode === 'login') watchLogin(id)
     return id
   })
@@ -218,11 +228,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.ptyBuffer, (_e, id: unknown) => ptys.getBuffer(typeof id === 'string' ? id : ''))
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
+  ipcMain.handle(IPC.gitChanges, (_e, dir: unknown) => gitChanges(dir))
+  /** Closes a drawer tab: kills the process (if any) and drops its scrollback. */
+  ipcMain.handle(IPC.ptyForget, (_e, id: unknown) => {
+    if (typeof id === 'string' && id) ptys.forget(id)
+  })
 
   // ---- models / chat ------------------------------------------------------------------
   ipcMain.handle(IPC.modelsList, (_e, id: unknown, refresh?: boolean) => listModels(assertId(id), refresh === true))
   ipcMain.handle(IPC.chatSend, (_e, req: RunRequest) => {
     if (!req || typeof req.threadId !== 'string' || typeof req.turnId !== 'string' || typeof req.text !== 'string') throw new Error('bad request')
+    // files the user attached stay previewable in the chat (only those exact files)
+    if (Array.isArray(req.attachments)) for (const a of req.attachments) if (a && typeof a.path === 'string') allowFile(a.path)
     orchestrator.start({
       threadId: req.threadId,
       turnId: req.turnId,
@@ -236,7 +253,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       mode: req.mode === 'handoff' ? 'handoff' : 'chat',
       handoffTo: hasProfile(req.handoffTo) ? req.handoffTo : undefined,
       handoffDoc: typeof req.handoffDoc === 'string' && isAbsolute(req.handoffDoc) ? req.handoffDoc : null,
-      allowMissingProject: req.allowMissingProject === true
+      allowMissingProject: req.allowMissingProject === true,
+      wantTitle: req.wantTitle === true
     })
   })
   ipcMain.handle(IPC.chatExportHandoff, (_e, threadId: unknown, turnId: unknown, projectDir: unknown, markdown: unknown) => {
@@ -299,7 +317,24 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const safe = String(name || 'file').replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(-80) || 'file'
     const p = join(stageDir, `${randomBytes(4).toString('hex')}-${safe}`)
     writeFileSync(p, buf)
+    allowFile(p)
     return p
+  })
+  /** Text preview of an attached file: allow-listed paths only, 64 KB, binary detected. */
+  ipcMain.handle(IPC.attachRead, (_e, p: unknown): AttachmentText => {
+    if (typeof p !== 'string' || !isAllowedPath(p)) throw new Error('not available')
+    const st = statSync(p)
+    if (!st.isFile()) throw new Error('not available')
+    const fd = openSync(p, 'r')
+    try {
+      const buf = Buffer.alloc(Math.min(st.size, 64 * 1024))
+      const n = readSync(fd, buf, 0, buf.length, 0)
+      const head = buf.subarray(0, n)
+      const binary = head.subarray(0, 8000).includes(0)
+      return { text: binary ? '' : head.toString('utf8'), bytes: st.size, truncated: st.size > n, binary }
+    } finally {
+      closeSync(fd)
+    }
   })
 
   // ---- system -----------------------------------------------------------------------

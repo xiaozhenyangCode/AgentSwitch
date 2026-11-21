@@ -185,6 +185,8 @@ function claudeAdapter(s: RunSpec): Adapter {
   }
   // stream frames that only carry protocol structure (their content arrives elsewhere)
   const FRAMES = new Set(['message_start', 'message_delta', 'message_stop', 'content_block_stop', 'ping'])
+  /** Tool call whose JSON arguments are still streaming in. */
+  let toolInput: { name: string; bytes: number; sent: number; at: number } | null = null
   return {
     args,
     stdin: s.prompt,
@@ -204,9 +206,18 @@ function claudeAdapter(s: RunSpec): Adapter {
           break
         case 'stream_event': {
           const ev = d.event ?? {}
+          if (ev.type === 'content_block_stop' && toolInput) {
+            toolInput = null
+            emit({ t: 'phase', tool: null, bytes: 0 })
+          }
           if (FRAMES.has(ev.type)) break
           if (ev.type === 'content_block_start') {
             const t = ev.content_block?.type
+            // arguments stream in before the tool call is complete: report it right away
+            if (t === 'tool_use' || t === 'server_tool_use') {
+              toolInput = { name: String(ev.content_block?.name ?? 'tool'), bytes: 0, sent: 0, at: 0 }
+              emit({ t: 'phase', tool: toolInput.name, bytes: 0 })
+            }
             if (t === 'text' && textSoFar && !textSoFar.endsWith('\n\n')) text(textSoFar.endsWith('\n') ? '\n' : '\n\n', emit)
             else if (t === 'thinking' || t === 'redacted_thinking') emit({ t: 'thinking', delta: '' })
             else if (t !== 'text' && t !== 'tool_use' && t !== 'server_tool_use') emit(other(`stream/block:${t}`, ev.content_block))
@@ -220,7 +231,17 @@ function claudeAdapter(s: RunSpec): Adapter {
             } else if (dt === 'thinking_delta') {
               sawThinkingDelta = true
               emit({ t: 'thinking', delta: String(ev.delta.thinking ?? ''), tokens: Number(ev.delta.estimated_tokens) || undefined })
-            } else if (dt !== 'signature_delta' && dt !== 'input_json_delta' && dt !== 'citations_delta') emit(other(`stream/delta:${dt}`, ev.delta))
+            } else if (dt === 'input_json_delta') {
+              if (toolInput) {
+                toolInput.bytes += Buffer.byteLength(String(ev.delta.partial_json ?? ''))
+                // throttled: every 2 KB or 400 ms
+                if (toolInput.bytes - toolInput.sent >= 2048 || Date.now() - toolInput.at > 400) {
+                  toolInput.sent = toolInput.bytes
+                  toolInput.at = Date.now()
+                  emit({ t: 'phase', tool: toolInput.name, bytes: toolInput.bytes })
+                }
+              }
+            } else if (dt !== 'signature_delta' && dt !== 'citations_delta') emit(other(`stream/delta:${dt}`, ev.delta))
             break
           }
           emit(other(`stream/${ev.type}`, ev))

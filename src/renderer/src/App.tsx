@@ -6,8 +6,7 @@ import { Toasts } from './components/Toasts'
 import { ProfileConfigModal } from './components/ProfileConfigModal'
 import { AddAccountModal, CliConfigModal, ConfirmDialog } from './components/dialogs'
 import { WorkbenchPage } from './pages/WorkbenchPage'
-import { EnginesPage } from './pages/EnginesPage'
-import { UsagePage } from './pages/UsagePage'
+import { PageDialog } from './components/PageDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { useOnboarding } from './state/onboarding'
@@ -18,7 +17,7 @@ import { activeThread, useChat } from './state/chat'
 
 /** Native menu bar → navigation (About / Settings… ⌘, / New Chat ⌘N / Search ⌘K). */
 function MenuBridge() {
-  const { openSettings, toggleSettings, closeSettings, settingsOpen } = useApp()
+  const { openSettings, toggleSettings, closeSettings, settingsOpen, navigate } = useApp()
   const start = useStartThread()
   const chat = useChat()
   useEffect(
@@ -29,17 +28,18 @@ function MenuBridge() {
         else {
           // chat commands act on the page under the dialog
           if (settingsOpen) closeSettings()
+          navigate('workbench')
           if (cmd === 'newThread') start(activeThread(chat)?.projectDir ?? null)
           else if (cmd === 'search') window.dispatchEvent(new Event('agentswitch:focus-search'))
         }
       }),
-    [openSettings, toggleSettings, closeSettings, settingsOpen, start, chat]
+    [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, start, chat]
   )
   return null
 }
 
 function Shell() {
-  const { page, drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
+  const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
   const configProfile = configId ? byId(configId) : undefined
   const onboarding = useOnboarding()
 
@@ -52,10 +52,11 @@ function Shell() {
           <NavRail />
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
             <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
-              {page === 'workbench' ? <WorkbenchPage /> : page === 'usage' ? <UsagePage /> : <EnginesPage />}
+              <WorkbenchPage />
             </div>
             <DebugDrawer />
           </main>
+          <PageDialog />
           <SettingsDialog />
         </>
       )}

@@ -3,11 +3,13 @@ import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
   type AppInfo,
+  type FileChanges,
   type DeleteThreadRequest,
   type ThemeMode,
   type MenuCommand,
   type McpList,
   type ExtOverview,
+  type AttachmentText,
   type ExtFileText,
   type OnboardingState,
   type SkillList,
@@ -72,6 +74,7 @@ const api = {
     kill: (id: SessionId): Promise<void> => ipcRenderer.invoke(IPC.ptyKill, id),
     buffer: (id: SessionId): Promise<PtyBuffer> => ipcRenderer.invoke(IPC.ptyBuffer, id),
     sessions: (): Promise<SessionInfo[]> => ipcRenderer.invoke(IPC.ptySessions),
+    forget: (id: SessionId): Promise<void> => ipcRenderer.invoke(IPC.ptyForget, id),
     onData: (cb: (e: PtyDataEvent) => void) => subscribe(IPC.ptyData, cb),
     onExit: (cb: (e: PtyExitEvent) => void) => subscribe(IPC.ptyExit, cb),
     onUrl: (cb: (e: PtyUrlEvent) => void) => subscribe(IPC.ptyUrl, cb)
@@ -105,7 +108,9 @@ const api = {
   },
   attach: {
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */
-    stage: (name: string, data: ArrayBuffer): Promise<string> => ipcRenderer.invoke(IPC.attachStage, name, data)
+    stage: (name: string, data: ArrayBuffer): Promise<string> => ipcRenderer.invoke(IPC.attachStage, name, data),
+    /** Text preview of an attached file (allow-listed, 64 KB). */
+    read: (path: string): Promise<AttachmentText> => ipcRenderer.invoke(IPC.attachRead, path)
   },
   theme: {
     /** Sync on purpose: applied before the first paint. */
@@ -139,6 +144,10 @@ const api = {
   onboarding: {
     get: (): Promise<OnboardingState> => ipcRenderer.invoke(IPC.onboardingGet),
     set: (completed: boolean): Promise<void> => ipcRenderer.invoke(IPC.onboardingSet, completed)
+  },
+  git: {
+    /** Changed files of a project folder (read-only git status / diff). */
+    changes: (dir: string): Promise<FileChanges> => ipcRenderer.invoke(IPC.gitChanges, dir)
   },
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),

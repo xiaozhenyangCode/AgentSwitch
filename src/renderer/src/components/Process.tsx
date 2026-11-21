@@ -287,8 +287,12 @@ function OthersRow({ others }: { others: { kind: string; payload: string }[] }) 
   )
 }
 
-export function ActivityBar({ items, others, live }: { items: Activity[]; others: { kind: string; payload: string }[]; live: boolean }) {
+export function ActivityBar({ items, others, live, openSeq = 0 }: { items: Activity[]; others: { kind: string; payload: string }[]; live: boolean; openSeq?: number }) {
   const [open, setOpen] = useState(false)
+  // the live progress line asks for the details
+  useEffect(() => {
+    if (openSeq) setOpen(true)
+  }, [openSeq])
   const running = [...items].reverse().find((i) => i.status === 'running')
   const current = live ? (running ?? items[items.length - 1]) : null
   const errors = items.filter((i) => i.status === 'error').length
@@ -340,5 +344,63 @@ export function UsageLine({ usage, ms }: { usage: Usage | null | undefined; ms: 
     <span className="text-[11px] text-ink-3/70 tabular-nums" title={t('proc.usageTip')}>
       {parts.join(' · ')}
     </span>
+  )
+}
+
+const fmtKB = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`)
+/** Tool names that write files (Claude Write / Edit / MultiEdit / NotebookEdit). */
+const WRITE_TOOLS = /^(write|edit|multiedit|notebookedit|str_replace|create_file|apply_patch)/i
+
+/**
+ * Compact live line under the newest text of a running reply: what the model is doing right
+ * now (thinking / generating a tool call's arguments / running a tool / waiting), plus totals.
+ * Clicking it opens the process details at the top of the reply.
+ */
+export function LiveProgress({
+  activity,
+  phase,
+  thinking,
+  tail,
+  startedAt,
+  onDetails
+}: {
+  activity: Activity[]
+  phase: { tool: string; bytes: number; since: number } | null | undefined
+  thinking: boolean
+  tail: 'text' | 'tool' | 'thinking' | undefined
+  startedAt: number | null
+  onDetails?: () => void
+}) {
+  const now = Date.now()
+  const running = [...activity].reverse().find((a) => a.status === 'running')
+  const done = activity.filter((a) => a.status !== 'running').length
+  let label: string
+  let since: number | null = null
+  if (phase) {
+    const what = WRITE_TOOLS.test(phase.tool) ? t('live.prepWrite') : t('live.prepTool', { tool: phase.tool })
+    label = phase.bytes > 0 ? `${what} · ${t('live.generated', { size: fmtKB(phase.bytes) })}` : what
+    since = phase.since
+  } else if (running) {
+    label = actNow(running.type, running.target.split('/').pop() || running.target)
+    since = running.startedAt ?? null
+  } else if (thinking) label = t('live.thinking')
+  else if (tail === 'text') label = t('live.writing')
+  else label = t('live.waiting')
+  const stepMs = since ? now - since : 0
+  return (
+    <button
+      onClick={onDetails}
+      disabled={!onDetails}
+      className="mt-2.5 flex h-7 max-w-full items-center gap-2 rounded-full bg-black/[0.035] pr-3 pl-2.5 text-left text-[12px] text-ink-2 transition-colors enabled:hover:bg-black/[0.06]"
+      title={onDetails ? t('live.details') : undefined}
+    >
+      <Spinner size={11} className="shrink-0 text-accent" />
+      <span className="min-w-0 truncate">{label}</span>
+      {stepMs >= 3000 && <span className="shrink-0 text-ink-3 tabular-nums">{fmtDuration(stepMs)}</span>}
+      <span className="shrink-0 text-ink-3/60">·</span>
+      <span className="shrink-0 text-ink-3 tabular-nums">
+        {done > 0 ? t('live.totals', { n: done, dur: fmtDuration(startedAt ? now - startedAt : 0) }) : fmtDuration(startedAt ? now - startedAt : 0)}
+      </span>
+    </button>
   )
 }

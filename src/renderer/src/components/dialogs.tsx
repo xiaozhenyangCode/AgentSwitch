@@ -103,9 +103,6 @@ export function ConfirmDialog() {
   const [checked, setChecked] = useState(false)
   useEffect(() => {
     okRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && c?.resolve(false)
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
   }, [c])
   if (!c) return null
   return (

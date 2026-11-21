@@ -130,6 +130,8 @@ export interface RunRequest {
   handoffDoc?: string | null
   /** Imported history whose original folder is gone: run in the private workspace instead of failing. */
   allowMissingProject?: boolean
+  /** First turn of a chat the user hasn't renamed: ask the driver for a title marker. */
+  wantTitle?: boolean
 }
 
 export type ActivityType = 'read' | 'write' | 'run' | 'search' | 'tool'
@@ -246,6 +248,11 @@ export type AgentEvent =
   /** Non-fatal: e.g. tool calls auto-denied by the permission level. */
   | { t: 'notice'; message: string }
   | { t: 'error'; message: string }
+  /**
+   * The model is still generating a tool call's arguments (e.g. a whole file for Write): shown
+   * live instead of a silent pause. `tool: null` ends the phase.
+   */
+  | { t: 'phase'; tool: string | null; bytes: number }
 
 // ---- local CLI history ---------------------------------------------------------------
 
@@ -326,6 +333,8 @@ export interface SessionInfo {
   alive: boolean
   /** Human label: account name or "安装 Claude". */
   label: string
+  /** Working directory of the last process started in it (none for log-only sessions). */
+  cwd?: string | null
 }
 
 export interface StartPtyRequest {
@@ -333,6 +342,8 @@ export interface StartPtyRequest {
   mode: Exclude<PtyMode, 'install'>
   /** Overrides the profile's command for this mode (required for `test`). */
   command?: string
+  /** Working directory (e.g. the chat's project folder); falls back to the real home. */
+  cwd?: string | null
   cols: number
   rows: number
 }
@@ -404,6 +415,8 @@ export const IPC = {
   ptyKill: 'pty:kill',
   ptyBuffer: 'pty:buffer',
   ptySessions: 'pty:sessions',
+  ptyForget: 'pty:forget',
+  gitChanges: 'git:changes',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
   ptyUrl: 'pty:url',
@@ -426,6 +439,7 @@ export const IPC = {
   onboardingSet: 'onboarding:set',
   modelsList: 'models:list',
   attachStage: 'attach:stage',
+  attachRead: 'attach:read',
   chatSend: 'chat:send',
   chatStop: 'chat:stop',
   chatResume: 'chat:resume',
@@ -623,6 +637,37 @@ export interface ExtFileText {
   text: string
   bytes: number
   truncated: boolean
+}
+
+/** One changed file in the project (git working tree vs HEAD, untracked included). */
+export interface FileChange {
+  /** Relative to the project folder (forward slashes). */
+  path: string
+  abs: string
+  /** M modified · A added · D deleted · U untracked · R renamed. */
+  status: 'M' | 'A' | 'D' | 'U' | 'R'
+  added: number
+  removed: number
+  /** Unified diff (may be cut short); empty for binary files. */
+  diff: string
+  binary?: boolean
+  truncated?: boolean
+}
+
+export interface FileChanges {
+  /** The folder is inside a git work tree. */
+  repo: boolean
+  files: FileChange[]
+  added: number
+  removed: number
+  /** More changed files than listed. */
+  more?: number
+}
+
+/** Read-only preview of an attached file (64 KB cap). */
+export interface AttachmentText extends ExtFileText {
+  /** Not text (NUL bytes in the head): open it with the system app instead. */
+  binary: boolean
 }
 
 export interface OnboardingState {

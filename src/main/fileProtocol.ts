@@ -25,6 +25,10 @@ const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 const rootsFile = (): string => join(app.getPath('userData'), 'allowed-roots.json')
 let roots: string[] = []
+/** Single files the user attached to a message (they may live anywhere): previewable, not their folders. */
+const filesFile = (): string => join(app.getPath('userData'), 'allowed-files.json')
+let files: string[] = []
+const FILES_MAX = 2000
 
 /** Must run before app 'ready'. */
 export function registerFileScheme(): void {
@@ -33,13 +37,32 @@ export function registerFileScheme(): void {
 
 const inside = (p: string, root: string): boolean => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep)
 
+const allowedReal = (real: string): boolean => roots.some((r) => inside(real, r)) || files.includes(real)
+
 export function isAllowedPath(p: string): boolean {
   if (!isAbsolute(p)) return false
   try {
-    const real = realpathSync(p)
-    return roots.some((r) => inside(real, r))
+    return allowedReal(realpathSync(p))
   } catch {
     return false
+  }
+}
+
+/** Allow-lists one attached file (resolved through symlinks); persisted, newest kept. */
+export function allowFile(p: string): void {
+  if (!isAbsolute(p)) return
+  let real: string
+  try {
+    real = realpathSync(p)
+  } catch {
+    return
+  }
+  if (files.includes(real)) return
+  files = [...files, real].slice(-FILES_MAX)
+  try {
+    writeFileSync(filesFile(), JSON.stringify(files, null, 2))
+  } catch (e) {
+    console.warn('[file-protocol] persist files failed', e)
   }
 }
 
@@ -68,6 +91,11 @@ export function handleFileProtocol(): void {
   } catch {
     roots = []
   }
+  try {
+    if (existsSync(filesFile())) files = (JSON.parse(readFileSync(filesFile(), 'utf8')) as string[]).filter((f) => typeof f === 'string' && isAbsolute(f))
+  } catch {
+    files = []
+  }
   protocol.handle(FILE_SCHEME, async (req) => {
     if (req.method !== 'GET') return reply(405)
     let p: string
@@ -85,7 +113,7 @@ export function handleFileProtocol(): void {
     }
     const mime = MIME[extname(real).toLowerCase()]
     if (!mime) return reply(415)
-    if (!roots.some((r) => inside(real, r))) return reply(403)
+    if (!allowedReal(real)) return reply(403)
     try {
       const st = await stat(real)
       if (!st.isFile()) return reply(404)

@@ -200,7 +200,7 @@ export function NavRail() {
               <ThreadRow
                 key={th.id}
                 t={th}
-                active={page === 'workbench' && th.id === current?.id}
+                active={th.id === current?.id}
                 onOpen={() => {
                   selectThread(th.id)
                   navigate('workbench')

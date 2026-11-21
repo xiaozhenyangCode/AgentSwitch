@@ -61,7 +61,7 @@ interface AppState {
   drawer: { open: boolean; session: SessionId | null }
   openDrawer: (session?: SessionId) => void
   closeDrawer: () => void
-  setDrawerSession: (session: SessionId) => void
+  setDrawerSession: (session: SessionId | null) => void
 
   loginId: ProfileId | null
   openLogin: (id: ProfileId) => void
@@ -189,7 +189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     []
   )
   const closeDrawer = useCallback(() => setDrawer((d) => ({ ...d, open: false })), [])
-  const setDrawerSession = useCallback((session: SessionId) => setDrawer((d) => ({ ...d, session })), [])
+  const setDrawerSession = useCallback((session: SessionId | null) => setDrawer((d) => ({ ...d, session })), [])
 
   // ---- accounts ---------------------------------------------------------------------
   const openAddAccount = useCallback((kind: ProfileKind, onCreated?: (id: ProfileId) => void) => setAddRequest({ kind, onCreated }), [])

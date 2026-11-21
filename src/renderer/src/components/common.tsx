@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useEscape } from '../lib/escStack'
 import type { ProfileKind, ProfileState } from '@shared/types'
 import { KIND_META, accountBadge, type BadgeMeta } from '../lib/ui'
 import { BrandIcon } from './brandIcons'
@@ -67,7 +68,8 @@ export function Segmented<T extends string>({
 }
 
 /** Centered sheet over a frosted backdrop. */
-export function Modal({ children, onClose, width = 500 }: { children: ReactNode; onClose: () => void; width?: number }) {
+export function Modal({ children, onClose, width = 500, escClose = true }: { children: ReactNode; onClose: () => void; width?: number; escClose?: boolean }) {
+  useEscape(onClose, escClose)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim) backdrop-blur-md" onMouseDown={onClose}>
       <div

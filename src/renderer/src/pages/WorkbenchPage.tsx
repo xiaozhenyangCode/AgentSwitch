@@ -7,15 +7,19 @@ import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar } from '../components/common'
+import { AttachmentViewer } from '../components/AttachmentViewer'
+import { stripMarks } from '@shared/markers'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
-import { ActivityBar, ThinkingCard, UsageLine } from '../components/Process'
+import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
+import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
+  clearSuggestion,
   exportHandoff,
   isThreadBusy,
   lastSpeaker,
@@ -225,127 +229,158 @@ export function WorkbenchPage() {
   }, [synced])
   useEffect(() => setSynced(null), [threadId])
 
+  // 文件修改 panel: open state remembered across chats
+  const [changesOpen, setChangesOpen] = useState(() => localStorage.getItem('agentswitch.changesOpen') === '1')
+  const toggleChanges = () =>
+    setChangesOpen((o) => {
+      localStorage.setItem('agentswitch.changesOpen', o ? '0' : '1')
+      return !o
+    })
+  const fc = useFileChanges(thread, ctx.projectDir, isThreadBusy(thread))
+  const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
+
   return (
-    <div className="relative flex h-full flex-col">
-      <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
-        <button onClick={() => void pickProject()} className={pill + ' no-drag max-w-[340px] min-w-0'} title={ctx.projectDir ? shortPath(ctx.projectDir) : t('wb.projectHint')}>
-          <IconFolder size={16} className="shrink-0 text-accent" />
-          <span className={`truncate ${ctx.projectDir ? '' : 'text-ink-2'}`}>{ctx.projectDir ? baseName(ctx.projectDir) : t('wb.pickProject')}</span>
-          <IconChevronDown size={14} className="shrink-0 text-ink-3" />
-        </button>
-        <div className="flex-1" />
-        {synced && (
-          <div key={synced.seq} className="no-drag pointer-events-none absolute top-3.5 left-1/2 z-20 -translate-x-1/2">
-            <div className="flex items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
-              <IconRefresh size={12} className="text-accent" />
-              {t('wb.extSynced', { n: synced.n })}
+    <div className="flex h-full">
+      <div className="relative flex h-full min-w-0 flex-1 flex-col">
+        <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
+          <button onClick={() => void pickProject()} className={pill + ' no-drag max-w-[340px] min-w-0'} title={ctx.projectDir ? shortPath(ctx.projectDir) : t('wb.projectHint')}>
+            <IconFolder size={16} className="shrink-0 text-accent" />
+            <span className={`truncate ${ctx.projectDir ? '' : 'text-ink-2'}`}>{ctx.projectDir ? baseName(ctx.projectDir) : t('wb.pickProject')}</span>
+            <IconChevronDown size={14} className="shrink-0 text-ink-3" />
+          </button>
+          <div className="flex-1" />
+          {synced && (
+            <div key={synced.seq} className="no-drag pointer-events-none absolute top-3.5 left-1/2 z-20 -translate-x-1/2">
+              <div className="flex items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
+                <IconRefresh size={12} className="text-accent" />
+                {t('wb.extSynced', { n: synced.n })}
+              </div>
+            </div>
+          )}
+          <div className="no-drag flex items-center gap-1.5">
+            <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
+            <button
+              onClick={toggleChanges}
+              className={pill + ` gap-1.5 px-3 ${changesOpen ? 'bg-surface-2 text-accent' : ''}`}
+              title={nChanged ? t('chg.btnHint', { n: nChanged }) : t('chg.title')}
+            >
+              <IconFile size={15} className={changesOpen ? 'text-accent' : 'text-ink-2'} />
+              {nChanged > 0 ? (
+                <>
+                  <span className="text-[13px] tabular-nums">{nChanged}</span>
+                  <Counts added={fc.changes!.added} removed={fc.changes!.removed} className="text-[11.5px]" />
+                </>
+              ) : (
+                <span className="text-[13px] text-ink-2">{t('chg.short')}</span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div
+          ref={scroller}
+          className="min-h-0 flex-1 overflow-y-auto"
+          onScroll={(e) => {
+            const el = e.currentTarget
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          }}
+        >
+          <div className="mx-auto flex min-h-full max-w-[820px] flex-col px-8 pt-2" style={{ paddingBottom: composerH + 28 }}>
+            {thread?.imported && (
+              <div className="mb-5 flex items-start gap-2 rounded-xl bg-black/[0.035] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
+                <KindAvatar kind={thread.imported.kind} size={16} />
+                <span className="min-w-0 flex-1">
+                  {thread.preview
+                    ? t('wb.previewBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })
+                    : t('wb.importedBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })}
+                  {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">{t('wb.historyLoading')}</span>}
+                  {thread.historyState === 'error' && <span className="ml-1 text-warn">{t('wb.historyError')}</span>}
+                  {thread.imported.notice && <span className="block text-warn">{thread.imported.notice}</span>}
+                </span>
+              </div>
+            )}
+            {messages.length === 0 ? (
+              <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
+            ) : (
+              <div className="space-y-6">
+                <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
+                  {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} />))}
+                </MarkdownBase.Provider>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Composer
+          driver={driverP ?? null}
+          driverModel={driverModel}
+          onDriver={setDriver}
+          participants={participants}
+          busy={isThreadBusy(thread)}
+          threadId={thread?.id ?? null}
+          projectDir={ctx.projectDir}
+          onHeight={setComposerH}
+          onSend={onSend}
+          onStop={() => thread && stop(thread.id)}
+          suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
+        />
+        {!thread?.pause && (handoffNeeded || handoffReady) && driverP && (
+          <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+            {handoffReady ? (
+              <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-info-soft px-4 py-2.5 text-[13px] text-info shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
+                <IconCheck size={15} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">
+                  {tNode('wb.handoffReady', { name: <span className="font-semibold">{driverP.name}</span> })}
+                </span>
+                <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentswitch.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
+                  {t('wb.viewDoc')}
+                </button>
+              </div>
+            ) : (
+              <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+                <IconArrowRight size={15} className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1">
+                  {tNode('wb.switchNeedsSync', { name: <span className="font-semibold">{driverP.name}</span> })}
+                  {handoffFailed && <span className="block text-[12px] text-warn">{t('wb.handoffFailed', { name: srcP?.name ?? t('wb.origAccount'), suffix: thread!.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}</span>}
+                  {!srcOk && !handoffFailed && <span className="block text-[12px] text-warn">{t('wb.srcUnavailable', { name: srcP?.name ?? t('wb.origAccount') })}</span>}
+                </span>
+                {srcOk && !handoffFailed ? (
+                  <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoff}>
+                    {t('wb.letHandoff', { name: srcP!.name })}
+                  </button>
+                ) : (
+                  <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport()}>
+                    {exporting ? t('wb.exporting') : t('wb.exportHandoff')}
+                  </button>
+                )}
+                <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => skipHandoff(thread!.id, driverP.id)}>
+                  {t('wb.switchDirect')}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {thread?.pause && (
+          <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-warn-soft px-4 py-3 text-[13px] text-warn shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
+              <IconAlert size={16} className="shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="font-semibold">{t('wb.needHuman')}</span> · {thread.pause.reason}
+              </span>
+              <button className="h-7 shrink-0 rounded-full bg-orange px-3 font-medium text-white hover:bg-orange" onClick={() => resolvePause(thread.id, 'retry')}>
+                {t('wb.retryRound')}
+              </button>
+              <button className="h-7 shrink-0 rounded-full bg-surface px-3 font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2" onClick={() => resolvePause(thread.id, 'skip')}>
+                {t('wb.skipReview')}
+              </button>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => resolvePause(thread.id, 'stop')}>
+                {t('wb.endTurn')}
+              </button>
             </div>
           </div>
         )}
-        <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
       </div>
-
-      <div
-        ref={scroller}
-        className="min-h-0 flex-1 overflow-y-auto"
-        onScroll={(e) => {
-          const el = e.currentTarget
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        }}
-      >
-        <div className="mx-auto flex min-h-full max-w-[820px] flex-col px-8 pt-2" style={{ paddingBottom: composerH + 28 }}>
-          {thread?.imported && (
-            <div className="mb-5 flex items-start gap-2 rounded-xl bg-black/[0.035] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
-              <KindAvatar kind={thread.imported.kind} size={16} />
-              <span className="min-w-0 flex-1">
-                {thread.preview
-                  ? t('wb.previewBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })
-                  : t('wb.importedBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })}
-                {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">{t('wb.historyLoading')}</span>}
-                {thread.historyState === 'error' && <span className="ml-1 text-warn">{t('wb.historyError')}</span>}
-                {thread.imported.notice && <span className="block text-warn">{thread.imported.notice}</span>}
-              </span>
-            </div>
-          )}
-          {messages.length === 0 ? (
-            <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
-          ) : (
-            <div className="space-y-6">
-              <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
-                {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} />))}
-              </MarkdownBase.Provider>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <Composer
-        driver={driverP ?? null}
-        driverModel={driverModel}
-        onDriver={setDriver}
-        participants={participants}
-        busy={isThreadBusy(thread)}
-        threadId={thread?.id ?? null}
-        projectDir={ctx.projectDir}
-        onHeight={setComposerH}
-        onSend={onSend}
-        onStop={() => thread && stop(thread.id)}
-      />
-      {!thread?.pause && (handoffNeeded || handoffReady) && driverP && (
-        <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
-          {handoffReady ? (
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-info-soft px-4 py-2.5 text-[13px] text-info shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
-              <IconCheck size={15} className="shrink-0" />
-              <span className="min-w-0 flex-1 truncate">
-                {tNode('wb.handoffReady', { name: <span className="font-semibold">{driverP.name}</span> })}
-              </span>
-              <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentswitch.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
-                {t('wb.viewDoc')}
-              </button>
-            </div>
-          ) : (
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
-              <IconArrowRight size={15} className="shrink-0 text-accent" />
-              <span className="min-w-0 flex-1">
-                {tNode('wb.switchNeedsSync', { name: <span className="font-semibold">{driverP.name}</span> })}
-                {handoffFailed && <span className="block text-[12px] text-warn">{t('wb.handoffFailed', { name: srcP?.name ?? t('wb.origAccount'), suffix: thread!.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}</span>}
-                {!srcOk && !handoffFailed && <span className="block text-[12px] text-warn">{t('wb.srcUnavailable', { name: srcP?.name ?? t('wb.origAccount') })}</span>}
-              </span>
-              {srcOk && !handoffFailed ? (
-                <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoff}>
-                  {t('wb.letHandoff', { name: srcP!.name })}
-                </button>
-              ) : (
-                <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport()}>
-                  {exporting ? t('wb.exporting') : t('wb.exportHandoff')}
-                </button>
-              )}
-              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => skipHandoff(thread!.id, driverP.id)}>
-                {t('wb.switchDirect')}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      {thread?.pause && (
-        <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
-          <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-warn-soft px-4 py-3 text-[13px] text-warn shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
-            <IconAlert size={16} className="shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="font-semibold">{t('wb.needHuman')}</span> · {thread.pause.reason}
-            </span>
-            <button className="h-7 shrink-0 rounded-full bg-orange px-3 font-medium text-white hover:bg-orange" onClick={() => resolvePause(thread.id, 'retry')}>
-              {t('wb.retryRound')}
-            </button>
-            <button className="h-7 shrink-0 rounded-full bg-surface px-3 font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2" onClick={() => resolvePause(thread.id, 'skip')}>
-              {t('wb.skipReview')}
-            </button>
-            <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => resolvePause(thread.id, 'stop')}>
-              {t('wb.endTurn')}
-            </button>
-          </div>
-        </div>
-      )}
+      {changesOpen && <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={fc.refresh} onClose={toggleChanges} />}
     </div>
   )
 }
@@ -361,17 +396,16 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
 
   return (
     <div ref={ref} className="no-drag relative">
-      <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-2.5 pr-3 pl-2'} title={t('wb.participantsHint')}>
-        <span className="flex -space-x-1">
-          {active.slice(0, 5).map((p) => (
-            <span key={p.id} className="rounded-[8px] ring-2 ring-canvas" title={p.name}>
-              <KindAvatar kind={p.kind} size={22} />
-            </span>
-          ))}
-          {active.length === 0 && <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20" />}
-        </span>
-        <span className="text-[13px] text-ink-2">{t('wb.nModels', { n: active.length })}</span>
-        <IconChevronDown size={14} className="text-ink-3" />
+      <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-1.5 pr-2.5 pl-1.5'} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
+        {active[0] ? (
+          <span className="relative">
+            <KindAvatar kind={(active.find((p) => p.id === driverId) ?? active[0]).kind} size={22} />
+          </span>
+        ) : (
+          <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20 dark:border-white/25" />
+        )}
+        <span className="text-[13px] text-ink-2 tabular-nums">{active.length}</span>
+        <IconChevronDown size={13} className="text-ink-3" />
       </button>
       {open && (
         <div className={popover + ' absolute top-11 right-0 z-30 w-72'}>
@@ -480,22 +514,61 @@ function renderWithMentions(text: string, mentions: AgentRef[]): ReactNode[] {
   return out
 }
 
+/** Long user messages start folded (≈6 lines); short ones never show the toggle. */
+const FOLD_PX = 140
+
+function UserText({ msg }: { msg: UserMessage }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [long, setLong] = useState(false)
+  const [open, setOpen] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setLong(el.scrollHeight > FOLD_PX + 40)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [msg.text])
+  const folded = long && !open
+  return (
+    <div className="relative max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
+      <div ref={ref} className="overflow-hidden px-4 py-2.5 whitespace-pre-wrap select-text" style={folded ? { maxHeight: FOLD_PX } : undefined}>
+        {renderWithMentions(msg.text, msg.mentions)}
+      </div>
+      {folded && <div className="pointer-events-none absolute inset-x-0 bottom-8 h-12 rounded-b-md bg-gradient-to-b from-accent/0 to-accent" />}
+      {long && (
+        <div className={`flex justify-end px-2 pb-1.5 ${folded ? 'relative' : ''}`}>
+          <button onClick={() => setOpen((o) => !o)} className="flex h-6 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-white/85 hover:bg-white/15 hover:text-white">
+            {open ? t('wb.collapse') : t('wb.expandAll')}
+            <IconChevronDown size={12} className={open ? 'rotate-180' : ''} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UserBubble({ msg }: { msg: UserMessage }) {
-  const images = msg.attachments.filter((a) => a.isImage && a.thumb)
-  const files = msg.attachments.filter((a) => !(a.isImage && a.thumb))
+  const images = msg.attachments.filter((a) => a.isImage && (a.thumb || a.path))
+  const files = msg.attachments.filter((a) => !(a.isImage && (a.thumb || a.path)))
+  const [viewing, setViewing] = useState<Attachment | null>(null)
   return (
     <div className="flex flex-col items-end gap-1.5 pl-24">
+      {viewing && <AttachmentViewer a={viewing} onClose={() => setViewing(null)} />}
       {images.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {images.map((a) => (
-            <img key={a.id} src={a.thumb!} title={a.path ?? a.name} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+            <button key={a.id} onClick={() => setViewing(a)} title={`${a.path ?? a.name}\n${t('md.clickZoom')}`} className="cursor-zoom-in rounded-2xl">
+              <BubbleThumb a={a} />
+            </button>
           ))}
         </div>
       )}
       {files.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {files.map((a) => (
-            <FileChip key={a.id} a={a} />
+            <FileChip key={a.id} a={a} onOpen={() => setViewing(a)} />
           ))}
         </div>
       )}
@@ -505,9 +578,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
           {msg.text}
         </div>
       ) : (
-        msg.text && (
-          <div className="max-w-full rounded-[20px] rounded-br-md bg-accent px-4 py-2.5 text-[15px] leading-[1.7] whitespace-pre-wrap text-white select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
-        )
+        msg.text && <UserText msg={msg} />
       )}
       {msg.note && (
         <div className="flex items-center gap-1 text-[11px] text-info">
@@ -532,9 +603,22 @@ function UserBubble({ msg }: { msg: UserMessage }) {
   )
 }
 
-function FileChip({ a, onRemove }: { a: Attachment; onRemove?: () => void }) {
+/** Thumbnail in a sent bubble: the stored small JPEG, or the original file when there is none. */
+function BubbleThumb({ a }: { a: Attachment }) {
+  const [broken, setBroken] = useState(false)
+  const src = a.thumb ?? (a.path ? fileUrl(a.path) : null)
+  if (!src || broken)
+    return <span className="flex h-24 w-24 items-center justify-center rounded-2xl bg-black/[0.05] px-2 text-center text-[11px] text-ink-3 shadow-[0_0_0_1px_var(--ring)]">{t('att.missingShort')}</span>
+  return <img src={src} onError={() => setBroken(true)} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+}
+
+function FileChip({ a, onRemove, onOpen }: { a: Attachment; onRemove?: () => void; onOpen?: () => void }) {
   return (
-    <span className="flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)]" title={a.path ?? a.name}>
+    <span
+      onClick={onOpen}
+      className={`flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)] ${onOpen ? 'cursor-pointer hover:bg-surface-2' : ''}`}
+      title={(a.path ?? a.name) + (onOpen ? `\n${t('att.clickPreview')}` : '')}
+    >
       <IconFile size={16} className="shrink-0 text-ink-2" />
       <span className="min-w-0 truncate">{a.name}</span>
       {onRemove && (
@@ -599,8 +683,15 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
   const streaming = msg.status === 'streaming'
   useTicker(streaming)
   const [copied, setCopied] = useState(false)
+  const [detailsSeq, setDetailsSeq] = useState(0)
+  const detailsRef = useRef<HTMLDivElement>(null)
+  const showDetails = () => {
+    setDetailsSeq((n) => n + 1)
+    detailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  const busy = msg.content || msg.activity.length > 0 || msg.thinking || msg.phase
   const copy = async () => {
-    await window.agentswitch.sys.copy(msg.content)
+    await window.agentswitch.sys.copy(stripMarks(msg.content))
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -622,7 +713,11 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
         <SpeakerLine msg={msg} />
         <div className="mt-2">
           {msg.thinking && <ThinkingCard t={msg.thinking} live={streaming} />}
-          {(msg.activity.length > 0 || (msg.others?.length ?? 0) > 0) && <ActivityBar items={msg.activity} others={msg.others ?? []} live={streaming && !msg.content} />}
+          <div ref={detailsRef} className="scroll-mt-4">
+            {(msg.activity.length > 0 || (msg.others?.length ?? 0) > 0) && (
+              <ActivityBar items={msg.activity} others={msg.others ?? []} live={streaming && !msg.content} openSeq={detailsSeq} />
+            )}
+          </div>
           {msg.content ? (
             <Markdown text={msg.content} />
           ) : streaming ? (
@@ -636,7 +731,16 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
           ) : (
             !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">{t('wb.noText')}</div>
           )}
-          {streaming && msg.content && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-accent" />}
+          {streaming && busy && (
+            <LiveProgress
+              activity={msg.activity}
+              phase={msg.phase}
+              thinking={!!msg.thinking && !msg.thinking.endedAt}
+              tail={msg.tail}
+              startedAt={msg.startedAt}
+              onDetails={msg.activity.length > 0 ? showDetails : undefined}
+            />
+          )}
           <Outputs msg={msg} />
           {(msg.notices ?? []).map((n, i) => (
             <div key={i} className="mt-2 flex items-start gap-2 rounded-xl bg-warn-soft px-3 py-2 text-[12px] leading-relaxed text-warn">
@@ -883,7 +987,8 @@ function Composer({
   projectDir,
   onHeight,
   onSend,
-  onStop
+  onStop,
+  suggestion
 }: {
   driver: ProfileState | null
   driverModel: string | null
@@ -897,6 +1002,8 @@ function Composer({
   /** Resolves false when the user declined to send (the draft comes back). */
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | void
   onStop: () => void
+  /** Next input the model suggested (ghost text; Tab takes it). */
+  suggestion?: string | null
 }) {
   const { toast, navigate } = useApp()
   const { sendKey } = useSettings()
@@ -928,6 +1035,7 @@ function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
+  const ghost = !!suggestion && !text && !atts.length && !mention && !slash
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
 
@@ -1148,6 +1256,27 @@ function Composer({
         return setSlash(null)
       }
     }
+    // suggested next input: Tab takes it as editable text, Esc drops it
+    if (ghost && !composing && !mention && !slash) {
+      if (e.key === 'Tab' && !e.shiftKey) {
+        e.preventDefault()
+        const v = suggestion!
+        setText(v)
+        if (threadId) clearSuggestion(threadId)
+        requestAnimationFrame(() => {
+          const el = ta.current
+          if (!el) return
+          el.focus()
+          el.setSelectionRange(v.length, v.length)
+        })
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (threadId) clearSuggestion(threadId)
+        return
+      }
+    }
     if (e.key !== 'Enter' || composing) return
     const mod = e.metaKey || e.ctrlKey
     // enter: Enter sends, Shift+Enter newline. mod-enter: ⌘+Enter sends, Enter newline.
@@ -1245,7 +1374,7 @@ function Composer({
         )}
 
         <div
-          className={`rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
+          className={`relative rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
             drag ? 'shadow-[0_0_0_2px_rgba(0,122,255,0.6),0_16px_40px_rgba(0,0,0,0.08)]' : ''
           }`}
           onDragOver={(e) => {
@@ -1280,12 +1409,18 @@ function Composer({
             </div>
           )}
 
+          {ghost && (
+            <span className="pointer-events-none absolute top-[17px] right-4 rounded-[5px] px-1.5 py-px font-mono text-[10.5px] leading-4 text-ink-3 shadow-[inset_0_0_0_1px_var(--ring),0_1px_0_var(--ring)]" title={t('wb.tabAccept')}>
+              Tab
+            </span>
+          )}
           <textarea
             ref={ta}
             rows={1}
             value={text}
             onChange={(e) => {
               setText(e.target.value)
+              if (e.target.value && suggestion && threadId) clearSuggestion(threadId)
               // mid-composition text is pinyin, not the query: wait for compositionend
               if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
             }}
@@ -1311,8 +1446,8 @@ function Composer({
                 void addFiles(files)
               }
             }}
-            placeholder={driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
-            className="block max-h-[200px] w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-[22px] text-ink outline-none placeholder:text-ink-3"
+            placeholder={ghost ? suggestion! : driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
+            className={`block max-h-[200px] w-full resize-none bg-transparent pt-4 pb-1 pl-5 text-[15px] leading-[22px] text-ink outline-none placeholder:text-ink-3 ${ghost ? 'pr-16 placeholder:text-ink-3/80' : 'pr-5'}`}
           />
 
           <div className="flex items-center gap-1 px-3 pt-1 pb-3">

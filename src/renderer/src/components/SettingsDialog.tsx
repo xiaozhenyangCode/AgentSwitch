@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { useEscape } from '../lib/escStack'
 import { KINDS, type HistoryEntry, type ProfileKind, type ThemeMode } from '@shared/types'
 import { LOCALES, LOCALE_NAMES, translate, type LanguagePref, type MsgKey } from '@shared/i18n'
 import { useApp, type SettingsSection } from '../state/AppContext'
@@ -270,18 +271,17 @@ function SettingsBody() {
   const hits = useMemo(() => (query ? searchItems(query) : []), [query])
   const searching = !!query
 
+  // first Esc clears the search, the next one closes (a dialog on top gets Esc first)
+  useEscape(() => {
+    if (q) {
+      setQ('')
+      input.current?.focus()
+    } else closeSettings()
+  })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (confirmState) return // a dialog on top owns the keyboard
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        // first Esc clears the search, the next one closes
-        if (q) {
-          setQ('')
-          input.current?.focus()
-        } else closeSettings()
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         input.current?.focus()
         input.current?.select()

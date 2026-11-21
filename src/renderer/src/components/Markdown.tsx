@@ -1,4 +1,6 @@
 import { Children, createContext, isValidElement, memo, useContext, useEffect, useState, type ReactElement, type ReactNode } from 'react'
+import { useEscape } from '../lib/escStack'
+import { stripMarks } from '@shared/markers'
 import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -126,12 +128,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?: string | null }) {
   const [broken, setBroken] = useState(false)
   const [open, setOpen] = useState(false)
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
+  useEscape(() => setOpen(false), open)
   return (
     <>
       <span className={`md-figure${broken ? ' md-figure-broken' : ''}`} onClick={() => !broken && setOpen(true)} title={broken ? t('md.cannotPreview', { path: path ?? src }) : t('md.clickZoom')}>
@@ -203,7 +200,7 @@ const urlTransform = (url: string, key: string) =>
   key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url) ? url : defaultUrlTransform(url)
 
 /** Driver's machine-readable dispatch block is shown as tags on the dispatched replies instead. */
-const visible = (text: string) => text.replace(/```(?:agentswitch|agentmux):dispatch[\s\S]*?(```|$)/g, '').trimEnd()
+const visible = (text: string) => stripMarks(text.replace(/```(?:agentswitch|agentmux):dispatch[\s\S]*?(```|$)/g, '')).trimEnd()
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (

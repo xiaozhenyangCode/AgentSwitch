@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 import { t as tr } from './i18n'
+import { readMarks, stripMarks } from '@shared/markers'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
@@ -50,6 +51,8 @@ export interface Activity {
   target: string
   status?: 'running' | 'done' | 'error'
   detail?: ActivityDetail
+  /** When it started running (live progress line). */
+  startedAt?: number
 }
 
 export interface Thinking {
@@ -73,6 +76,10 @@ export interface AssistantMessage {
   /** Set when this reply was dispatched by the driver rather than asked directly. */
   dispatchedBy: AgentRef | null
   status: 'queued' | 'streaming' | 'done' | 'stopped' | 'error'
+  /** Live only: tool-call arguments still being generated (e.g. a whole file for Write). */
+  phase?: { tool: string; bytes: number; since: number } | null
+  /** Live only: what the latest event was (drives the progress line at the bottom). */
+  tail?: 'text' | 'tool' | 'thinking'
   /** Markdown. */
   content: string
   activity: Activity[]
@@ -123,6 +130,12 @@ export interface Thread {
   handoffFailed?: { to: ProfileId; error: string } | null
   /** Accounts the user chose to switch to without a handoff. */
   handoffSkip?: ProfileId[]
+  /** Renamed by the user: the model's title marker no longer replaces it. */
+  titleLocked?: boolean
+  /** Turn whose title marker may replace the placeholder title (the first one). */
+  titleTurn?: string | null
+  /** Next input the model suggested at the end of its last reply (ghost text in the composer). */
+  suggestedInput?: string | null
 }
 
 interface ChatState {
@@ -260,7 +273,10 @@ export const selectThread = (id: string) => {
   void syncExternal(id)
 }
 export const patchThreadState = (id: string, patch: Partial<Thread>) => patchThread(id, (t) => ({ ...t, ...patch }))
-export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim() }))
+export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim(), titleLocked: true, titleTurn: null }))
+
+/** Drops the composer's suggested next input for a thread. */
+export const clearSuggestion = (id: string) => state.threads.find((t) => t.id === id)?.suggestedInput && patchThread(id, (t) => ({ ...t, suggestedInput: null }))
 export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir' | 'participants' | 'driver'>>) =>
   patchThread(id, (t) => ({ ...t, ...patch, workdir: patch.projectDir !== undefined ? patch.projectDir : t.workdir }))
 
@@ -290,7 +306,7 @@ function transcriptOf(t: Thread): string {
     .map((m) => {
       if (m.role === 'user') return `用户：${m.text}${m.attachments.length ? `（附件 ${m.attachments.map((a) => a.name).join('、')}）` : ''}`
       if (!m.content.trim()) return null
-      const body = plainExcerpt(m.content)
+      const body = plainExcerpt(stripMarks(m.content))
       return `${m.agent.name}：${body.length > TRANSCRIPT_EACH ? body.slice(0, TRANSCRIPT_EACH) + '…' : body}`
     })
     .filter(Boolean)
@@ -365,6 +381,7 @@ function sendNow(threadId: string, input: SendInput): void {
     ...(doc ? { note: tr('chat.handoffSynced', { name: [input.driver, ...input.mentions].find((a) => a.profileId === doc.to)?.name ?? '' }) } : {})
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
+  const wantTitle = firstTurn && mode === 'chat' && !thread.titleLocked && !thread.imported
   const transcript = transcriptOf(thread)
   // first message in a history preview: it becomes a real chat continuing that CLI session
   const promote = thread.preview && thread.imported
@@ -372,7 +389,9 @@ function sendNow(threadId: string, input: SendInput): void {
   patchThread(threadId, (t) => ({
     ...t,
     ...(promote ? { preview: false, imported: { ...t.imported!, importedAt: now() } } : {}),
-    title: firstTurn ? titleFrom(input.text) : t.title,
+    title: firstTurn && !t.titleLocked ? titleFrom(input.text) : t.title,
+    titleTurn: wantTitle ? turnId : null,
+    suggestedInput: null,
     messages: [...t.messages, user],
     activeTurn: turnId,
     pause: null,
@@ -396,7 +415,8 @@ function sendNow(threadId: string, input: SendInput): void {
         mode,
         handoffTo: input.handoffTo?.profileId,
         handoffDoc: doc?.path ?? null,
-        allowMissingProject: !!thread.imported
+        allowMissingProject: !!thread.imported,
+        wantTitle
       })
     )
     .catch((e: unknown) => {
@@ -464,7 +484,9 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => {
         switch (ev.t) {
           case 'text':
-            return { ...m, content: m.content + ev.delta, thinking: endThinking(m.thinking) }
+            return { ...m, content: m.content + ev.delta, thinking: endThinking(m.thinking), phase: null, tail: 'text' }
+          case 'phase':
+            return { ...m, phase: ev.tool ? { tool: ev.tool, bytes: ev.bytes, since: m.phase?.tool === ev.tool ? m.phase.since : now() } : null, thinking: endThinking(m.thinking), tail: 'tool' }
           case 'thinking': {
             const live = m.thinking && !m.thinking.endedAt
             // token count reported after the fact (agy totals, late claude estimates): update, don't reopen
@@ -472,6 +494,7 @@ function onEvent(e: ChatEvent) {
               const base = m.thinking ?? { text: '', tokens: null, startedAt: now(), endedAt: now(), timed: false }
               return { ...m, thinking: { ...base, tokens: ev.tokens } }
             }
+            if (m.tail !== 'thinking') m = { ...m, tail: 'thinking' }
             const th: Thinking = live
               ? m.thinking!
               : { text: m.thinking?.text ? m.thinking.text + '\n\n' : '', tokens: m.thinking?.tokens ?? null, startedAt: m.thinking?.startedAt ?? now(), endedAt: null, timed: true }
@@ -480,8 +503,8 @@ function onEvent(e: ChatEvent) {
           case 'activity': {
             const a: Activity = { id: ev.id, type: ev.type, target: ev.target, status: ev.status, detail: ev.detail }
             const i = ev.id ? m.activity.findIndex((x) => x.id === ev.id) : -1
-            const activity = i < 0 ? [...m.activity, a] : m.activity.map((x, j) => (j === i ? { ...x, ...a, detail: { ...x.detail, ...a.detail } } : x))
-            return { ...m, activity, thinking: endThinking(m.thinking) }
+            const activity = i < 0 ? [...m.activity, { ...a, startedAt: now() }] : m.activity.map((x, j) => (j === i ? { ...x, ...a, detail: { ...x.detail, ...a.detail } } : x))
+            return { ...m, activity, thinking: endThinking(m.thinking), phase: null, tail: 'tool' }
           }
           case 'usage':
             return { ...m, usage: { ...m.usage, ...ev.usage } }
@@ -502,8 +525,19 @@ function onEvent(e: ChatEvent) {
         }
       })
     }
-    case 'step-end':
-      return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
+    case 'step-end': {
+      // hidden title / next-step markers: strip them, then apply to the thread
+      const raw = state.threads.find((t) => t.id === e.threadId)?.messages.find((m) => m.id === e.stepId)
+      const marks = raw?.role === 'assistant' ? readMarks(raw.content) : { title: null, next: null }
+      patchMsg(e.threadId, e.stepId, (m) => ({ ...m, content: stripMarks(m.content), phase: null, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
+      if (marks.title || marks.next)
+        patchThread(e.threadId, (t) => ({
+          ...t,
+          ...(marks.title && !t.titleLocked && t.titleTurn === e.turnId ? { title: marks.title, titleTurn: null } : {}),
+          ...(marks.next ? { suggestedInput: marks.next } : {})
+        }))
+      return
+    }
     case 'handoff':
       return patchThread(e.threadId, (t) =>
         e.ok ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null } : { ...t, handoffFailed: { to: e.to, error: e.error ?? tr('chat.genFailed') } }

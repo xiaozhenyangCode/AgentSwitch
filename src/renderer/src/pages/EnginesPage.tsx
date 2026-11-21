@@ -7,6 +7,7 @@ import { IconDownload, IconGear, Spinner } from '../components/icons'
 import { AccountQuotaCells, QuotaGroupChip, todayBrief } from '../components/Usage'
 import { fmtTokens, tokenSum, useUsage } from '../state/usage'
 import { t } from '../state/i18n'
+import { DialogHeader } from '../components/PageDialog'
 
 /** macOS card material: white, hairline border, barely-there shadow. */
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
@@ -36,23 +37,21 @@ const alertOf = (s: ProfileState['status'] | 'login'): { label: string; cls: str
     uninstalled: { label: t('status.uninstalled'), cls: 'bg-black/[0.05] text-ink-3' }
   })[s as 'login']
 
-export function EnginesPage() {
+export function EnginesPage({ onClose }: { onClose: () => void }) {
   const { profiles, loaded } = useApp()
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="drag h-14" />
-      <div className="mx-auto max-w-4xl px-10 pb-16">
-        <h1 className="text-[26px] leading-tight font-semibold tracking-tight text-ink">{t('eng.title')}</h1>
-        <p className="mt-2 text-[13px] leading-relaxed text-ink-3">{t('eng.desc')}</p>
+    <>
+      <DialogHeader title={t('eng.title')} desc={t('eng.desc')} onClose={onClose} />
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-10">
         {loaded && (
-          <div className="mt-7 space-y-5">
+          <div className="space-y-5">
             {KINDS.map((k) => (
               <EngineGroup key={k} kind={k} accounts={profiles.filter((p) => p.kind === k)} />
             ))}
           </div>
         )}
       </div>
-    </div>
+    </>
   )
 }
 

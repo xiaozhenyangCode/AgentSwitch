@@ -10,6 +10,7 @@ import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuo
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
+import { stripMarks } from '@shared/markers'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -447,7 +448,8 @@ export class Orchestrator {
       parts.push('## 本轮前序步骤的结果')
       for (const s of prev) {
         const c = getConfig(s.profileId)
-        const body = s.text.length > PREV_STEP_CHARS ? s.text.slice(0, PREV_STEP_CHARS) + `\n…（已截断，完整内容见 ${rel(join(turn.runDir, `step-${s.n}.md`))}）` : s.text
+        const txt = stripMarks(s.text)
+        const body = txt.length > PREV_STEP_CHARS ? txt.slice(0, PREV_STEP_CHARS) + `\n…（已截断，完整内容见 ${rel(join(turn.runDir, `step-${s.n}.md`))}）` : txt
         parts.push(`### 第 ${s.n} 步 · ${c.name}（${modelText(c, s.model)}）${s.task && s.kind !== 'own' ? `：${s.task}` : ''}`, body || '（无文字输出）')
         if (s.outputs.length) parts.push('产出文件：', ...s.outputs.map((p) => `- ${rel(p)}`))
         parts.push('')
@@ -464,6 +466,15 @@ export class Orchestrator {
       )
     else parts.push('## 用户原始消息', turn.req.text, '', '## 你的任务', step.task)
     if (step.feedback) parts.push('', `## 验收打回意见（第 ${step.retry} 次重做）`, step.feedback, '请据此修改你的产出。')
+    // replies the user reads as the answer: hidden title / next-step markers (the UI strips them)
+    if (step.kind === 'own' || step.kind === 'summary')
+      parts.push(
+        '',
+        '## 回复末尾的隐藏标记（界面会自动隐藏，正文中不要提及）',
+        '在回复的最后另起一行输出（如果本条回复输出了 agentswitch:dispatch 调度代码块，则不要输出这些标记）：',
+        ...(turn.req.wantTitle ? ['<!-- agentswitch:title:对话标题 -->（概括本次对话主题，6–18 个字，与用户语言一致，不加引号）'] : []),
+        '<!-- agentswitch:next:建议用户下一步发送的一句话 -->（可选：站在用户角度，结合任务完成情况给出自然、简洁、可直接发送的下一步指令或追问；没有合适建议就省略这一行）'
+      )
     if (step.review)
       parts.push(
         '',
@@ -574,7 +585,7 @@ export class Orchestrator {
     }
 
     try {
-      writeFileSync(join(turn.runDir, `step-${step.n}.md`), step.text)
+      writeFileSync(join(turn.runDir, `step-${step.n}.md`), stripMarks(step.text))
       writeFileSync(join(turn.runDir, `step-${step.n}.files.json`), JSON.stringify(step.outputs, null, 2))
     } catch {
       /* ignore */
@@ -601,7 +612,7 @@ export class Orchestrator {
         const dir = join(turn.cwd, '.agentswitch', 'handoffs')
         mkdirSync(dir, { recursive: true })
         const file = join(dir, `${turn.req.turnId.replace(/[^\w-]/g, '')}.md`)
-        writeFileSync(file, step.text.trim() + '\n')
+        writeFileSync(file, stripMarks(step.text).trim() + '\n')
         this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: file, to, ok: true })
       } catch (e) {
         this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to, ok: false, error: String(e) })

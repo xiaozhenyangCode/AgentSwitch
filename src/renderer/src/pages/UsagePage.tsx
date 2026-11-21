@@ -1,27 +1,15 @@
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import { RefreshUsage, UsageView } from '../components/Usage'
+import { DialogHeader } from '../components/PageDialog'
 
 /** 用量限额: overview, per-account quota windows and a per-account usage table. */
-export function UsagePage() {
+export function UsagePage({ onClose }: { onClose: () => void }) {
   const { loaded } = useApp()
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="drag h-14" />
-      <div className="mx-auto max-w-4xl px-10 pb-16">
-        <div className="flex items-center gap-4">
-          <h1 className="flex-1 text-[26px] leading-tight font-semibold tracking-tight text-ink">{t('usage.title')}</h1>
-          <div className="no-drag">
-            <RefreshUsage />
-          </div>
-        </div>
-        <p className="mt-2 text-[13px] leading-relaxed text-ink-3">{t('usage.desc')}</p>
-        {loaded && (
-          <div className="mt-7">
-            <UsageView />
-          </div>
-        )}
-      </div>
-    </div>
+    <>
+      <DialogHeader title={t('usage.title')} desc={t('usage.desc')} actions={<RefreshUsage />} onClose={onClose} />
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-10">{loaded && <UsageView />}</div>
+    </>
   )
 }

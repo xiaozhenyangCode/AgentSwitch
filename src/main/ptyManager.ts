@@ -34,6 +34,7 @@ interface Buffers {
   urls: Set<string>
   scanTimer: NodeJS.Timeout | null
   rateLimited: boolean
+  cwd: string | null
 }
 
 export interface PtyEvents {
@@ -54,7 +55,7 @@ export class PtyManager {
   private buf(id: SessionId): Buffers {
     let b = this.buffers.get(id)
     if (!b) {
-      b = { lastMode: null, raw: '', seq: 0, tail: '', urls: new Set(), scanTimer: null, rateLimited: false }
+      b = { lastMode: null, raw: '', seq: 0, tail: '', urls: new Set(), scanTimer: null, rateLimited: false, cwd: null }
       this.buffers.set(id, b)
     }
     return b
@@ -69,7 +70,7 @@ export class PtyManager {
   list(label: (id: SessionId) => string): SessionInfo[] {
     return [...this.buffers.entries()]
       .filter(([id, b]) => this.sessions.get(id)?.alive || b.raw.length > 0)
-      .map(([id, b]) => ({ sessionId: id, mode: b.lastMode, alive: !!this.sessions.get(id)?.alive, label: label(id) }))
+      .map(([id, b]) => ({ sessionId: id, mode: b.lastMode, alive: !!this.sessions.get(id)?.alive, label: label(id), cwd: b.cwd }))
   }
 
   /** Kill and drop all scrollback for a session (account deleted). */
@@ -78,6 +79,7 @@ export class PtyManager {
     const b = this.buffers.get(id)
     if (b?.scanTimer) clearTimeout(b.scanTimer)
     this.buffers.delete(id)
+    this.events.onStateChange(id)
   }
 
   /** Appends text to a log-only session (e.g. `run:<account>` for chat runs). */
@@ -101,6 +103,7 @@ export class PtyManager {
     const b = this.buf(id)
     b.rateLimited = false
     b.lastMode = mode
+    b.cwd = spec.cwd
     b.tail = ''
     b.urls.clear()
 
@@ -110,7 +113,8 @@ export class PtyManager {
         ? `\x1b[38;5;244m   env: ${Object.entries(spec.injected)
             .map(([k, v]) => `${k}=${v}`)
             .join('  ')}\x1b[0m\r\n`
-        : `\x1b[38;5;244m   env: (real HOME, no isolation)\x1b[0m\r\n`)
+        : `\x1b[38;5;244m   env: (real HOME, no isolation)\x1b[0m\r\n`) +
+      `\x1b[38;5;244m   cwd: ${spec.cwd}\x1b[0m\r\n`
     this.emitData(id, banner, false)
 
     let proc: IPty

@@ -290,7 +290,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
     )
   }
   return (
-    <Modal onClose={() => undefined} width={500}>
+    <Modal onClose={() => undefined} width={500} escClose={false}>
       {body}
     </Modal>
   )

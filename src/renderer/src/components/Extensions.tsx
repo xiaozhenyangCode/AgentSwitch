@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEscape } from '../lib/escStack'
 import type { MsgKey } from '@shared/i18n'
 import type { ExtFileText, ExtOverview, ExtSource, McpServer, ProfileKind, ProfileState, RuleScope, SkillItem } from '@shared/types'
 import { pinnedFirst, togglePin, usePins } from '../state/extensions'
@@ -493,19 +494,10 @@ export function ExtensionsPanel({
   useEffect(() => {
     input.current?.focus()
     const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose()
-    const k = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      if (input.current && input.current.value) setQuery('')
-      else onClose()
-    }
     window.addEventListener('mousedown', h)
-    window.addEventListener('keydown', k)
-    return () => {
-      window.removeEventListener('mousedown', h)
-      window.removeEventListener('keydown', k)
-    }
+    return () => window.removeEventListener('mousedown', h)
   }, [onClose])
+  useEscape(() => (input.current?.value ? setQuery('') : onClose()))
 
   const c = counts(data)
   const n: Record<TabId, number> = c

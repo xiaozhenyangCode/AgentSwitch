@@ -5,6 +5,10 @@ import { dims, terminals } from '../lib/terminals'
 import { XtermView } from './XtermView'
 import { IconTerminal, IconX } from './icons'
 import { t } from '../state/i18n'
+import { activeThread, useChat } from '../state/chat'
+
+/** /Users/name/x -> ~/x (display only). */
+const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
 
 const testPresets = (): { label: string; cmd: string }[] => [
   {
@@ -30,6 +34,8 @@ export function DebugDrawer() {
   const { drawer, closeDrawer, setDrawerSession, toast, profiles, byId } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const known = useRef(new Set<SessionId>())
+  // shells open in the current chat's project folder (home when it has none)
+  const projectDir = activeThread(useChat())?.projectDir ?? null
 
   const load = useCallback(() => {
     void window.agentswitch.pty.sessions().then((list) => {
@@ -68,10 +74,24 @@ export function DebugDrawer() {
   const start = async (profileId: ProfileId, mode: 'shell' | 'test', command?: string) => {
     try {
       setDrawerSession(profileId)
-      await window.agentswitch.pty.start({ profileId, mode, command, ...dims(profileId) })
+      await window.agentswitch.pty.start({ profileId, mode, command, cwd: projectDir, ...dims(profileId) })
       requestAnimationFrame(() => terminals.get(profileId)?.focus())
     } catch (e) {
       toast({ kind: 'error', title: t('dbg.startFailed'), desc: String(e) })
+    }
+  }
+
+  /** Closes a tab: ends its process, drops its scrollback, moves to the neighbouring tab. */
+  const remove = async (id: SessionId) => {
+    const i = sessions.findIndex((s) => s.sessionId === id)
+    const rest = sessions.filter((s) => s.sessionId !== id)
+    if (id === active) setDrawerSession(rest[Math.min(i, rest.length - 1)]?.sessionId ?? null)
+    known.current.delete(id)
+    setSessions(rest)
+    try {
+      await window.agentswitch.pty.forget(id)
+    } finally {
+      load()
     }
   }
 
@@ -94,22 +114,43 @@ export function DebugDrawer() {
         {/* tabs: scroll horizontally, never squeeze the toolbar */}
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [&::-webkit-scrollbar]:hidden">
           {sessions.map((s) => (
-            <button
+            <div
               key={s.sessionId}
+              role="tab"
               onClick={() => setDrawerSession(s.sessionId)}
-              className={`flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[12px] whitespace-nowrap transition-colors ${
+              onAuxClick={(e) => e.button === 1 && void remove(s.sessionId)}
+              className={`group flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-md pr-1 pl-2.5 text-[12px] whitespace-nowrap transition-colors ${
                 s.sessionId === active ? 'bg-white/[0.12] text-white' : 'text-white/50 hover:text-white/85'
               }`}
-              title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? t('dbg.alive') : t('dbg.ended')}`}
+              title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? t('dbg.alive') : t('dbg.ended')}${s.cwd ? `\n${s.cwd}` : ''}`}
             >
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-green' : 'bg-white/25'}`} />
               {s.label}
-            </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void remove(s.sessionId)
+                }}
+                className={`grid h-4 w-4 place-items-center rounded text-white/50 transition-opacity hover:bg-white/15 hover:text-white ${
+                  s.sessionId === active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
+                title={s.alive ? t('dbg.closeRunning') : t('dbg.closeTab')}
+                aria-label={t('dbg.closeTab')}
+              >
+                <IconX size={10} />
+              </button>
+            </div>
           ))}
         </div>
 
         {/* developer tools; fixed width, never truncated */}
         <div className="flex shrink-0 items-center gap-1">
+          <span
+            className="max-w-[220px] shrink truncate font-mono text-[11px] text-white/40"
+            title={activeInfo?.cwd ? t('dbg.cwd', { path: activeInfo.cwd }) : t('dbg.newShellCwd', { path: projectDir ?? '~' })}
+          >
+            {activeInfo?.cwd ? tilde(activeInfo.cwd) : tilde(projectDir ?? '~')}
+          </span>
           <select
             className={darkSelect}
             value=""
