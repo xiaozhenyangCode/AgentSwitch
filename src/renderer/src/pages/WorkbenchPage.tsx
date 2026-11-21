@@ -78,6 +78,29 @@ const fullTime = (ts: number) => {
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+const INPUT_HIST_KEY = 'agentswitch.inputHistory.v1'
+const INPUT_HIST_MAX = 100
+function loadInputHistory(): string[] {
+  try {
+    const arr = JSON.parse(localStorage.getItem(INPUT_HIST_KEY) ?? '[]')
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
+  } catch {
+    return []
+  }
+}
+function pushInputHistory(entry: string): void {
+  const s = entry.trim()
+  if (!s) return
+  const arr = loadInputHistory()
+  if (arr[arr.length - 1] === s) return
+  arr.push(s)
+  try {
+    localStorage.setItem(INPUT_HIST_KEY, JSON.stringify(arr.slice(-INPUT_HIST_MAX)))
+  } catch {
+    /* ignore storage quota */
+  }
+}
+
 const pill =
   'flex h-9 items-center gap-2 rounded-full bg-surface px-4 text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-surface-2 active:scale-[0.98]'
 const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
@@ -174,6 +197,16 @@ export function WorkbenchPage() {
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const messages = useMemo(() => threadMessages(thread), [thread])
+  /** Text-only sent prompts for ↑/↓ recall: current thread's user messages, or recent global prompts in a new chat. */
+  const inputHistory = useMemo(() => {
+    const out: string[] = []
+    for (const m of messages) {
+      if (m.role !== 'user') continue
+      const s = m.text.trim()
+      if (s && out[out.length - 1] !== s) out.push(s)
+    }
+    return out.length ? out : loadInputHistory()
+  }, [messages])
   // the newest reply starts expanded; older long replies start folded
   const lastReplyId = useMemo(() => [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null, [messages])
   // imported history is not persisted: re-read it from the CLI files when the thread opens
@@ -387,6 +420,7 @@ export function WorkbenchPage() {
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
+          history={inputHistory}
           footer={
             <ProjectBar
               dir={ctx.projectDir}
@@ -1066,6 +1100,7 @@ function Composer({
   onSend,
   onStop,
   suggestion,
+  history,
   footer
 }: {
   driver: ProfileState | null
@@ -1082,6 +1117,8 @@ function Composer({
   onStop: () => void
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
+  /** Text-only sent history (oldest -> newest) for ↑/↓ recall. */
+  history: string[]
   /** Context line under the input card (project folder). */
   footer?: ReactNode
 }) {
@@ -1117,6 +1154,8 @@ function Composer({
   }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
   const mirror = useRef<HTMLDivElement>(null)
+  /** Active ↑/↓ history cursor (`idx` into `history`, plus the unsent draft to restore on ↓). */
+  const histRef = useRef<{ idx: number; saved: string } | null>(null)
   // per-conversation drafts: park the leaving chat's input, bring back the target's
   const live = useRef({ key: draftKey, text, atts })
   live.current.text = text
@@ -1127,6 +1166,7 @@ function Composer({
     saveComposerDraft(cur.key, cur.text, cur.atts)
     const d = composerDraft(draftKey)
     cur.key = draftKey
+    histRef.current = null
     setText(d?.text ?? '')
     setAtts(d?.atts ?? [])
     setMention(null)
@@ -1306,7 +1346,10 @@ function Composer({
       })
     const sentText = text
     const sentAtts = atts
-    const r = onSend(text.trim(), atts)
+    const trimmed = text.trim()
+    if (trimmed) pushInputHistory(trimmed)
+    histRef.current = null
+    const r = onSend(trimmed, atts)
     clearComposerDraft(draftKey)
     setText('')
     setAtts([])
@@ -1384,6 +1427,54 @@ function Composer({
         e.preventDefault()
         if (threadId) clearSuggestion(threadId)
         return
+      }
+    }
+    // ↑/↓ input history recall (text only; preserves multiline caret movement when editing)
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !composing && !mention && !slash && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && history.length > 0) {
+      const el = e.currentTarget
+      if (el.selectionStart === el.selectionEnd) {
+        const cur = histRef.current
+        const browsingUnedited = cur !== null && cur.idx < history.length && text === history[cur.idx]
+        const setAndFocusEnd = (val: string) => {
+          setText(val)
+          requestAnimationFrame(() => {
+            const box = ta.current
+            if (!box) return
+            box.focus()
+            box.setSelectionRange(val.length, val.length)
+          })
+        }
+        if (e.key === 'ArrowUp') {
+          const onFirstLine = !el.value.slice(0, el.selectionStart).includes('\n')
+          if (browsingUnedited || onFirstLine) {
+            e.preventDefault()
+            if (cur === null) {
+              const idx = history.length - 1
+              histRef.current = { idx, saved: text }
+              setAndFocusEnd(history[idx])
+            } else if (cur.idx > 0) {
+              const idx = cur.idx - 1
+              histRef.current = { idx, saved: cur.saved }
+              setAndFocusEnd(history[idx])
+            }
+            return
+          }
+        } else if (cur !== null) {
+          const onLastLine = !el.value.slice(el.selectionEnd).includes('\n')
+          if (browsingUnedited || onLastLine) {
+            e.preventDefault()
+            if (cur.idx + 1 < history.length) {
+              const idx = cur.idx + 1
+              histRef.current = { idx, saved: cur.saved }
+              setAndFocusEnd(history[idx])
+            } else {
+              const saved = cur.saved
+              histRef.current = null
+              setAndFocusEnd(saved)
+            }
+            return
+          }
+        }
       }
     }
     if (e.key !== 'Enter' || composing) return
@@ -1537,6 +1628,7 @@ function Composer({
               onScroll={syncMirror}
               value={text}
               onChange={(e) => {
+                histRef.current = null
                 setText(e.target.value)
                 if (e.target.value && suggestion && threadId) clearSuggestion(threadId)
                 // mid-composition text is pinyin, not the query: wait for compositionend
