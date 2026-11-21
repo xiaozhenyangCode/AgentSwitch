@@ -151,16 +151,8 @@ const endThinking = (t: Thinking | null): Thinking | null => (t && !t.endedAt ? 
 function load(): ChatState {
   try {
     const v = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as ChatState
-    // a reload loses the live event stream: settle anything that was in flight
-    for (const t of v.threads) {
-      t.activeTurn = null
-      t.pause = null
-      for (const m of t.messages)
-        if (m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')) {
-          m.status = 'stopped'
-          m.endedAt = m.endedAt ?? (m.startedAt ? now() : null)
-        }
-    }
+    // in-flight turns stay as they were until reattach() asks the main process which still run
+    for (const t of v.threads) t.pause = null
     // earlier versions turned every viewed history entry into a chat: drop the ones never written to
     const viewedOnly = v.threads.filter((t) => t.imported && t.messages.length === 0)
     if (viewedOnly.length) {
@@ -576,6 +568,39 @@ function onEvent(e: ChatEvent) {
 }
 
 window.agentswitch.chat.onEvent(onEvent)
+
+/**
+ * A window reload (incl. dev hot reload) loses the event stream but not the runs in the main
+ * process. Re-attach to the turns still running — the composer keeps its stop button and the
+ * live reply keeps streaming — and settle only what really ended meanwhile.
+ */
+async function reattach() {
+  const loaded = new Map(state.threads.filter((t) => t.activeTurn).map((t) => [t.id, t.activeTurn!]))
+  const inflight = (m: Message) => m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')
+  if (!loaded.size && !state.threads.some((t) => t.messages.some(inflight))) return
+  const live = await window.agentswitch.chat.active().catch(() => [])
+  const byThread = new Map(live.map((x) => [x.threadId, x]))
+  set({
+    ...state,
+    threads: state.threads.map((t) => {
+      const run = byThread.get(t.id)
+      const turnId = run && (!t.activeTurn || t.activeTurn === run.turnId) ? run.turnId : null
+      // a turn started after this window loaded is not ours to settle
+      if (t.activeTurn && t.activeTurn !== loaded.get(t.id) && t.activeTurn !== turnId) return t
+      if (!turnId && !t.activeTurn && !t.messages.some(inflight)) return t
+      return {
+        ...t,
+        activeTurn: turnId,
+        messages: t.messages.map((m) => {
+          if (m.role !== 'assistant' || !inflight(m)) return m
+          if (turnId && m.turnId === turnId && (m.status === 'queued' || run!.running.includes(m.id))) return m
+          return { ...m, status: 'stopped' as const, endedAt: m.endedAt ?? (m.startedAt ? now() : null), thinking: endThinking(m.thinking) }
+        })
+      }
+    })
+  })
+}
+void reattach()
 
 const titleFrom = (text: string) => {
   const t = text

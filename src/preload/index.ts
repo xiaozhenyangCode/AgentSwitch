@@ -85,6 +85,8 @@ const api = {
   chat: {
     send: (req: RunRequest): Promise<void> => ipcRenderer.invoke(IPC.chatSend, req),
     stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
+    /** Turns the main process is still running (after a window reload). */
+    active: (): Promise<{ threadId: string; turnId: string; running: string[] }[]> => ipcRenderer.invoke(IPC.chatActive),
     resume: (threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): Promise<void> =>
       ipcRenderer.invoke(IPC.chatResume, threadId, turnId, action),
     onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb),

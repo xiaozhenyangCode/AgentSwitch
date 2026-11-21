@@ -293,6 +293,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.historyImport, (_e, threadId: unknown, profileId: unknown, nativeId: unknown) => {
     if (typeof threadId === 'string' && typeof nativeId === 'string' && hasProfile(profileId)) importSession(threadId, profileId, nativeId)
   })
+  ipcMain.handle(IPC.chatActive, () => orchestrator.active())
   ipcMain.handle(IPC.chatStop, (_e, threadId: unknown) => typeof threadId === 'string' && orchestrator.stop(threadId))
   ipcMain.handle(IPC.chatResume, (_e, threadId: unknown, turnId: unknown, action: unknown) => {
     if (typeof threadId === 'string' && typeof turnId === 'string' && (action === 'retry' || action === 'skip' || action === 'stop'))

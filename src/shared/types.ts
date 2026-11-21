@@ -442,6 +442,7 @@ export const IPC = {
   attachRead: 'attach:read',
   chatSend: 'chat:send',
   chatStop: 'chat:stop',
+  chatActive: 'chat:active',
   chatResume: 'chat:resume',
   chatEvent: 'chat:event',
   chatExportHandoff: 'chat:exportHandoff',

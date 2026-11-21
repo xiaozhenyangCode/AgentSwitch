@@ -311,6 +311,11 @@ export class Orchestrator {
     void this.next(turn)
   }
 
+  /** Turns still in flight (a reloaded window re-attaches to them instead of marking them stopped). */
+  active(): { threadId: string; turnId: string; running: string[] }[] {
+    return [...this.turns.values()].map((t) => ({ threadId: t.req.threadId, turnId: t.req.turnId, running: t.steps.filter((s) => s.status === 'running').map((s) => s.id) }))
+  }
+
   stop(threadId: string): void {
     const turn = this.turns.get(threadId)
     if (!turn) return
