@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { SessionId, SessionInfo } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { terminals } from '../lib/terminals'
@@ -12,6 +12,36 @@ import { useDraft } from '../state/draft'
 const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
 
 export const DRAWER_HEIGHT = 340
+const DRAWER_MIN = 180
+const DRAWER_KEY = 'agentswitch.drawer.height'
+const drawerMax = () => Math.max(DRAWER_MIN + 120, Math.min(720, Math.round(window.innerHeight * 0.72)))
+const clampHeight = (h: number) => Math.round(Math.min(drawerMax(), Math.max(DRAWER_MIN, h)))
+
+// Shared drawer height + dragging state so App.tsx's paddingBottom animates in lockstep with the drawer
+interface DrawerLayout {
+  height: number
+  dragging: boolean
+}
+let drawerLayout: DrawerLayout = {
+  height: clampHeight(Number(localStorage.getItem(DRAWER_KEY)) || DRAWER_HEIGHT),
+  dragging: false
+}
+const drawerListeners = new Set<() => void>()
+const emitLayout = () => drawerListeners.forEach((l) => l())
+function setDrawerLayout(patch: Partial<DrawerLayout>) {
+  drawerLayout = { ...drawerLayout, ...patch }
+  if (patch.height !== undefined) localStorage.setItem(DRAWER_KEY, String(drawerLayout.height))
+  emitLayout()
+}
+export function useDrawerLayout(): DrawerLayout {
+  return useSyncExternalStore(
+    (cb) => {
+      drawerListeners.add(cb)
+      return () => drawerListeners.delete(cb)
+    },
+    () => drawerLayout
+  )
+}
 
 /**
  * Bottom slide-out drawer with raw xterm sessions.
@@ -105,18 +135,54 @@ export function DebugDrawer() {
     }
   }
 
+  const { height, dragging } = useDrawerLayout()
+  const onResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    const startY = e.clientY
+    const startH = drawerLayout.height
+    const prevCursor = document.body.style.cursor
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+    setDrawerLayout({ dragging: true })
+    const move = (ev: PointerEvent) => setDrawerLayout({ height: clampHeight(startH + (startY - ev.clientY)) })
+    const up = () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = ''
+      setDrawerLayout({ dragging: false })
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
+  }, [])
+
   const chip =
     'h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors'
 
   return (
     <div
-      className="dark-scroll absolute inset-x-3 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-[14px] bg-[#1C1C1E] shadow-[0_-1px_0_rgba(0,0,0,0.08),0_-16px_48px_rgba(0,0,0,0.18)] transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
+      aria-hidden={!drawer.open}
+      className={`dark-scroll absolute inset-x-3 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-[14px] bg-[#1C1C1E] shadow-[0_-1px_0_rgba(0,0,0,0.08),0_-16px_48px_rgba(0,0,0,0.18)] ${
+        dragging ? '' : 'transition-[transform,opacity] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+      } ${drawer.open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
       style={{
-        height: DRAWER_HEIGHT,
-        transform: drawer.open ? 'translateY(0)' : 'translateY(104%)',
-        visibility: drawer.open ? 'visible' : 'hidden'
+        height,
+        transform: drawer.open ? 'translateY(0)' : 'translateY(100%)'
       }}
     >
+      {/* top drag-to-resize handle (double-click resets height) */}
+      <div
+        className="group absolute inset-x-0 top-0 z-20 h-[7px] cursor-row-resize"
+        onPointerDown={onResize}
+        onDoubleClick={() => setDrawerLayout({ height: DRAWER_HEIGHT })}
+      >
+        <div className="mx-auto h-[2px] w-full bg-transparent transition-colors duration-150 group-hover:bg-accent/60 group-active:bg-accent" />
+      </div>
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-[#2C2C2E] px-3">
         <span className="shrink-0 font-mono text-[12px] font-medium text-white/50">&gt;_ {t('nav.debugLog')}</span>
 

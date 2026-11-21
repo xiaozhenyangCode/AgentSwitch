@@ -445,7 +445,14 @@ export function WorkbenchPage() {
               </div>
             ) : (
               <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
-                <IconArrowRight size={15} className="shrink-0 text-accent" />
+                <button
+                  onClick={() => skipHandoff(thread!.id, driverP.id)}
+                  className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                  title={t('common.close')}
+                  aria-label={t('common.close')}
+                >
+                  <IconX size={14} />
+                </button>
                 <span className="min-w-0 flex-1">
                   {tNode('wb.switchNeedsSync', { name: <span className="font-semibold">{driverP.name}</span> })}
                   {handoffFailed && <span className="block text-[12px] text-warn">{t('wb.handoffFailed', { name: srcP?.name ?? t('wb.origAccount'), suffix: thread!.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}</span>}

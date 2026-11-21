@@ -1,6 +1,6 @@
 import { AppProvider, useApp } from './state/AppContext'
 import { NavRail } from './components/NavRail'
-import { DebugDrawer, DRAWER_HEIGHT } from './components/DebugDrawer'
+import { DebugDrawer, useDrawerLayout } from './components/DebugDrawer'
 import { LoginModal } from './components/LoginModal'
 import { Toasts } from './components/Toasts'
 import { ProfileConfigModal } from './components/ProfileConfigModal'
@@ -48,6 +48,7 @@ function MenuBridge() {
 
 function Shell() {
   const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
+  const { height: drawerHeight, dragging: drawerDragging } = useDrawerLayout()
   const configProfile = configId ? byId(configId) : undefined
   const onboarding = useOnboarding()
 
@@ -59,7 +60,12 @@ function Shell() {
         <>
           <NavRail />
           <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas">
-            <div className="min-h-0 flex-1 overflow-clip" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
+            <div
+              className={`min-h-0 flex-1 overflow-clip ${
+                drawerDragging ? '' : 'transition-[padding-bottom] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+              }`}
+              style={{ paddingBottom: drawer.open ? drawerHeight : 0 }}
+            >
               <WorkbenchPage />
             </div>
             <DebugDrawer />
