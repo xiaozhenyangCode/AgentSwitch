@@ -703,5 +703,7 @@ export const en: Dict = {
   'nav.hideSidebar': 'Hide sidebar',
   'nav.showSidebar': 'Show sidebar',
   'menu.toggleSidebar': 'Toggle Sidebar',
-  'set.scToggleSidebar': 'Hide / show sidebar'
+  'set.scToggleSidebar': 'Hide / show sidebar',
+  'dbg.shellTab': 'Terminal {n}',
+  'dbg.newShell': 'New terminal'
 }

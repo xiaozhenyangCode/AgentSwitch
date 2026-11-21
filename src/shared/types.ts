@@ -410,6 +410,7 @@ export const IPC = {
   cliInstall: 'cli:install',
   cliVersion: 'cli:version',
   ptyStart: 'pty:start',
+  ptyShell: 'pty:shell',
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
   ptyKill: 'pty:kill',

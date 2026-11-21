@@ -703,5 +703,7 @@ export const ja: Dict = {
   'nav.hideSidebar': 'サイドバーを非表示',
   'nav.showSidebar': 'サイドバーを表示',
   'menu.toggleSidebar': 'サイドバーを切り替え',
-  'set.scToggleSidebar': 'サイドバーを表示 / 非表示'
+  'set.scToggleSidebar': 'サイドバーを表示 / 非表示',
+  'dbg.shellTab': 'ターミナル {n}',
+  'dbg.newShell': '新しいターミナル'
 }

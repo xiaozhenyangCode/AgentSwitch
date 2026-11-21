@@ -727,5 +727,7 @@ export const zhCN = {
   'nav.hideSidebar': '隐藏侧边栏',
   'nav.showSidebar': '显示侧边栏',
   'menu.toggleSidebar': '切换侧边栏',
-  'set.scToggleSidebar': '隐藏 / 显示侧边栏'
+  'set.scToggleSidebar': '隐藏 / 显示侧边栏',
+  'dbg.shellTab': '终端 {n}',
+  'dbg.newShell': '新建终端'
 } as const

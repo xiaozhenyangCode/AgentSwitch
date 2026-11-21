@@ -1,46 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ProfileId, SessionId, SessionInfo } from '@shared/types'
+import type { SessionId, SessionInfo } from '@shared/types'
 import { useApp } from '../state/AppContext'
-import { dims, terminals } from '../lib/terminals'
+import { terminals } from '../lib/terminals'
 import { XtermView } from './XtermView'
-import { IconTerminal, IconX } from './icons'
+import { IconPlus, IconTerminal, IconX } from './icons'
 import { t } from '../state/i18n'
 import { activeThread, useChat } from '../state/chat'
+import { useDraft } from '../state/draft'
 
 /** /Users/name/x -> ~/x (display only). */
 const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
-
-const testPresets = (): { label: string; cmd: string }[] => [
-  {
-    label: t('dbg.envVars'),
-    cmd: `echo "HOME=$HOME"; echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"; echo "CODEX_HOME=$CODEX_HOME"; echo "AGENTSWITCH_PROFILE=$AGENTSWITCH_PROFILE"; ls -la "$HOME" | head -20`
-  },
-  { label: t('dbg.pathCheck'), cmd: 'echo "$PATH" | tr ":" "\\n"; which node npm pnpm claude gemini codex' },
-  {
-    label: t('dbg.mockOauth'),
-    cmd: `printf 'Open this URL to sign in:\\n\\nhttps://accounts.example.com/o/oauth2/auth?client_id=agentswitch-test&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8085&state=%s\\n\\nWaiting for authorization...\\n' "$RANDOM"; sleep 2`
-  },
-  { label: t('dbg.readTest'), cmd: `read "name?${t('dbg.yourName')}: "; echo "hello, $name"` },
-  { label: t('dbg.colorTest'), cmd: 'for i in {0..15}; do printf "\\e[48;5;${i}m  \\e[0m"; done; echo; tput cols; tput lines' }
-]
 
 export const DRAWER_HEIGHT = 340
 
 /**
  * Bottom slide-out drawer with raw xterm sessions.
- * Tabs appear only for sessions that are running or have produced output.
+ * Opening the drawer with no active sessions spawns a default shell in the current project's
+ * folder (or the system home directory when no project is selected).
  */
 export function DebugDrawer() {
-  const { drawer, closeDrawer, setDrawerSession, toast, profiles, byId } = useApp()
+  const { drawer, closeDrawer, setDrawerSession, toast } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [loaded, setLoaded] = useState(false)
   const known = useRef(new Set<SessionId>())
-  // shells open in the current chat's project folder (home when it has none)
-  const projectDir = activeThread(useChat())?.projectDir ?? null
+  const spawning = useRef(false)
+  // shells open in the current chat/draft's project folder (system home when none)
+  const chat = useChat()
+  const draft = useDraft()
+  const projectDir = (activeThread(chat) ?? draft).projectDir ?? null
 
   const load = useCallback(() => {
     void window.agentswitch.pty.sessions().then((list) => {
       known.current = new Set(list.map((s) => s.sessionId))
       setSessions(list)
+      setLoaded(true)
     })
   }, [])
 
@@ -65,21 +58,38 @@ export function DebugDrawer() {
   const active: SessionId | null =
     drawer.session && sessions.some((s) => s.sessionId === drawer.session) ? drawer.session : (sessions[0]?.sessionId ?? null)
   const activeInfo = sessions.find((s) => s.sessionId === active)
-  const activeProfile: ProfileId | null = active && byId(active) ? active : null
+
+  const openShell = useCallback(async () => {
+    if (spawning.current) return
+    spawning.current = true
+    try {
+      const id = await window.agentswitch.pty.shell(projectDir, 100, 18)
+      setDrawerSession(id)
+      load()
+      requestAnimationFrame(() => terminals.get(id)?.focus())
+    } catch (e) {
+      toast({ kind: 'error', title: t('dbg.startFailed'), desc: String(e) })
+    } finally {
+      spawning.current = false
+    }
+  }, [projectDir, setDrawerSession, load, toast])
+
+  // Auto-open 1 default terminal window in the current project cwd (or system home) when drawer opens empty
+  const autoOpened = useRef(false)
+  useEffect(() => {
+    if (!drawer.open) {
+      autoOpened.current = false
+      return
+    }
+    if (loaded && sessions.length === 0 && !autoOpened.current) {
+      autoOpened.current = true
+      void openShell()
+    }
+  }, [drawer.open, loaded, sessions.length, openShell])
 
   useEffect(() => {
     if (drawer.open && active) requestAnimationFrame(() => terminals.get(active)?.focus())
   }, [drawer.open, active])
-
-  const start = async (profileId: ProfileId, mode: 'shell' | 'test', command?: string) => {
-    try {
-      setDrawerSession(profileId)
-      await window.agentswitch.pty.start({ profileId, mode, command, cwd: projectDir, ...dims(profileId) })
-      requestAnimationFrame(() => terminals.get(profileId)?.focus())
-    } catch (e) {
-      toast({ kind: 'error', title: t('dbg.startFailed'), desc: String(e) })
-    }
-  }
 
   /** Closes a tab: ends its process, drops its scrollback, moves to the neighbouring tab. */
   const remove = async (id: SessionId) => {
@@ -97,7 +107,6 @@ export function DebugDrawer() {
 
   const chip =
     'h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors'
-  const darkSelect = 'h-7 max-w-[150px] shrink-0 rounded-md bg-white/[0.08] px-2 text-[12px] text-white/80 outline-none disabled:opacity-30'
 
   return (
     <div
@@ -108,7 +117,7 @@ export function DebugDrawer() {
         visibility: drawer.open ? 'visible' : 'hidden'
       }}
     >
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-white/[0.06] bg-[#2C2C2E] px-3">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-[#2C2C2E] px-3">
         <span className="shrink-0 font-mono text-[12px] font-medium text-white/50">&gt;_ {t('nav.debugLog')}</span>
 
         {/* tabs: scroll horizontally, never squeeze the toolbar */}
@@ -141,44 +150,24 @@ export function DebugDrawer() {
               </button>
             </div>
           ))}
+          <button
+            onClick={() => void openShell()}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+            title={t('dbg.newShell')}
+            aria-label={t('dbg.newShell')}
+          >
+            <IconPlus size={14} />
+          </button>
         </div>
 
-        {/* developer tools; fixed width, never truncated */}
+        {/* toolbar: fixed width, never truncated */}
         <div className="flex shrink-0 items-center gap-1">
           <span
-            className="max-w-[220px] shrink truncate font-mono text-[11px] text-white/40"
+            className="max-w-[240px] shrink truncate font-mono text-[11px] text-white/40"
             title={activeInfo?.cwd ? t('dbg.cwd', { path: activeInfo.cwd }) : t('dbg.newShellCwd', { path: projectDir ?? '~' })}
           >
             {activeInfo?.cwd ? tilde(activeInfo.cwd) : tilde(projectDir ?? '~')}
           </span>
-          <select
-            className={darkSelect}
-            value=""
-            disabled={profiles.length === 0}
-            onChange={(e) => e.target.value && void start(e.target.value, 'shell')}
-            title={t('dbg.openShellHint')}
-          >
-            <option value="">{t('dbg.openShell')}</option>
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className={darkSelect}
-            value=""
-            disabled={!activeProfile}
-            onChange={(e) => e.target.value && activeProfile && void start(activeProfile, 'test', e.target.value)}
-            title={activeProfile ? t('dbg.testHint') : t('dbg.pickSession')}
-          >
-            <option value="">{t('dbg.testCmd')}</option>
-            {testPresets().map((x) => (
-              <option key={x.label} value={x.cmd}>
-                {x.label}
-              </option>
-            ))}
-          </select>
           <button className={chip} disabled={!activeInfo?.alive} onClick={() => active && void window.agentswitch.pty.kill(active)}>
             {t('dbg.end')}
           </button>

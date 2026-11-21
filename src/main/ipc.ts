@@ -66,7 +66,8 @@ const assertKind = (x: unknown): ProfileKind => {
   if (!KINDS.includes(x as ProfileKind)) throw new Error(`bad kind ${String(x)}`)
   return x as ProfileKind
 }
-const isSessionId = (x: unknown): x is SessionId => hasProfile(x) || (typeof x === 'string' && kindOfInstallSession(x) !== null)
+const isTermSession = (x: unknown): x is SessionId => typeof x === 'string' && /^term:\d+$/.test(x)
+const isSessionId = (x: unknown): x is SessionId => hasProfile(x) || isTermSession(x) || (typeof x === 'string' && kindOfInstallSession(x) !== null)
 const PROFILE_MODES: PtyMode[] = ['login', 'run', 'test', 'shell']
 
 const LOGIN_POLL_MS = 1200
@@ -113,6 +114,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   const sessionLabel = (id: SessionId): string => {
     const k = kindOfInstallSession(id)
     if (k) return t('main.installSession', { name: KIND_LABEL[k] })
+    if (id.startsWith('term:')) return t('dbg.shellTab', { n: id.slice(5) })
     if (id.startsWith('run:')) {
       const pid = id.slice(4)
       return t('main.runSession', { name: hasProfile(pid) ? getConfig(pid).name : pid })
@@ -219,6 +221,22 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }
     ptys.start(id, req.mode, spec, req.cols, req.rows)
     if (req.mode === 'login') watchLogin(id)
+    return id
+  })
+  let termSeq = 0
+  ipcMain.handle(IPC.ptyShell, (_e, cwd: unknown, cols: number, rows: number): SessionId => {
+    const id: SessionId = `term:${++termSeq}`
+    let dir = realHome
+    if (typeof cwd === 'string' && isAbsolute(cwd)) {
+      try {
+        if (statSync(cwd).isDirectory()) dir = cwd
+      } catch {
+        /* moved or deleted: fall back to home */
+      }
+    }
+    const shell = process.env.SHELL || '/bin/zsh'
+    const env = { ...getBaseEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+    ptys.start(id, 'shell', { shell, args: ['-i'], cwd: dir, env, injected: {} }, cols, rows)
     return id
   })
   ipcMain.on(IPC.ptyWrite, (_e, id: unknown, data: string) => isSessionId(id) && ptys.write(id, data))

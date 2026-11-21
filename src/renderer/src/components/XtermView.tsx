@@ -79,6 +79,87 @@ export function XtermView({ sessionId, visible }: Props) {
     const inputSub = term.onData((d) => window.agentswitch.pty.write(sessionId, d))
     const resizeSub = term.onResize(({ cols, rows }) => window.agentswitch.pty.resize(sessionId, cols, rows))
 
+    // Native macOS Terminal + full POSIX/readline/vim/zsh keyboard shortcuts while focused
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true
+      const key = e.key.toLowerCase()
+      const metaOnly = e.metaKey && !e.ctrlKey && !e.altKey
+      const altOnly = e.altKey && !e.metaKey && !e.ctrlKey
+
+      if (metaOnly) {
+        if (key === 'c') {
+          if (term.hasSelection()) {
+            void window.agentswitch.sys.copy(term.getSelection())
+            term.clearSelection()
+            e.preventDefault()
+          }
+          return false
+        }
+        // Let Electron's native Edit -> Paste deliver one paste event to xterm's helper textarea
+        if (key === 'v') return false
+        if (key === 'a') {
+          e.preventDefault()
+          term.selectAll()
+          return false
+        }
+        if (key === 'k') {
+          e.preventDefault()
+          term.clear()
+          return false
+        }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x01')
+          return false
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x05')
+          return false
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x15')
+          return false
+        }
+        // App-level Cmd shortcuts (⌘, / ⌘\ / ⌘N / ⌘Q / ⌘W / ⌘H / ⌘M): let browser/Electron handle
+        return false
+      }
+
+      if (altOnly) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x1bb')
+          return false
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x1bf')
+          return false
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault()
+          window.agentswitch.pty.write(sessionId, '\x1b\x7f')
+          return false
+        }
+      }
+
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && e.key === 'Enter') {
+        e.preventDefault()
+        window.agentswitch.pty.write(sessionId, '\n')
+        return false
+      }
+
+      // All Ctrl+*, Alt+*, Tab, Esc, Arrows, Home/End, PageUp/PageDown, F1-F12 go straight to PTY
+      return true
+    })
+
+    // ⌘K from the Electron menu bar clears this terminal when it holds focus
+    const onClear = () => {
+      if (host.contains(document.activeElement)) term.clear()
+    }
+    window.addEventListener('agentswitch:xterm-clear', onClear)
+
     const ro = new ResizeObserver(() => safeFit())
     ro.observe(host)
 
@@ -91,6 +172,7 @@ export function XtermView({ sessionId, visible }: Props) {
     })
 
     return () => {
+      window.removeEventListener('agentswitch:xterm-clear', onClear)
       terminals.delete(sessionId)
       ro.disconnect()
       offData()

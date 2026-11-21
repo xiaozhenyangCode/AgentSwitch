@@ -32,6 +32,10 @@ function MenuBridge() {
           navigate('workbench')
           if (cmd === 'newThread') start(activeThread(chat)?.projectDir ?? null)
           else if (cmd === 'search') {
+            if (document.activeElement?.closest('.xterm')) {
+              window.dispatchEvent(new Event('agentswitch:xterm-clear'))
+              return
+            }
             setSidebarOpen(true)
             requestAnimationFrame(() => window.dispatchEvent(new Event('agentswitch:focus-search')))
           }

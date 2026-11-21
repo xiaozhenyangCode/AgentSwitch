@@ -107,15 +107,17 @@ export class PtyManager {
     b.tail = ''
     b.urls.clear()
 
-    const banner =
-      `\r\n\x1b[38;5;244m── [${id}] ${mode}: ${spec.shell} ${spec.args.map((a) => JSON.stringify(a)).join(' ')}\x1b[0m\r\n` +
-      (Object.keys(spec.injected).length
-        ? `\x1b[38;5;244m   env: ${Object.entries(spec.injected)
-            .map(([k, v]) => `${k}=${v}`)
-            .join('  ')}\x1b[0m\r\n`
-        : `\x1b[38;5;244m   env: (real HOME, no isolation)\x1b[0m\r\n`) +
-      `\x1b[38;5;244m   cwd: ${spec.cwd}\x1b[0m\r\n`
-    this.emitData(id, banner, false)
+    if (!id.startsWith('term:')) {
+      const banner =
+        `\r\n\x1b[38;5;244m── [${id}] ${mode}: ${spec.shell} ${spec.args.map((a) => JSON.stringify(a)).join(' ')}\x1b[0m\r\n` +
+        (Object.keys(spec.injected).length
+          ? `\x1b[38;5;244m   env: ${Object.entries(spec.injected)
+              .map(([k, v]) => `${k}=${v}`)
+              .join('  ')}\x1b[0m\r\n`
+          : `\x1b[38;5;244m   env: (real HOME, no isolation)\x1b[0m\r\n`) +
+        `\x1b[38;5;244m   cwd: ${spec.cwd}\x1b[0m\r\n`
+      this.emitData(id, banner, false)
+    }
 
     let proc: IPty
     try {

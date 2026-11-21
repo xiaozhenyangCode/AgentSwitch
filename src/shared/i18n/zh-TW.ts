@@ -725,5 +725,7 @@ export const zhTW: Dict = {
   'nav.hideSidebar': '隱藏側邊欄',
   'nav.showSidebar': '顯示側邊欄',
   'menu.toggleSidebar': '切換側邊欄',
-  'set.scToggleSidebar': '隱藏 / 顯示側邊欄'
+  'set.scToggleSidebar': '隱藏 / 顯示側邊欄',
+  'dbg.shellTab': '終端機 {n}',
+  'dbg.newShell': '新增終端機'
 }

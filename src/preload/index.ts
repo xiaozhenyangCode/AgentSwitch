@@ -69,6 +69,7 @@ const api = {
   },
   pty: {
     start: (req: StartPtyRequest): Promise<SessionId> => ipcRenderer.invoke(IPC.ptyStart, req),
+    shell: (cwd: string | null, cols: number, rows: number): Promise<SessionId> => ipcRenderer.invoke(IPC.ptyShell, cwd, cols, rows),
     write: (id: SessionId, data: string): void => ipcRenderer.send(IPC.ptyWrite, id, data),
     resize: (id: SessionId, cols: number, rows: number): void => ipcRenderer.send(IPC.ptyResize, id, cols, rows),
     kill: (id: SessionId): Promise<void> => ipcRenderer.invoke(IPC.ptyKill, id),
