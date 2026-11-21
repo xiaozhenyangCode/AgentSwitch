@@ -24,6 +24,24 @@ export function useUsage(): UsageSnapshot | null {
   )
 }
 
+/** Engines page view (sidebar "今日 …" jumps straight to 'usage'). */
+export type EnginesTab = 'accounts' | 'usage'
+let enginesTab: EnginesTab = 'accounts'
+const tabListeners = new Set<() => void>()
+export const setEnginesTab = (t: EnginesTab) => {
+  enginesTab = t
+  tabListeners.forEach((l) => l())
+}
+export function useEnginesTab(): EnginesTab {
+  return useSyncExternalStore(
+    (cb) => {
+      tabListeners.add(cb)
+      return () => tabListeners.delete(cb)
+    },
+    () => enginesTab
+  )
+}
+
 const PROBE_KEY = 'agentmux.usage.probe'
 export const probeEnabled = () => localStorage.getItem(PROBE_KEY) === '1'
 export const setProbeEnabled = (v: boolean) => localStorage.setItem(PROBE_KEY, v ? '1' : '0')
