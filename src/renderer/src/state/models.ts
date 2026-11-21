@@ -18,7 +18,7 @@ export async function loadModels(id: ProfileId, refresh = false): Promise<ModelL
   loading.add(id)
   notify()
   try {
-    const l = await window.agentmux.models.list(id, refresh)
+    const l = await window.agentswitch.models.list(id, refresh)
     lists.set(id, l)
     return l
   } catch {

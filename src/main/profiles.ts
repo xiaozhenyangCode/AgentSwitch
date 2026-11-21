@@ -76,7 +76,7 @@ const persist = (): void => saveStore(store)
 
 /**
  * First launch: import only setups that already exist on this Mac.
- * Imported accounts point at the user's own dirs; AgentMux never deletes them.
+ * Imported accounts point at the user's own dirs; AgentSwitch never deletes them.
  */
 function detectExisting(): ProfileConfig[] {
   const out: ProfileConfig[] = []
@@ -239,7 +239,7 @@ export function resetProfile(id: ProfileId): ProfileConfig {
   return updateProfile(id, { ...COMMAND_DEFAULTS[p.kind], extraEnv: {} })
 }
 
-/** Removes the account from AgentMux only. Files on disk (incl. ~/.claude etc.) are left untouched. */
+/** Removes the account from AgentSwitch only. Files on disk (incl. ~/.claude etc.) are left untouched. */
 export function removeProfile(id: ProfileId): void {
   store.profiles = store.profiles.filter((p) => p.id !== id)
   persist()
@@ -447,7 +447,7 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
       env.CODEX_HOME = dir
       break
   }
-  env.AGENTMUX_PROFILE = cfg.id
+  env.AGENTSWITCH_PROFILE = cfg.id
   return { ...env, ...cfg.extraEnv }
 }
 

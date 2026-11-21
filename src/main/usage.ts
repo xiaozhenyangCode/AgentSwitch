@@ -11,9 +11,9 @@ import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBina
 /**
  * Per-account token / cost statistics and quota windows.
  *
- *  - runs: usage CLIs reported for AgentMux's own steps (the only source of cost).
+ *  - runs: usage CLIs reported for AgentSwitch's own steps (the only source of cost).
  *  - hist: tokens backfilled from local CLI history (claude: last 30 days, codex: all), per
- *    file and re-read only when the file changed. AgentMux's own sessions are excluded (they
+ *    file and re-read only when the file changed. AgentSwitch's own sessions are excluded (they
  *    are counted as runs); for imported sessions only turns before the import count.
  *  - quota: claude rate_limit_event (seen during runs) and codex rollout token_count
  *    rate_limits. Nothing is invented: accounts without such data have quota = null.
@@ -137,7 +137,7 @@ export function snapshot(): UsageSnapshot {
 
 // ---- live updates from runs -------------------------------------------------------------------
 
-/** One finished AgentMux step: the CLI's own usage report (cost included when the CLI gives it). */
+/** One finished AgentSwitch step: the CLI's own usage report (cost included when the CLI gives it). */
 export function recordRun(profileId: ProfileId, u: Usage | null): void {
   const key = dayKey(Date.now())
   const days = (stats.runs[profileId] ??= {})
@@ -450,7 +450,7 @@ export function runBackfill(): Promise<void> {
         }
         await new Promise((r) => setImmediate(r))
       }
-      // sessions that became AgentMux's own (or vanished from the list) no longer count as history
+      // sessions that became AgentSwitch's own (or vanished from the list) no longer count as history
       const listed = new Set(entries.map(pathOf).filter(Boolean))
       for (const p of Object.keys(stats.files)) if (!listed.has(p) && !seen.has(p) && existsSync(p)) delete stats.files[p]
     } finally {

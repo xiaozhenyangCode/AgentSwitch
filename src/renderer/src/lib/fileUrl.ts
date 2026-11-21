@@ -1,10 +1,13 @@
-/** `agentmux-file://f/<base64url(abs path)>` — served read-only by the main process (images in allowed project folders). */
+/** `agentswitch-file://f/<base64url(abs path)>` — served read-only by the main process (images in allowed project folders). */
 export function fileUrl(abs: string): string {
   const bytes = new TextEncoder().encode(abs)
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
-  return 'agentmux-file://f/' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return 'agentswitch-file://f/' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
+
+/** Links saved in the AgentMux era (`agentmux-file://`) -> the current protocol; null for anything else. */
+export const upgradeFileUrl = (src: string): string | null => (/^agentmux-file:\/\//i.test(src) ? 'agentswitch-file://' + src.slice('agentmux-file://'.length) : /^agentswitch-file:\/\//i.test(src) ? src : null)
 
 const join = (base: string, rel: string): string => {
   const parts = base.replace(/\/+$/, '').split('/')
@@ -18,7 +21,7 @@ const join = (base: string, rel: string): string => {
 
 /** Absolute local path for a markdown src (relative to baseDir, absolute, ~ or file://); null for remote/data URLs. */
 export function localPath(src: string, baseDir: string | null, home: string | null): string | null {
-  if (/^(https?:|data:|agentmux-file:|blob:)/i.test(src)) return null
+  if (/^(https?:|data:|agentswitch-file:|agentmux-file:|blob:)/i.test(src)) return null
   let p = src
   try {
     p = decodeURI(src)

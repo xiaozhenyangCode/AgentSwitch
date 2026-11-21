@@ -36,7 +36,7 @@ import {
 } from '../state/chat'
 
 type Ctx = Pick<Thread, 'projectDir' | 'participants' | 'driver'>
-const DRAFT_KEY = 'agentmux.draft.v1'
+const DRAFT_KEY = 'agentswitch.draft.v1'
 
 const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -125,7 +125,7 @@ export function WorkbenchPage() {
     update({ driver: { profileId: id, model }, participants: participants.includes(id) ? participants : [...participants, id] })
 
   const pickProject = async () => {
-    const dir = await window.agentmux.sys.pickProject(ctx.projectDir ?? undefined)
+    const dir = await window.agentswitch.sys.pickProject(ctx.projectDir ?? undefined)
     if (dir) update({ projectDir: dir })
   }
 
@@ -269,7 +269,7 @@ export function WorkbenchPage() {
               <span className="min-w-0 flex-1 truncate">
                 交接文档已就绪，下一条消息会同步给 <span className="font-semibold">{driverP.name}</span>
               </span>
-              <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentmux.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentswitch.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
                 查看文档
               </button>
             </div>
@@ -556,7 +556,7 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
   useTicker(streaming)
   const [copied, setCopied] = useState(false)
   const copy = async () => {
-    await window.agentmux.sys.copy(msg.content)
+    await window.agentswitch.sys.copy(msg.content)
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -645,7 +645,7 @@ function Outputs({ msg }: { msg: AssistantMessage }) {
           {files.slice(0, 12).map((p) => (
             <button
               key={p}
-              onClick={() => void window.agentmux.sys.showInFolder(p)}
+              onClick={() => void window.agentswitch.sys.showInFolder(p)}
               className="flex h-7 max-w-[260px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2.5 text-[12px] text-ink-2 hover:bg-black/[0.07] hover:text-ink"
               title={`${p}\n在 Finder 中显示`}
             >

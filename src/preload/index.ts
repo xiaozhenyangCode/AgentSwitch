@@ -43,7 +43,7 @@ const api = {
     add: (kind: ProfileKind, name?: string): Promise<ProfileId> => ipcRenderer.invoke(IPC.profilesAdd, kind, name),
     update: (id: ProfileId, patch: Partial<ProfileConfig>): Promise<void> => ipcRenderer.invoke(IPC.profilesUpdate, id, patch),
     reset: (id: ProfileId): Promise<void> => ipcRenderer.invoke(IPC.profilesReset, id),
-    /** Removes the account from AgentMux; files on disk are kept. */
+    /** Removes the account from AgentSwitch; files on disk are kept. */
     remove: (id: ProfileId): Promise<void> => ipcRenderer.invoke(IPC.profilesRemove, id),
     envPreview: (id: ProfileId, mode: PtyMode): Promise<EnvPreview> => ipcRenderer.invoke(IPC.profilesEnvPreview, id, mode),
     onLoginSuccess: (cb: (e: LoginSuccessEvent) => void) => subscribe(IPC.loginSuccess, cb)
@@ -89,7 +89,7 @@ const api = {
   history: {
     list: (force = false): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.historyList, force),
     open: (key: string): Promise<HistoryThread & { cwdExists: boolean }> => ipcRenderer.invoke(IPC.historyOpen, key),
-    /** Links an AgentMux thread to the native session so the same account resumes it. */
+    /** Links an AgentSwitch thread to the native session so the same account resumes it. */
     import: (threadId: string, profileId: ProfileId, nativeId: string): Promise<void> => ipcRenderer.invoke(IPC.historyImport, threadId, profileId, nativeId)
   },
   attach: {
@@ -111,6 +111,6 @@ const api = {
   }
 }
 
-export type AgentMuxApi = typeof api
+export type AgentSwitchApi = typeof api
 
-contextBridge.exposeInMainWorld('agentmux', api)
+contextBridge.exposeInMainWorld('agentswitch', api)

@@ -12,7 +12,7 @@ import { realHome } from './shellEnv'
  *   claude: <CLAUDE_CONFIG_DIR>/cache/model-catalog/*-cc.json  (local, written by Claude Code)
  *   codex : $CODEX_HOME/models_cache.json, refreshed via `codex debug models`
  *   agy   : `agy models` (network; tab-separated "id\tname")
- * Fallback chain: live source -> AgentMux cache (userData/models-cache.json) -> static list.
+ * Fallback chain: live source -> AgentSwitch cache (userData/models-cache.json) -> static list.
  * The UI always keeps a free-text "custom model" input as the last resort.
  */
 

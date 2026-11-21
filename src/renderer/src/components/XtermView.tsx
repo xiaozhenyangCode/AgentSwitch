@@ -64,20 +64,20 @@ export function XtermView({ sessionId, visible }: Props) {
     // are not ordered relative to each other, so chunks are deduped by sequence number.
     let replayedSeq: number | null = null
     const early: { data: string; seq: number }[] = []
-    const offData = window.agentmux.pty.onData((e) => {
+    const offData = window.agentswitch.pty.onData((e) => {
       if (e.sessionId !== sessionId) return
       if (replayedSeq === null) early.push(e)
       else if (e.seq > replayedSeq) term.write(e.data)
     })
-    void window.agentmux.pty.buffer(sessionId).then((buf) => {
+    void window.agentswitch.pty.buffer(sessionId).then((buf) => {
       if (buf.data) term.write(buf.data)
       replayedSeq = buf.seq
       for (const e of early) if (e.seq > buf.seq) term.write(e.data)
       early.length = 0
     })
 
-    const inputSub = term.onData((d) => window.agentmux.pty.write(sessionId, d))
-    const resizeSub = term.onResize(({ cols, rows }) => window.agentmux.pty.resize(sessionId, cols, rows))
+    const inputSub = term.onData((d) => window.agentswitch.pty.write(sessionId, d))
+    const resizeSub = term.onResize(({ cols, rows }) => window.agentswitch.pty.resize(sessionId, cols, rows))
 
     const ro = new ResizeObserver(() => safeFit())
     ro.observe(host)
@@ -109,7 +109,7 @@ export function XtermView({ sessionId, visible }: Props) {
         /* ignore */
       }
       const t = termRef.current
-      if (t) window.agentmux.pty.resize(sessionId, t.cols, t.rows)
+      if (t) window.agentswitch.pty.resize(sessionId, t.cols, t.rows)
     })
     return () => cancelAnimationFrame(id)
   }, [visible, sessionId])

@@ -8,7 +8,7 @@ import { KindAvatar, Segmented } from './common'
 import { UsageSummaryButton } from './Usage'
 import { IconEngine, IconFolder, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
 
-const SIDEBAR_KEY = 'agentmux.sidebar.width'
+const SIDEBAR_KEY = 'agentswitch.sidebar.width'
 const SIDEBAR_DEFAULT = 248
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 420
@@ -100,7 +100,7 @@ export function NavRail() {
     let purgeCli = false
     const ok = await confirm({
       title: `删除「${t.title}」？`,
-      message: '会删除这条对话及 AgentMux 为它保存的运行记录（项目里 .agentmux 下的附件副本与产物），不会改动你的项目文件。用量统计会保留。',
+      message: '会删除这条对话及 AgentSwitch 为它保存的运行记录（项目里 .agentswitch 下的附件副本与产物），不会改动你的项目文件。用量统计会保留。',
       confirmLabel: '删除对话',
       destructive: true,
       option: {
@@ -138,14 +138,13 @@ export function NavRail() {
 
       <div className="flex items-center gap-2.5 px-5 pb-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-[9px] bg-gradient-to-b from-[#3A8DFF] to-[#0066D6] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_1px_3px_rgba(0,102,214,0.35)]">
+          {/* switch: two opposing routes */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="6" cy="12" r="2.2" />
-            <circle cx="18" cy="6" r="2.2" />
-            <circle cx="18" cy="18" r="2.2" />
-            <path d="M8.2 11 15.8 7M8.2 13l7.6 4" />
+            <path d="M4.5 8h14.5M15.5 4.5 19 8l-3.5 3.5" />
+            <path d="M19.5 16H5M8.5 12.5 5 16l3.5 3.5" />
           </svg>
         </div>
-        <div className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentMux</div>
+        <div className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentSwitch</div>
       </div>
 
       <div className="px-3 pb-3">
@@ -272,7 +271,7 @@ function HistoryList({ query }: { query: string }) {
   const load = useCallback(async (force: boolean) => {
     setLoading(true)
     try {
-      historyCache = await window.agentmux.history.list(force)
+      historyCache = await window.agentswitch.history.list(force)
       setItems(historyCache)
     } catch (e) {
       toast({ kind: 'error', title: '读取本机历史失败', desc: String(e instanceof Error ? e.message : e) })

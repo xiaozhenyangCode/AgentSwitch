@@ -97,7 +97,7 @@ export interface Thread {
   id: string
   title: string
   projectDir: string | null
-  /** Folder runs actually use (projectDir, or AgentMux's private workspace). */
+  /** Folder runs actually use (projectDir, or AgentSwitch's private workspace). */
   workdir: string | null
   /** Accounts allowed to take part in this thread. */
   participants: ProfileId[]
@@ -129,7 +129,7 @@ interface ChatState {
   activeId: string | null
 }
 
-const LS_KEY = 'agentmux.threads.v2'
+const LS_KEY = 'agentswitch.threads.v2'
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
 const endThinking = (t: Thinking | null): Thinking | null => (t && !t.endedAt ? { ...t, endedAt: now() } : t)
@@ -153,7 +153,7 @@ function load(): ChatState {
       v.threads = v.threads.filter((t) => !viewedOnly.includes(t))
       if (v.activeId && viewedOnly.some((t) => t.id === v.activeId)) v.activeId = v.threads[0]?.id ?? null
       setTimeout(() => {
-        for (const t of viewedOnly) void window.agentmux.chat.deleteThread({ threadId: t.id, projectDir: null, turnIds: [], purgeCli: false }).catch(() => {})
+        for (const t of viewedOnly) void window.agentswitch.chat.deleteThread({ threadId: t.id, projectDir: null, turnIds: [], purgeCli: false }).catch(() => {})
       })
     }
     return v
@@ -202,7 +202,7 @@ export function useChat(): ChatState {
 
 export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
 export const isThreadBusy = (t: Thread | null) => !!t?.activeTurn
-/** History (imported) + AgentMux messages, oldest first. */
+/** History (imported) + AgentSwitch messages, oldest first. */
 export const threadMessages = (t: Thread | null): Message[] => (t ? (t.history?.length ? [...t.history, ...t.messages] : t.messages) : [])
 
 /** Accounts that already hold a CLI session in this thread (they need no handoff). */
@@ -238,17 +238,17 @@ export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir
   patchThread(id, (t) => ({ ...t, ...patch, workdir: patch.projectDir !== undefined ? patch.projectDir : t.workdir }))
 
 /**
- * Removes the chat and AgentMux's files for it (session map, run artefacts). With purgeCli the
+ * Removes the chat and AgentSwitch's files for it (session map, run artefacts). With purgeCli the
  * CLI's own session files go to the Trash as well. Usage statistics are kept.
  */
 export async function deleteThread(id: string, purgeCli = false) {
   const t = state.threads.find((x) => x.id === id)
   if (!t) return null
-  if (t.activeTurn) await window.agentmux.chat.stop(id)
+  if (t.activeTurn) await window.agentswitch.chat.stop(id)
   const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
   const turnIds = [...new Set(t.messages.map((m) => m.turnId).filter(Boolean))]
-  return window.agentmux.chat.deleteThread({ threadId: id, projectDir: t.workdir ?? t.projectDir, turnIds, purgeCli })
+  return window.agentswitch.chat.deleteThread({ threadId: id, projectDir: t.workdir ?? t.projectDir, turnIds, purgeCli })
 }
 
 // ---- sending ---------------------------------------------------------------------------------
@@ -319,7 +319,7 @@ export function send(
   const transcript = transcriptOf(thread)
   // first message in a history preview: it becomes a real chat continuing that CLI session
   const promote = thread.preview && thread.imported
-  const ready = promote ? window.agentmux.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
+  const ready = promote ? window.agentswitch.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
   patchThread(threadId, (t) => ({
     ...t,
     ...(promote ? { preview: false, imported: { ...t.imported!, importedAt: now() } } : {}),
@@ -334,7 +334,7 @@ export function send(
   const attachments: RunAttachment[] = input.attachments.filter((a) => a.path).map((a) => ({ name: a.name, path: a.path!, isImage: a.isImage }))
   ready
     .then(() =>
-      window.agentmux.chat.send({
+      window.agentswitch.chat.send({
         threadId,
         turnId,
         projectDir: input.projectDir,
@@ -361,7 +361,7 @@ export function send(
 }
 
 export function stop(threadId: string) {
-  void window.agentmux.chat.stop(threadId)
+  void window.agentswitch.chat.stop(threadId)
 }
 
 export function resolvePause(threadId: string, action: 'retry' | 'skip' | 'stop') {
@@ -369,7 +369,7 @@ export function resolvePause(threadId: string, action: 'retry' | 'skip' | 'stop'
   if (!t?.pause) return
   const turnId = t.pause.turnId
   patchThread(threadId, (x) => ({ ...x, pause: null }))
-  void window.agentmux.chat.resume(threadId, turnId, action)
+  void window.agentswitch.chat.resume(threadId, turnId, action)
 }
 
 // ---- events from the main process ------------------------------------------------------------
@@ -474,7 +474,7 @@ function onEvent(e: ChatEvent) {
   }
 }
 
-window.agentmux.chat.onEvent(onEvent)
+window.agentswitch.chat.onEvent(onEvent)
 
 const titleFrom = (text: string) => {
   const t = text
@@ -490,7 +490,7 @@ const titleFrom = (text: string) => {
 /** One-line plain-text preview of markdown. */
 export const plainExcerpt = (md: string): string =>
   md
-    .replace(/```agentmux:dispatch[\s\S]*?(```|$)/g, ' ')
+    .replace(/```agentswitch:dispatch[\s\S]*?(```|$)/g, ' ')
     .replace(/```[\s\S]*?(```|$)/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -527,9 +527,9 @@ export async function toAttachment(file: File): Promise<Attachment> {
   const isImage = file.type.startsWith('image/') || IMAGE_RE.test(file.name)
   const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
   const name = file.name || `pasted-${Date.now()}.${ext}`
-  let path = window.agentmux.sys.pathForFile(file) || null
+  let path = window.agentswitch.sys.pathForFile(file) || null
   // pasted images live only in memory: stage a real file so the CLIs can read it
-  if (!path) path = await window.agentmux.attach.stage(name, await file.arrayBuffer()).catch(() => null)
+  if (!path) path = await window.agentswitch.attach.stage(name, await file.arrayBuffer()).catch(() => null)
   return { id: uid(), name, path, size: file.size, isImage, thumb: isImage ? await thumbnail(file) : null }
 }
 
@@ -539,7 +539,7 @@ export async function toAttachment(file: File): Promise<Attachment> {
 export async function exportHandoff(threadId: string, to: AgentRef): Promise<void> {
   const t = state.threads.find((x) => x.id === threadId)
   if (!t) return
-  const lines: string[] = [`# 交接文档（AgentMux 从最近对话导出）`, '', `> 原模型暂不可用，以下是这个对话最近的记录，交给 ${to.name} 继续。`, '']
+  const lines: string[] = [`# 交接文档（AgentSwitch 从最近对话导出）`, '', `> 原模型暂不可用，以下是这个对话最近的记录，交给 ${to.name} 继续。`, '']
   if (t.workdir || t.projectDir) lines.push(`项目目录：${t.workdir ?? t.projectDir}`, '')
   lines.push('## 最近对话', '')
   for (const m of threadMessages(t).slice(-30)) {
@@ -553,7 +553,7 @@ export async function exportHandoff(threadId: string, to: AgentRef): Promise<voi
       lines.push('')
     }
   }
-  const path = await window.agentmux.chat.exportHandoff(threadId, uid() + uid(), t.projectDir, lines.join('\n'))
+  const path = await window.agentswitch.chat.exportHandoff(threadId, uid() + uid(), t.projectDir, lines.join('\n'))
   patchThread(threadId, (x) => ({ ...x, handoff: { to: to.profileId, path, from: '最近对话导出' }, handoffFailed: null }))
 }
 
@@ -600,7 +600,7 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
     if (!existing.history) void loadHistory(existing.id, agent)
     return existing.id
   }
-  const h = await window.agentmux.history.open(entry.key)
+  const h = await window.agentswitch.history.open(entry.key)
   const id = uid()
   const projectDir = h.cwdExists ? entry.cwd : null
   const t: Thread = {
@@ -621,7 +621,7 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
       kind: entry.kind,
       nativeId: entry.nativeId,
       importedAt: Date.now(),
-      notice: [h.notice, entry.cwd && !h.cwdExists ? `原项目目录已不存在（${entry.cwd}），新消息会在 AgentMux 私有工作区运行。` : null].filter(Boolean).join(' ') || null
+      notice: [h.notice, entry.cwd && !h.cwdExists ? `原项目目录已不存在（${entry.cwd}），新消息会在 AgentSwitch 私有工作区运行。` : null].filter(Boolean).join(' ') || null
     },
     history: fromHistory(h, agent),
     preview: true
@@ -636,9 +636,9 @@ export async function loadHistory(threadId: string, agent: AgentRef): Promise<vo
   if (!t?.imported || t.historyState === 'loading') return
   patchThread(threadId, (x) => ({ ...x, historyState: 'loading' }))
   try {
-    const h = await window.agentmux.history.open(t.imported.key)
+    const h = await window.agentswitch.history.open(t.imported.key)
     const cut = t.imported.importedAt
-    // turns the CLI recorded after the import are AgentMux's own messages (already in t.messages)
+    // turns the CLI recorded after the import are AgentSwitch's own messages (already in t.messages)
     const kept = { ...h, messages: h.messages.filter((m) => m.at <= cut) }
     patchThread(threadId, (x) => ({ ...x, history: fromHistory(kept, agent), historyState: undefined }))
   } catch {

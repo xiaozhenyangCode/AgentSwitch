@@ -663,7 +663,7 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
   const wrapped: Emit = (e) => {
     if (e.t === 'rate_limited') rateLimited = true
     if (e.t === 'other_event' && ++others > 200) {
-      if (others === 201) emit({ t: 'other_event', kind: 'agentmux', payload: '其他事件超过 200 条，后续只记录在调试日志中' })
+      if (others === 201) emit({ t: 'other_event', kind: 'agentswitch', payload: '其他事件超过 200 条，后续只记录在调试日志中' })
       return
     }
     emit(e)

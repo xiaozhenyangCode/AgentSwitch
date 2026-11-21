@@ -8,12 +8,12 @@ import { IconTerminal, IconX } from './icons'
 const TEST_PRESETS: { label: string; cmd: string }[] = [
   {
     label: '查看隔离环境变量',
-    cmd: `echo "HOME=$HOME"; echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"; echo "CODEX_HOME=$CODEX_HOME"; echo "AGENTMUX_PROFILE=$AGENTMUX_PROFILE"; ls -la "$HOME" | head -20`
+    cmd: `echo "HOME=$HOME"; echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"; echo "CODEX_HOME=$CODEX_HOME"; echo "AGENTSWITCH_PROFILE=$AGENTSWITCH_PROFILE"; ls -la "$HOME" | head -20`
   },
   { label: 'PATH 检查 (which)', cmd: 'echo "$PATH" | tr ":" "\\n"; which node npm pnpm claude gemini codex' },
   {
     label: '模拟 OAuth URL 输出',
-    cmd: `printf 'Open this URL to sign in:\\n\\nhttps://accounts.example.com/o/oauth2/auth?client_id=agentmux-test&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8085&state=%s\\n\\nWaiting for authorization...\\n' "$RANDOM"; sleep 2`
+    cmd: `printf 'Open this URL to sign in:\\n\\nhttps://accounts.example.com/o/oauth2/auth?client_id=agentswitch-test&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8085&state=%s\\n\\nWaiting for authorization...\\n' "$RANDOM"; sleep 2`
   },
   { label: '交互输入测试 (read)', cmd: 'read "name?你的名字: "; echo "hello, $name"' },
   { label: '颜色 / 宽度测试', cmd: 'for i in {0..15}; do printf "\\e[48;5;${i}m  \\e[0m"; done; echo; tput cols; tput lines' }
@@ -31,7 +31,7 @@ export function DebugDrawer() {
   const known = useRef(new Set<SessionId>())
 
   const load = useCallback(() => {
-    void window.agentmux.pty.sessions().then((list) => {
+    void window.agentswitch.pty.sessions().then((list) => {
       known.current = new Set(list.map((s) => s.sessionId))
       setSessions(list)
     })
@@ -39,10 +39,10 @@ export function DebugDrawer() {
 
   useEffect(() => {
     load()
-    const offExit = window.agentmux.pty.onExit(load)
-    const offState = window.agentmux.state.onChanged(load)
+    const offExit = window.agentswitch.pty.onExit(load)
+    const offState = window.agentswitch.state.onChanged(load)
     // first output of a brand-new session -> add its tab
-    const offData = window.agentmux.pty.onData((e) => {
+    const offData = window.agentswitch.pty.onData((e) => {
       if (!known.current.has(e.sessionId)) {
         known.current.add(e.sessionId)
         load()
@@ -67,7 +67,7 @@ export function DebugDrawer() {
   const start = async (profileId: ProfileId, mode: 'shell' | 'test', command?: string) => {
     try {
       setDrawerSession(profileId)
-      await window.agentmux.pty.start({ profileId, mode, command, ...dims(profileId) })
+      await window.agentswitch.pty.start({ profileId, mode, command, ...dims(profileId) })
       requestAnimationFrame(() => terminals.get(profileId)?.focus())
     } catch (e) {
       toast({ kind: 'error', title: '启动失败', desc: String(e) })
@@ -137,7 +137,7 @@ export function DebugDrawer() {
               </option>
             ))}
           </select>
-          <button className={chip} disabled={!activeInfo?.alive} onClick={() => active && void window.agentmux.pty.kill(active)}>
+          <button className={chip} disabled={!activeInfo?.alive} onClick={() => active && void window.agentswitch.pty.kill(active)}>
             结束
           </button>
           <button className={chip} disabled={!active} onClick={() => active && terminals.get(active)?.clear()}>

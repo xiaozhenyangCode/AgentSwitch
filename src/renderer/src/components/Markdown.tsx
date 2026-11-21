@@ -6,7 +6,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import 'katex/dist/katex.min.css'
-import { fileUrl, localPath } from '../lib/fileUrl'
+import { fileUrl, localPath, upgradeFileUrl } from '../lib/fileUrl'
 import { IconCheck, IconCopy, IconFolder } from './icons'
 
 let mermaidSeq = 0
@@ -63,7 +63,7 @@ function MermaidBlock({ source }: { source: string }) {
     }
   }, [source])
   const copy = async () => {
-    await window.agentmux.sys.copy(source)
+    await window.agentswitch.sys.copy(source)
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -100,7 +100,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   const lang = /language-([\w+-]+)/.exec(code?.props.className ?? '')?.[1] ?? ''
   if (lang === 'mermaid') return <MermaidBlock source={textOf(code?.props.children).replace(/\n$/, '')} />
   const copy = async () => {
-    await window.agentmux.sys.copy(textOf(code?.props.children).replace(/\n$/, ''))
+    await window.agentswitch.sys.copy(textOf(code?.props.children).replace(/\n$/, ''))
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -145,7 +145,7 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
                   className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[13px] hover:bg-white/25"
                   onClick={(e) => {
                     e.stopPropagation()
-                    void window.agentmux.sys.showInFolder(path)
+                    void window.agentswitch.sys.showInFolder(path)
                   }}
                 >
                   <IconFolder size={14} /> 在 Finder 中显示
@@ -169,8 +169,8 @@ const components: Components = {
         href={href}
         onClick={(e) => {
           e.preventDefault()
-          if (href && /^https?:\/\//.test(href)) void window.agentmux.sys.openExternal(href)
-          else if (local) void window.agentmux.sys.showInFolder(local)
+          if (href && /^https?:\/\//.test(href)) void window.agentswitch.sys.openExternal(href)
+          else if (local) void window.agentswitch.sys.showInFolder(local)
         }}
         title={local ? `${local}\n在 Finder 中显示` : href}
       >
@@ -181,6 +181,8 @@ const components: Components = {
   img: function Img({ src, alt }) {
     const { baseDir, home } = useContext(MarkdownBase)
     if (typeof src !== 'string' || !src) return null
+    const own = upgradeFileUrl(src)
+    if (own) return <ZoomImage src={own} alt={alt ?? ''} />
     const local = localPath(src, baseDir, home)
     if (local) return <ZoomImage src={fileUrl(local)} alt={alt ?? ''} path={local} />
     return /^(https?:|data:image\/)/i.test(src) ? <ZoomImage src={src} alt={alt ?? ''} /> : null
@@ -194,10 +196,10 @@ const components: Components = {
 
 /** Links keep react-markdown's safe default; images additionally allow inline data and demo images. */
 const urlTransform = (url: string, key: string) =>
-  key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/)/i.test(url) ? url : defaultUrlTransform(url)
+  key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url) ? url : defaultUrlTransform(url)
 
 /** Driver's machine-readable dispatch block is shown as tags on the dispatched replies instead. */
-const visible = (text: string) => text.replace(/```agentmux:dispatch[\s\S]*?(```|$)/g, '').trimEnd()
+const visible = (text: string) => text.replace(/```(?:agentswitch|agentmux):dispatch[\s\S]*?(```|$)/g, '').trimEnd()
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (

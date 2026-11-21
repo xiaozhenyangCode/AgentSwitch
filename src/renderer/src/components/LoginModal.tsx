@@ -39,7 +39,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
     setExitCode(null)
     setElapsed(0)
     try {
-      await window.agentmux.pty.start({ profileId, mode: 'login', ...dims(profileId) })
+      await window.agentswitch.pty.start({ profileId, mode: 'login', ...dims(profileId) })
       setPhase('waiting')
     } catch (e) {
       toast({ kind: 'error', title: '无法开始登录', desc: String(e) })
@@ -48,15 +48,15 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   }
 
   useEffect(() => {
-    const offUrl = window.agentmux.pty.onUrl((e) => {
+    const offUrl = window.agentswitch.pty.onUrl((e) => {
       if (e.sessionId !== profileId) return
       setUrls((prev) => (prev.some((u) => u.url === e.url) ? prev : [...prev, e]))
       setPhase((p) => (p === 'waiting' || p === 'starting' ? 'url' : p))
     })
-    const offOk = window.agentmux.profiles.onLoginSuccess((e) => {
+    const offOk = window.agentswitch.profiles.onLoginSuccess((e) => {
       if (e.profileId === profileId) setPhase('success')
     })
-    const offExit = window.agentmux.pty.onExit((e) => {
+    const offExit = window.agentswitch.pty.onExit((e) => {
       if (e.sessionId !== profileId || e.mode !== 'login') return
       setExitCode(e.exitCode)
       // the success event may still be in flight (or the CLI exited right after writing creds)
@@ -97,18 +97,18 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   }, [phase])
 
   const cancel = () => {
-    if (phaseRef.current !== 'success' && profile?.sessionMode === 'login') void window.agentmux.pty.kill(profileId)
+    if (phaseRef.current !== 'success' && profile?.sessionMode === 'login') void window.agentswitch.pty.kill(profileId)
     closeLogin()
   }
 
   const primary = urls.find((u) => u.isAuth) ?? urls[urls.length - 1]
   const copy = async () => {
     if (!primary) return
-    await window.agentmux.sys.copy(primary.url)
+    await window.agentswitch.sys.copy(primary.url)
     setCopied(true)
     setTimeout(() => setCopied(false), 1800)
   }
-  const send = (seq: string) => window.agentmux.pty.write(profileId, seq)
+  const send = (seq: string) => window.agentswitch.pty.write(profileId, seq)
   const submitCode = () => {
     if (!code.trim()) return
     send(code.trim() + '\r')
@@ -187,7 +187,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
               </div>
             </div>
             <div className="mt-5 flex flex-col gap-2.5">
-              <button className={btnPrimary + ' h-11 text-[15px]'} onClick={() => void window.agentmux.sys.openExternal(primary.url)}>
+              <button className={btnPrimary + ' h-11 text-[15px]'} onClick={() => void window.agentswitch.sys.openExternal(primary.url)}>
                 <IconExternal size={16} /> 打开浏览器授权
               </button>
               <button className={btnSecondary + ' h-11 text-[15px]'} onClick={() => void copy()}>

@@ -1,5 +1,5 @@
 {
-  "name": "agentmux",
+  "name": "agentswitch",
   "version": "0.1.0",
   "description": "Orchestrate local AI CLI agents (Claude Code / Gemini CLI / Codex CLI)",
   "main": "./out/main/index.js",
@@ -43,8 +43,8 @@
     "vite": "^8.3.8"
   },
   "build": {
-    "appId": "app.agentmux.desktop",
-    "productName": "AgentMux",
+    "appId": "app.agentswitch.desktop",
+    "productName": "AgentSwitch",
     "directories": {
       "output": "dist"
     },
@@ -67,7 +67,7 @@
       "gatekeeperAssess": false
     },
     "dmg": {
-      "title": "AgentMux ${version}"
+      "title": "AgentSwitch ${version}"
     },
     "afterPack": "scripts/afterPack.cjs"
   }

@@ -128,7 +128,7 @@ function CopyButton({ text, dark }: { text: string; dark?: boolean }) {
     <button
       onClick={(e) => {
         e.stopPropagation()
-        void window.agentmux.sys.copy(text)
+        void window.agentswitch.sys.copy(text)
         setDone(true)
         setTimeout(() => setDone(false), 1200)
       }}

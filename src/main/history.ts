@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { closeSync, copyFileSync, createReadStream, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { LEGACY_USER_DATA } from './legacy'
 import { createInterface } from 'node:readline'
 import { createTwoFilesPatch } from 'diff'
 import { DatabaseSync } from 'node:sqlite'
@@ -21,8 +22,10 @@ type Act = Extract<AgentEvent, { t: 'activity' }>
 const HEAD = 256 * 1024
 const TAIL = 256 * 1024
 const MAX_MESSAGES = 400
-/** Prompts AgentMux itself sends to the CLIs (its own runs are not "history"). */
-const OWN_PROMPT_RE = /^\s*(你在 AgentMux 中工作|## (之前的对话|用户消息|用户原始消息|用户附件|本轮前序步骤|你的任务))/
+/** Prompts AgentSwitch itself sends to the CLIs (its own runs are not "history"). */
+/** Folders AgentSwitch runs in itself (private workspaces, usage probes), incl. the AgentMux-era userData. */
+const isOwnDir = (cwd: string, userData: string): boolean => cwd.startsWith(userData) || cwd.startsWith(LEGACY_USER_DATA)
+const OWN_PROMPT_RE = /^\s*(你在 (?:AgentSwitch|AgentMux) 中工作|## (之前的对话|用户消息|用户原始消息|用户附件|本轮前序步骤|你的任务))/
 
 export const toMs = (v: unknown): number => {
   if (typeof v === 'number' && isFinite(v)) return v > 1e12 ? v : v > 1e9 ? v * 1000 : 0
@@ -46,9 +49,9 @@ const isDir = (p: string | null): boolean => {
   }
 }
 
-// ---- AgentMux's own sessions (hidden) / imported (kept) -----------------------------------------
+// ---- AgentSwitch's own sessions (hidden) / imported (kept) -----------------------------------------
 
-/** CLI sessions of chats deleted in AgentMux (userData/deleted-sessions.json): never listed again. */
+/** CLI sessions of chats deleted in AgentSwitch (userData/deleted-sessions.json): never listed again. */
 export function deletedSessions(): Set<string> {
   try {
     const j = JSON.parse(readFileSync(join(app.getPath('userData'), 'deleted-sessions.json'), 'utf8'))
@@ -79,7 +82,7 @@ export function ownSessions(): Set<string> {
   return out
 }
 
-/** Imported native sessions -> import time: later turns are AgentMux's own (counted as runs). */
+/** Imported native sessions -> import time: later turns are AgentSwitch's own (counted as runs). */
 export function importedCutoffs(): Map<string, number> {
   const out = new Map<string, number>()
   const dir = join(app.getPath('userData'), 'threads')
@@ -115,7 +118,7 @@ export function withDb<T>(path: string, fn: (db: DatabaseSync) => T): T | null {
     // e.g. WAL db without a -shm we may create: read a private copy instead
     let tmp: string | null = null
     try {
-      tmp = mkdtempSync(join(tmpdir(), 'agentmux-hist-'))
+      tmp = mkdtempSync(join(tmpdir(), 'agentswitch-hist-'))
       const dst = join(tmp, basename(path))
       copyFileSync(path, dst)
       for (const ext of ['-wal', '-shm']) if (existsSync(path + ext)) copyFileSync(path + ext, dst + ext)
@@ -335,7 +338,7 @@ function listClaude(profiles: ProfileConfig[], own: Set<string>, userData: strin
         const owner = owners.get(sid)
         if (meta.firstPrompt && OWN_PROMPT_RE.test(meta.firstPrompt)) continue
         if (!meta.firstPrompt && !meta.title && !owner?.display) continue // empty session
-        if (meta.cwd && meta.cwd.startsWith(userData)) continue
+        if (meta.cwd && isOwnDir(meta.cwd, userData)) continue
         const profileId = owner?.profileId ?? (meta.accountUuid ? accounts.get(meta.accountUuid) : undefined) ?? group[0].id
         out.push({
           key: `${profileId}:${sid}`,
@@ -459,7 +462,7 @@ function listCodex(p: ProfileConfig, own: Set<string>, userData: string): Histor
     const first = String(r.first_user_message ?? r.preview ?? '')
     if (OWN_PROMPT_RE.test(first)) continue
     const cwd = typeof r.cwd === 'string' && r.cwd ? fileUri(r.cwd) : null
-    if (cwd?.startsWith(userData)) continue
+    if ((!!cwd && isOwnDir(cwd, userData))) continue
     const rollout = typeof r.rollout_path === 'string' ? r.rollout_path : null
     if (!rollout || !existsSync(rollout)) continue
     if (r.has_user_event === 0 && !first) continue
@@ -701,7 +704,7 @@ function listAgy(p: ProfileConfig, own: Set<string>, userData: string): HistoryE
     } catch {
       /* none */
     }
-    if (cwd?.startsWith(userData)) continue
+    if ((!!cwd && isOwnDir(cwd, userData))) continue
     let created = 0
     try {
       created = statSync(db).birthtimeMs
@@ -856,9 +859,9 @@ export const cwdExists = isDir
 
 /** Handoff document export (fallback when the source account can't write one). */
 export function writeHandoff(cwd: string, turnId: string, markdown: string): string {
-  const dir = join(cwd, '.agentmux', 'handoffs')
+  const dir = join(cwd, '.agentswitch', 'handoffs')
   mkdirSync(dir, { recursive: true })
-  const base = join(cwd, '.agentmux')
+  const base = join(cwd, '.agentswitch')
   if (!existsSync(join(base, '.gitignore'))) writeFileSync(join(base, '.gitignore'), '*\n')
   const file = join(dir, `${turnId.replace(/[^\w-]/g, '')}.md`)
   writeFileSync(file, markdown)

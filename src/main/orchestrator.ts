@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
+import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
 import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
@@ -12,12 +13,12 @@ import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
  * process starts only after the previous one exited. Steps hand over through files in
- * <project>/.agentmux/runs/<turnId>/ (task.json, step-N.md, step-N.files.json, attachments/),
+ * <project>/.agentswitch/runs/<turnId>/ (task.json, step-N.md, step-N.files.json, attachments/),
  * never by scraping terminal text.
  *
  * Step sources:
  *  - explicit @mentions, in text order (each gets the text segment after its mention)
- *  - otherwise the driver answers; it may append an ```agentmux:dispatch``` block to
+ *  - otherwise the driver answers; it may append an ```agentswitch:dispatch``` block to
  *    delegate to other participants, which are then run in order
  *  - a short driver summary after any multi-model chain
  * Review steps must end with {"status":"PASS"|"REJECT","reason"}; REJECT re-runs the
@@ -28,7 +29,7 @@ const MAX_RETRIES = 3
 const MAX_DISPATCH = 6
 const PREV_STEP_CHARS = 4000
 const SNAPSHOT_MAX_FILES = 20000
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentmux', 'dist', 'build', 'out', '.next', 'target', '.venv', 'venv', '__pycache__', '.cache', '.turbo'])
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentswitch', LEGACY_PROJECT_DIR, 'dist', 'build', 'out', '.next', 'target', '.venv', 'venv', '__pycache__', '.cache', '.turbo'])
 const REVIEW_RE = /验收|审核|审查|复核|评审|检查|review/i
 
 type StepKind = 'own' | 'mention' | 'dispatch' | 'summary'
@@ -99,10 +100,14 @@ function saveSession(threadId: string, profileId: ProfileId, sid: string, import
 export const importSession = (threadId: string, profileId: ProfileId, sid: string): void => saveSession(threadId, profileId, sid, true)
 export const threadSessions = (threadId: string): Record<string, string> => loadSessions(threadId)
 
-/** Folder a thread's runs use: its project, or AgentMux's private workspace when unset/missing. */
+/** Folder a thread's runs use: its project, or AgentSwitch's private workspace when unset/missing. */
 export function threadCwd(threadId: string, projectDir: string | null): string {
   if (projectDir && isAbsolute(projectDir) && existsSync(projectDir) && statSync(projectDir).isDirectory()) return projectDir
-  const cwd = join(app.getPath('userData'), 'workspaces', threadId.replace(/[^\w-]/g, ''))
+  const id = threadId.replace(/[^\w-]/g, '')
+  // threads from the AgentMux era keep their workspace: CLI sessions are keyed by this path
+  const legacy = join(LEGACY_USER_DATA, 'workspaces', id)
+  if (id && existsSync(legacy)) return legacy
+  const cwd = join(app.getPath('userData'), 'workspaces', id)
   mkdirSync(cwd, { recursive: true })
   return cwd
 }
@@ -111,7 +116,7 @@ const HANDOFF_DOC_CHARS = 20000
 const handoffPrompt = (target: string): string =>
   [
     `用户要把这个对话交给另一个模型（${target}）继续。请根据你在本对话中的全部上下文，写一份交接文档，让对方无需翻看历史就能接手。`,
-    '只输出文档本身（Markdown），不要修改任何文件、不要执行命令。不要复述 AgentMux 的环境说明（授权方式、交接目录、输出目录、回复格式等，对方会收到自己的版本），只写与任务本身有关的内容。按以下小节组织，没有内容的小节写「无」：',
+    '只输出文档本身（Markdown），不要修改任何文件、不要执行命令。不要复述 AgentSwitch 的环境说明（授权方式、交接目录、输出目录、回复格式等，对方会收到自己的版本），只写与任务本身有关的内容。按以下小节组织，没有内容的小节写「无」：',
     '',
     '## 目标',
     '用户最终要达成什么，验收标准是什么。',
@@ -174,7 +179,7 @@ function verdictOf(text: string): { status: 'PASS' | 'REJECT'; reason: string } 
 }
 
 function dispatchOf(text: string): { account: string; model?: string; task: string }[] {
-  const m = [...text.matchAll(/```agentmux:dispatch\s*([\s\S]*?)```/g)].pop()
+  const m = [...text.matchAll(/```(?:agentswitch|agentmux):dispatch\s*([\s\S]*?)```/g)].pop()
   if (!m) return []
   try {
     const v = JSON.parse(m[1])
@@ -225,7 +230,7 @@ export class Orchestrator {
       if (!isAbsolute(req.projectDir) || !existsSync(req.projectDir) || !statSync(req.projectDir).isDirectory()) throw new Error(`项目文件夹不存在：${req.projectDir}`)
     const cwd = threadCwd(req.threadId, req.projectDir)
     allowRoot(cwd)
-    const base = join(cwd, '.agentmux')
+    const base = join(cwd, '.agentswitch')
     mkdirSync(base, { recursive: true })
     // self-ignoring: run artefacts never show up in the project's git status
     if (!existsSync(join(base, '.gitignore'))) writeFileSync(join(base, '.gitignore'), '*\n')
@@ -390,7 +395,7 @@ export class Orchestrator {
     const cfg = getConfig(step.profileId)
     const rel = (p: string): string => relative(turn.cwd, p) || '.'
     const sys: string[] = [
-      `你在 AgentMux 中工作：一个把多个 AI 模型放进同一对话协作的桌面应用。你的身份：${cfg.name}（${KIND_LABEL[cfg.kind]} · ${modelText(cfg, step.model)}）。`,
+      `你在 AgentSwitch 中工作：一个把多个 AI 模型放进同一对话协作的桌面应用。你的身份：${cfg.name}（${KIND_LABEL[cfg.kind]} · ${modelText(cfg, step.model)}）。`,
       `项目目录（当前工作目录）：${turn.cwd}`,
       `本轮交接目录：${rel(turn.runDir)}/（task.json、用户附件、前序步骤的完整输出都在这里，可按需读取）。`,
       `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
@@ -411,7 +416,7 @@ export class Orchestrator {
         ...others.map((o) => `- account: "${o.id}" · ${o.name}（${KIND_LABEL[o.kind]}，默认子模型 ${o.defaultModel || 'CLI 默认'}）`),
         '仅当用户明确要求多模型协作、或任务明显需要其他参与模型配合时才调度；普通单轮问答直接回复即可。',
         '调度方法：先简要说明你的安排，然后在回复最后输出一个代码块（系统会按顺序执行，再把结果交回给你汇总）：',
-        '```agentmux:dispatch',
+        '```agentswitch:dispatch',
         '[{"account": "<account>", "model": "<可选子模型>", "task": "<交给它的具体任务>"}]',
         '```'
       )
@@ -592,7 +597,7 @@ export class Orchestrator {
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo ?? step.profileId
       try {
-        const dir = join(turn.cwd, '.agentmux', 'handoffs')
+        const dir = join(turn.cwd, '.agentswitch', 'handoffs')
         mkdirSync(dir, { recursive: true })
         const file = join(dir, `${turn.req.turnId.replace(/[^\w-]/g, '')}.md`)
         writeFileSync(file, step.text.trim() + '\n')

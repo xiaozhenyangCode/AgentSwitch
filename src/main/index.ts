@@ -1,3 +1,4 @@
+import './legacy' // first: migrates AgentMux userData before other modules read it
 import { app, BrowserWindow, nativeTheme, shell } from 'electron'
 import { join } from 'node:path'
 import { initProfiles } from './profiles'

@@ -266,7 +266,7 @@ export function UsageView() {
       <div className="grid grid-cols-3 gap-3">
         <Stat label="今日总 Token" value={fmtTokens(sumOf(all, (u) => tokenSum(u.today)))} sub={`输出 ${fmtTokens(sumOf(all, (u) => u.today.output))}`} />
         <Stat label="本周总 Token" value={fmtTokens(sumOf(all, (u) => tokenSum(u.week)))} sub="自周一起" />
-        <Stat label="AgentMux 累计费用" value={fmtCost(cost)} sub={`${runs} 次运行`} />
+        <Stat label="AgentSwitch 累计费用" value={fmtCost(cost)} sub={`${runs} 次运行`} />
       </div>
       <div className="mt-4 overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <table className="w-full text-[13px]">
@@ -307,7 +307,7 @@ export function UsageView() {
         </table>
       </div>
       <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">
-        Token 含缓存读写；费用仅统计 AgentMux 运行时 CLI 报告的金额，历史回填（Claude 近 {snap?.claudeDays ?? 30} 天、Codex 与 agy 全部）只计 Token。
+        Token 含缓存读写；费用仅统计 AgentSwitch 运行时 CLI 报告的金额，历史回填（Claude 近 {snap?.claudeDays ?? 30} 天、Codex 与 agy 全部）只计 Token。
         {snap?.backfill === 'running' && ' 正在后台回填历史用量…'}
       </p>
     </div>

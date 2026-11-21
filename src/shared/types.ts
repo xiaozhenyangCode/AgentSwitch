@@ -49,7 +49,7 @@ export interface ProfileConfig {
    * codex  -> CODEX_HOME
    */
   configDir: string
-  /** Imported from an existing local setup (e.g. ~/.claude) rather than created by AgentMux. */
+  /** Imported from an existing local setup (e.g. ~/.claude) rather than created by AgentSwitch. */
   imported: boolean
   loginCommand: string
   runCommand: string
@@ -86,7 +86,7 @@ export interface ModelOption {
 export interface ModelList {
   profileId: ProfileId
   models: ModelOption[]
-  /** catalog: CLI's own local cache file; command: live CLI query; cache: AgentMux cache; static: built-in list. */
+  /** catalog: CLI's own local cache file; command: live CLI query; cache: AgentSwitch cache; static: built-in list. */
   source: 'catalog' | 'command' | 'cache' | 'static'
   fetchedAt: number
   /** Last refresh error, if the list came from a fallback. */
@@ -111,7 +111,7 @@ export interface RunAttachment {
 export interface RunRequest {
   threadId: string
   turnId: string
-  /** null -> AgentMux creates a private workspace for the thread. */
+  /** null -> AgentSwitch creates a private workspace for the thread. */
   projectDir: string | null
   text: string
   attachments: RunAttachment[]
@@ -122,7 +122,7 @@ export interface RunRequest {
   participants: ProfileId[]
   /** Plain-text recap of the recent conversation, oldest first. */
   transcript: string
-  /** 'handoff': the driver only writes a handoff document (saved to .agentmux/handoffs/). */
+  /** 'handoff': the driver only writes a handoff document (saved to .agentswitch/handoffs/). */
   mode?: 'chat' | 'handoff'
   /** Handoff target account (mode 'handoff'). */
   handoffTo?: ProfileId
@@ -191,9 +191,9 @@ export interface UsageTotals {
   cacheRead: number
   cacheWrite: number
   reasoning: number
-  /** Only from AgentMux's own runs (CLI-reported total_cost_usd). */
+  /** Only from AgentSwitch's own runs (CLI-reported total_cost_usd). */
   costUsd: number
-  /** AgentMux runs counted. */
+  /** AgentSwitch runs counted. */
   runs: number
 }
 
@@ -428,7 +428,7 @@ export interface AppInfo {
   node: string
 }
 
-/** Really delete a chat: AgentMux's data always; the CLI's own session files only with purgeCli. */
+/** Really delete a chat: AgentSwitch's data always; the CLI's own session files only with purgeCli. */
 export interface DeleteThreadRequest {
   threadId: string
   projectDir: string | null
@@ -437,7 +437,7 @@ export interface DeleteThreadRequest {
   purgeCli: boolean
 }
 export interface DeleteThreadResult {
-  /** AgentMux files / folders removed. */
+  /** AgentSwitch files / folders removed. */
   removed: number
   /** Native CLI files moved to the Trash. */
   trashed: string[]

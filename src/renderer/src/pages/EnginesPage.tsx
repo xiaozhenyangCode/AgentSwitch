@@ -113,7 +113,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
       setVersion(null)
       return
     }
-    void window.agentmux.cli.version(kind).then(setVersion)
+    void window.agentswitch.cli.version(kind).then(setVersion)
   }, [kind, binPath])
 
   const recheck = async () => {
@@ -210,7 +210,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
     setEditing(false)
     const n = name.trim()
     if (!n || n === a.name) return setName(a.name)
-    await window.agentmux.profiles.update(a.id, { name: n })
+    await window.agentswitch.profiles.update(a.id, { name: n })
     toast({ kind: 'success', title: `已重命名为「${n}」` })
   }
 

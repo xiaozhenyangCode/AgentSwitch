@@ -313,7 +313,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
     return r.canceled ? null : r.filePaths[0]
   })
-  /** Project folder for a thread: also allow-listed for agentmux-file:// image previews. */
+  /** Project folder for a thread: also allow-listed for agentswitch-file:// image previews. */
   ipcMain.handle(IPC.pickProject, async (_e, defaultPath?: string) => {
     const w = getWindow()
     const opts: Electron.OpenDialogOptions = {

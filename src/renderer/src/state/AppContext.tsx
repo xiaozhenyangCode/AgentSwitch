@@ -105,7 +105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const kinds = snap?.kinds ?? []
 
   const refresh = useCallback(async () => {
-    const s = await window.agentmux.state.get()
+    const s = await window.agentswitch.state.get()
     setSnap(s)
     return s
   }, [])
@@ -113,11 +113,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const kindState = useCallback((k: ProfileKind) => kinds.find((x) => x.kind === k), [kinds])
 
   useEffect(() => {
-    void window.agentmux.sys.info().then(setInfo)
+    void window.agentswitch.sys.info().then(setInfo)
     void refresh()
-    const off = window.agentmux.state.onChanged((s) => {
+    const off = window.agentswitch.state.onChanged((s) => {
       setSnap(s)
-      void window.agentmux.sys.info().then(setInfo) // shell env may have refreshed
+      void window.agentswitch.sys.info().then(setInfo) // shell env may have refreshed
     })
     // Logins/installs happen out-of-band (CLIs write files) -> re-check on focus.
     const onFocus = () => void refresh()
@@ -174,15 +174,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const ok = await confirm({
         title: `删除「${p.name}」？`,
         message: p.imported
-          ? `只会从 AgentMux 中移除这个账号，${p.configDir} 里的配置和登录信息会原样保留，命令行中仍可继续使用。`
-          : '只会从 AgentMux 中移除这个账号。它的独立配置目录会保留在磁盘上，不会被删除。',
+          ? `只会从 AgentSwitch 中移除这个账号，${p.configDir} 里的配置和登录信息会原样保留，命令行中仍可继续使用。`
+          : '只会从 AgentSwitch 中移除这个账号。它的独立配置目录会保留在磁盘上，不会被删除。',
         confirmLabel: '删除账号',
         destructive: true
       })
       if (!ok) return
       if (loginId === id) setLoginId(null)
       if (configId === id) setConfigId(null)
-      await window.agentmux.profiles.remove(id)
+      await window.agentswitch.profiles.remove(id)
       toast({ kind: 'success', title: `已删除「${p.name}」` })
     },
     [profiles, confirm, toast, loginId, configId]
@@ -195,7 +195,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const name = KIND_META[kind].cli
       const verb = update ? '更新' : '安装'
       const done = new Promise<number>((resolve) => {
-        const off = window.agentmux.pty.onExit((e) => {
+        const off = window.agentswitch.pty.onExit((e) => {
           if (e.sessionId === sid) {
             off()
             resolve(e.exitCode)
@@ -203,7 +203,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })
       })
       try {
-        await window.agentmux.cli.install(kind, update)
+        await window.agentswitch.cli.install(kind, update)
       } catch (e) {
         toast({ kind: 'error', title: `${name} ${verb}启动失败`, desc: String(e) })
         return

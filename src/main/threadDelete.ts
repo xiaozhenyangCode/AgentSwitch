@@ -4,12 +4,13 @@ import { isAbsolute, join, sep } from 'node:path'
 import type { DeleteThreadRequest, DeleteThreadResult, ProfileConfig } from '@shared/types'
 import { expandHome, getConfig, hasProfile } from './profiles'
 import { agyConversationDb, deletedSessions, listHistory } from './history'
+import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
 
 /**
  * Deleting a chat thread for real:
- *  - always: AgentMux's own data (threads/<id>.json, the private workspace, and this thread's
- *    .agentmux/{runs,outputs,handoffs} entries in the project);
- *  - AgentMux-created CLI sessions are remembered in deleted-sessions.json so they stay out of
+ *  - always: AgentSwitch's own data (threads/<id>.json, the private workspace, and this thread's
+ *    .agentswitch/{runs,outputs,handoffs} entries in the project);
+ *  - AgentSwitch-created CLI sessions are remembered in deleted-sessions.json so they stay out of
  *    「本机历史」(imported sessions are the user's own and simply show up there again);
  *  - purgeCli: the native CLI session files are moved to the macOS Trash (recoverable).
  * Usage statistics are never touched.
@@ -103,14 +104,17 @@ export async function deleteThreadData(req: DeleteThreadRequest): Promise<Delete
     /* thread never ran */
   }
 
-  // 2. run artefacts: private workspace, or this thread's turns inside the project's .agentmux
+  // 2. run artefacts: private workspace, or this thread's turns inside the project's .agentswitch
   rm(join(userData(), 'workspaces', id))
+  rm(join(LEGACY_USER_DATA, 'workspaces', id)) // AgentMux-era threads keep running there (see threadCwd)
   if (req.projectDir && isAbsolute(req.projectDir) && existsSync(req.projectDir) && statSync(req.projectDir).isDirectory()) {
-    const base = join(req.projectDir, '.agentmux')
-    for (const t of req.turnIds.map(safeId).filter(Boolean)) {
-      rm(join(base, 'runs', t))
-      rm(join(base, 'outputs', t))
-      rm(join(base, 'handoffs', `${t}.md`))
+    for (const dir of ['.agentswitch', LEGACY_PROJECT_DIR]) {
+      const base = join(req.projectDir, dir)
+      for (const t of req.turnIds.map(safeId).filter(Boolean)) {
+        rm(join(base, 'runs', t))
+        rm(join(base, 'outputs', t))
+        rm(join(base, 'handoffs', `${t}.md`))
+      }
     }
   }
 

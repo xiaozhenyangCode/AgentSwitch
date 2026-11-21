@@ -56,12 +56,12 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    void window.agentmux.profiles.envPreview(profile.id, previewMode).then(setPreview)
+    void window.agentswitch.profiles.envPreview(profile.id, previewMode).then(setPreview)
   }, [profile.id, previewMode, profile])
 
   const isolated = `${userData}/profiles/${profile.id}${profile.kind === 'gemini' ? '/home' : ''}`
   const presets: { label: string; value: string }[] = [
-    { label: 'AgentMux 独立目录', value: isolated },
+    { label: 'AgentSwitch 独立目录', value: isolated },
     ...(profile.kind === 'claude'
       ? [
           { label: '~/.claude', value: '~/.claude' },
@@ -77,7 +77,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
 
   const save = async () => {
     try {
-      await window.agentmux.profiles.update(profile.id, {
+      await window.agentswitch.profiles.update(profile.id, {
         name: form.name,
         configDir: form.configDir,
         loginCommand: form.loginCommand,
@@ -86,7 +86,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         autoApprove: form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli',
         extraEnv: textToEnv(envText)
       })
-      setPreview(await window.agentmux.profiles.envPreview(profile.id, previewMode))
+      setPreview(await window.agentswitch.profiles.envPreview(profile.id, previewMode))
       setError(null)
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
@@ -96,8 +96,8 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   }
 
   const reset = async () => {
-    await window.agentmux.profiles.reset(profile.id)
-    const p = (await window.agentmux.state.get()).profiles.find((x) => x.id === profile.id)
+    await window.agentswitch.profiles.reset(profile.id)
+    const p = (await window.agentswitch.state.get()).profiles.find((x) => x.id === profile.id)
     if (p) {
       setForm(p)
       setEnvText(envToText(p.extraEnv))
@@ -105,7 +105,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   }
 
   const pick = async () => {
-    const dir = await window.agentmux.sys.pickDirectory(form.configDir, '选择配置目录')
+    const dir = await window.agentswitch.sys.pickDirectory(form.configDir, '选择配置目录')
     if (dir) set('configDir', dir)
   }
 
@@ -135,7 +135,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             <button className={btnSecondary + ' shrink-0'} onClick={() => void pick()}>
               选择…
             </button>
-            <button className={btnGhost + ' shrink-0'} onClick={() => void window.agentmux.sys.openPath(profile.resolvedConfigDir)} title="在 Finder 中显示">
+            <button className={btnGhost + ' shrink-0'} onClick={() => void window.agentswitch.sys.openPath(profile.resolvedConfigDir)} title="在 Finder 中显示">
               <IconFolder size={16} />
             </button>
           </div>

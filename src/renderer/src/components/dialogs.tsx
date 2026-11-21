@@ -29,7 +29,7 @@ export function AddAccountModal() {
   const create = async (andLogin: boolean) => {
     setBusy(true)
     try {
-      const id = await window.agentmux.profiles.add(kind, name)
+      const id = await window.agentswitch.profiles.add(kind, name)
       addRequest?.onCreated?.(id)
       closeAddAccount()
       if (andLogin) openLogin(id)
@@ -158,12 +158,12 @@ export function CliConfigModal({ kind }: { kind: ProfileKind }) {
   const close = () => openCliConfig(null)
 
   const save = async () => {
-    await window.agentmux.cli.update(kind, { binary, installCommand, updateCommand })
+    await window.agentswitch.cli.update(kind, { binary, installCommand, updateCommand })
     toast({ kind: 'success', title: `${meta.cli} 设置已保存` })
     close()
   }
   const reset = async () => {
-    await window.agentmux.cli.reset(kind)
+    await window.agentswitch.cli.reset(kind)
     close()
   }
 

@@ -4,14 +4,14 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, sep } from 'node:path'
 
 /**
- * `agentmux-file://f/<base64url(absolute path)>` — read-only access to images inside
- * project folders the user picked (or AgentMux workspaces). Every request is checked:
+ * `agentswitch-file://f/<base64url(absolute path)>` — read-only access to images inside
+ * project folders the user picked (or AgentSwitch workspaces). Every request is checked:
  *   GET only · realpath must stay inside an allowed root (no `..` / symlink escape) ·
  *   image extensions only · size cap · nosniff. SVG is served with a locked-down CSP
  *   (no script, no external loads) so markup inside it can't run or phone home.
  */
 
-export const FILE_SCHEME = 'agentmux-file'
+export const FILE_SCHEME = 'agentswitch-file'
 const MAX_BYTES = 25 * 1024 * 1024
 const MIME: Record<string, string> = {
   '.png': 'image/png',

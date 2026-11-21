@@ -9,14 +9,14 @@ import { userInfo } from 'node:os'
  * We run the user's login+interactive zsh once and capture its env.
  */
 
-const MARK = '__AGENTMUX_ENV__'
+const MARK = '__AGENTSWITCH_ENV__'
 
 /** Vars from the parent process we never pass down to child shells. */
 const STRIP_PREFIXES = ['ELECTRON_', 'VITE_', 'CHROME_']
 const STRIP_EXACT = [
   'NODE_ENV',
   'NODE_OPTIONS',
-  // If AgentMux itself was started from inside a Claude Code / Codex session,
+  // If AgentSwitch itself was started from inside a Claude Code / Codex session,
   // these would leak into every profile and break isolation.
   'CLAUDECODE',
   'CLAUDE_CODE_ENTRYPOINT',

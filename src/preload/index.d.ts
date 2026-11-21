@@ -1,8 +1,8 @@
-import type { AgentMuxApi } from './index'
+import type { AgentSwitchApi } from './index'
 
 declare global {
   interface Window {
-    agentmux: AgentMuxApi
+    agentswitch: AgentSwitchApi
   }
 }
 

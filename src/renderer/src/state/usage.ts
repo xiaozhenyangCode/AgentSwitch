@@ -11,8 +11,8 @@ const emit = (s: UsageSnapshot) => {
   snap = s
   listeners.forEach((l) => l())
 }
-void window.agentmux.usage.get().then(emit)
-window.agentmux.usage.onChanged(emit)
+void window.agentswitch.usage.get().then(emit)
+window.agentswitch.usage.onChanged(emit)
 
 export function useUsage(): UsageSnapshot | null {
   return useSyncExternalStore(
@@ -42,12 +42,12 @@ export function useEnginesTab(): EnginesTab {
   )
 }
 
-const PROBE_KEY = 'agentmux.usage.probe'
+const PROBE_KEY = 'agentswitch.usage.probe'
 export const probeEnabled = () => localStorage.getItem(PROBE_KEY) === '1'
 export const setProbeEnabled = (v: boolean) => localStorage.setItem(PROBE_KEY, v ? '1' : '0')
 
 export async function refreshUsage(): Promise<void> {
-  emit(await window.agentmux.usage.refresh(probeEnabled()))
+  emit(await window.agentswitch.usage.refresh(probeEnabled()))
 }
 
 // ---- interpretation ------------------------------------------------------------------------

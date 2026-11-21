@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { LEGACY_PROJECT_DIR } from './legacy'
 import { createTwoFilesPatch } from 'diff'
 
 /**
@@ -14,7 +15,7 @@ const MAX_FILE = 256 * 1024
 const MAX_FILES = 3000
 const MAX_TOTAL = 24 * 1024 * 1024
 export const MAX_DIFF = 16 * 1024
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentmux', 'dist', 'out', 'build', '.next', '.venv', 'venv', '__pycache__', '.cache', 'Pods', 'DerivedData', 'target'])
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentswitch', LEGACY_PROJECT_DIR, 'dist', 'out', 'build', '.next', '.venv', 'venv', '__pycache__', '.cache', 'Pods', 'DerivedData', 'target'])
 const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|icns|pdf|zip|gz|tgz|bz2|xz|7z|rar|dmg|mp3|mp4|mov|wav|ogg|woff2?|ttf|otf|eot|so|dylib|dll|exe|bin|class|jar|o|a|pyc|sqlite|db|psd|ai|sketch|fig)$/i
 
 const isText = (buf: Buffer): boolean => !buf.subarray(0, 8000).includes(0)

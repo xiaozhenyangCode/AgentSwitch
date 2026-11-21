@@ -188,7 +188,7 @@ export class PtyManager {
     for (const id of [...this.sessions.keys()]) this.kill(id)
   }
 
-  /** `scan=false` for AgentMux's own status lines (they echo commands that may contain URLs). */
+  /** `scan=false` for AgentSwitch's own status lines (they echo commands that may contain URLs). */
   private emitData(id: SessionId, data: string, scan = true): void {
     const b = this.buf(id)
     b.raw += data
