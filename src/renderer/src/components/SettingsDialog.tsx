@@ -24,6 +24,7 @@ import {
   IconSearch,
   IconSliders,
   IconSun,
+  IconTerminal,
   IconX,
   Spinner
 } from './icons'
@@ -35,6 +36,7 @@ const SECTIONS: { id: SettingsSection; Icon: (p: { size?: number }) => ReactElem
   { id: 'appearance', Icon: IconSun },
   { id: 'usage', Icon: IconGauge },
   { id: 'data', Icon: IconDatabase },
+  { id: 'developer', Icon: IconTerminal },
   { id: 'shortcuts', Icon: IconKeyboard },
   { id: 'about', Icon: IconInfo }
 ]
@@ -140,6 +142,14 @@ const ITEMS: Item[] = [
     Body: HistoryBlock
   },
   {
+    id: 'debugTerminal',
+    section: 'developer',
+    title: 'set.debugTerminal',
+    hint: 'set.debugTerminalHint',
+    words: 'developer debug terminal shell log console drawer pty 开发者 调试 终端 日志 控制台 抽屉 開発者 デバッグ ターミナル ログ >_',
+    Body: DebugTerminalRow
+  },
+  {
     id: 'scApp',
     section: 'shortcuts',
     title: 'set.scGroupApp',
@@ -174,11 +184,12 @@ const LAYOUT: Record<Exclude<SettingsSection, 'about'>, string[][]> = {
   appearance: [['theme']],
   usage: [['probe', 'threshold']],
   data: [['dataDir'], ['history']],
+  developer: [['debugTerminal']],
   shortcuts: [['scApp'], ['scCompose']]
 }
 
 const byId = new Map(ITEMS.map((i) => [i.id, i]))
-const SECTION_KEY = { general: 'set.general', appearance: 'set.appearance', usage: 'set.usage', data: 'set.data', shortcuts: 'set.shortcuts', about: 'set.about' } as const
+const SECTION_KEY = { general: 'set.general', appearance: 'set.appearance', usage: 'set.usage', data: 'set.data', developer: 'set.developer', shortcuts: 'set.shortcuts', about: 'set.about' } as const
 
 let index: Map<string, string> | null = null
 /** Lower-cased search text per item, in every language (built once). */
@@ -577,6 +588,22 @@ function ProbeRow({ title }: { title: ReactNode }) {
   return (
     <Row label={title} hint={t('set.probeHint')}>
       <Toggle on={probeClaude} onChange={(v) => setSetting('probeClaude', v)} />
+    </Row>
+  )
+}
+
+function DebugTerminalRow({ title }: { title: ReactNode }) {
+  const { showDebugTerminal } = useSettings()
+  const { drawer, closeDrawer } = useApp()
+  return (
+    <Row label={title} hint={t('set.debugTerminalHint')}>
+      <Toggle
+        on={showDebugTerminal}
+        onChange={(v) => {
+          setSetting('showDebugTerminal', v)
+          if (!v && drawer.open) closeDrawer()
+        }}
+      />
     </Row>
   )
 }

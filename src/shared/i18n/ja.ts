@@ -696,5 +696,8 @@ export const ja: Dict = {
   'eng.permFull': 'すべて許可',
   'eng.defaultModelHint': '既定のモデル（クリックで変更）',
   'eng.permHint': '会話実行時の権限モード（クリックで変更）',
-  'eng.openTerminal': 'ターミナルを開く'
+  'eng.openTerminal': 'ターミナルを開く',
+  'set.developer': '開発者',
+  'set.debugTerminal': 'デバッグターミナルを表示',
+  'set.debugTerminalHint': '上部ツールバーに >_ ボタンを表示し、内蔵ターミナルと CLI デバッグログのドロワーを開けるようにします'
 }

@@ -15,11 +15,13 @@ export interface Settings {
   probeClaude: boolean
   /** Quota warning dot when a window of the driver reaches this percentage. */
   quotaWarn: 70 | 80 | 90
+  /** Developer: the >_ button (built-in terminal + CLI debug log drawer) in the workbench toolbar. */
+  showDebugTerminal: boolean
 }
 
 const KEY = 'agentswitch.settings.v1'
 const PROBE_KEY = 'agentswitch.usage.probe' // older home of probeClaude
-const DEFAULTS: Settings = { sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80 }
+const DEFAULTS: Settings = { sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80, showDebugTerminal: false }
 
 function load(): Settings {
   let saved: Partial<Settings> = {}
@@ -32,6 +34,7 @@ function load(): Settings {
   if (saved.probeClaude === undefined) s.probeClaude = localStorage.getItem(PROBE_KEY) === '1'
   if (s.sendKey !== 'enter' && s.sendKey !== 'mod-enter') s.sendKey = 'enter'
   if (![70, 80, 90].includes(s.quotaWarn)) s.quotaWarn = 80
+  s.showDebugTerminal = s.showDebugTerminal === true
   return s
 }
 

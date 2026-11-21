@@ -5,7 +5,7 @@ import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { IconEngine, IconFolder, IconGauge, IconGear, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
+import { IconEngine, IconFolder, IconGauge, IconGear, IconPlus, IconRefresh, IconSearch, IconX, Spinner } from './icons'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
@@ -74,7 +74,7 @@ const fullTime = (ts: number) => {
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail() {
-  const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm, toast, openSettings, settingsOpen } = useApp()
+  const { page, navigate, profiles, confirm, toast, openSettings, settingsOpen } = useApp()
   const chat = useChat()
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
@@ -241,27 +241,7 @@ export function NavRail() {
             )
           }
         />
-        <div className="flex items-center gap-1">
-          <div className="min-w-0 flex-1">
-            <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
-          </div>
-          <button
-            onClick={() => (drawer.open ? closeDrawer() : openDrawer())}
-            className={`no-drag relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${
-              drawer.open ? 'bg-black/[0.06] text-ink' : 'text-ink-3 hover:bg-black/[0.035] hover:text-ink-2'
-            }`}
-            title={
-              t('nav.debugLog') +
-              (info
-                ? '\n' +
-                  (info.shellEnvSource === 'login' ? t('nav.shellLogin') : info.shellEnvSource === 'cache' ? t('nav.shellCache') : t('nav.shellFallback', { error: info.shellEnvError ?? '' }))
-                : '')
-            }
-          >
-            <IconTerminal size={15} />
-            {info && <span className={`absolute top-2 right-2 h-1.5 w-1.5 rounded-full ${info.shellEnvSource === 'fallback' ? 'bg-orange' : 'bg-green'}`} />}
-          </button>
-        </div>
+        <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
       </div>
     </nav>
   )

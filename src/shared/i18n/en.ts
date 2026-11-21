@@ -696,5 +696,8 @@ export const en: Dict = {
   'eng.permFull': 'Full access',
   'eng.defaultModelHint': 'Default model (click to change)',
   'eng.permHint': 'Permission mode for chat runs (click to change)',
-  'eng.openTerminal': 'Open terminal'
+  'eng.openTerminal': 'Open terminal',
+  'set.developer': 'Developer',
+  'set.debugTerminal': 'Show debug terminal',
+  'set.debugTerminalHint': 'Adds a >_ button to the top toolbar that opens the built-in terminal and CLI debug log drawer'
 }

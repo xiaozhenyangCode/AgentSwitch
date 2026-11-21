@@ -720,5 +720,8 @@ export const zhCN = {
   'eng.permFull': '完全放行',
   'eng.defaultModelHint': '默认模型（点击修改）',
   'eng.permHint': '对话运行时的权限模式（点击修改）',
-  'eng.openTerminal': '打开终端'
+  'eng.openTerminal': '打开终端',
+  'set.developer': '开发者',
+  'set.debugTerminal': '显示调试终端',
+  'set.debugTerminalHint': '在顶部工具栏显示 >_ 按钮，打开内置终端与 CLI 调试日志抽屉'
 } as const

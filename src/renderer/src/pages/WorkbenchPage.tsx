@@ -114,14 +114,14 @@ function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileStat
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, info, confirm } = useApp()
+  const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer } = useApp()
+  const { showDebugTerminal } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
   const sorted = useSortedAccounts()
 
   // settings for a conversation that hasn't been created yet (no thread selected)
   const draft = useDraft()
-  useSettings() // 新对话默认账号 changes the draft's driver
 
   const ctx: Ctx = thread ?? draft
   const update = (patch: Partial<Ctx>) => (thread ? updateThread(thread.id, patch) : patchDraft(patch))
@@ -265,6 +265,22 @@ export function WorkbenchPage() {
           )}
           <div className="no-drag flex items-center gap-1.5">
             <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
+            {showDebugTerminal && (
+              <button
+                onClick={() => (drawer.open ? closeDrawer() : openDrawer())}
+                className={pill.replace('px-4', 'px-0') + ` relative w-9 justify-center ${drawer.open ? 'bg-surface-2 text-accent' : ''}`}
+                title={
+                  t('nav.debugLog') +
+                  (info
+                    ? '\n' +
+                      (info.shellEnvSource === 'login' ? t('nav.shellLogin') : info.shellEnvSource === 'cache' ? t('nav.shellCache') : t('nav.shellFallback', { error: info.shellEnvError ?? '' }))
+                    : '')
+                }
+              >
+                <IconTerminal size={15} className={drawer.open ? 'text-accent' : 'text-ink-2'} />
+                {info && <span className={`absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full ${info.shellEnvSource === 'fallback' ? 'bg-orange' : 'bg-green'}`} />}
+              </button>
+            )}
             <button
               onClick={toggleChanges}
               className={pill + ` gap-1.5 px-3 ${changesOpen ? 'bg-surface-2 text-accent' : ''}`}

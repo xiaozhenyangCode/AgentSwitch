@@ -13,7 +13,7 @@ import { KIND_META } from '../lib/ui'
 import { t } from './i18n'
 
 export type Page = 'workbench' | 'engines' | 'usage'
-export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'shortcuts' | 'about'
+export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'developer' | 'shortcuts' | 'about'
 
 export interface Toast {
   id: number

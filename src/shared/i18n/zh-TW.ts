@@ -718,5 +718,8 @@ export const zhTW: Dict = {
   'eng.permFull': '完全放行',
   'eng.defaultModelHint': '預設模型（點擊修改）',
   'eng.permHint': '對話執行時的權限模式（點擊修改）',
-  'eng.openTerminal': '開啟終端機'
+  'eng.openTerminal': '開啟終端機',
+  'set.developer': '開發者',
+  'set.debugTerminal': '顯示除錯終端機',
+  'set.debugTerminalHint': '在頂部工具列顯示 >_ 按鈕，開啟內建終端機與 CLI 除錯日誌抽屜'
 }
