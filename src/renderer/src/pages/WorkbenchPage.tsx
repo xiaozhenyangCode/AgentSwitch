@@ -44,7 +44,11 @@ import {
   type AssistantMessage,
   type Attachment,
   type Thread,
-  type UserMessage
+  type UserMessage,
+  NEW_DRAFT,
+  clearComposerDraft,
+  composerDraft,
+  saveComposerDraft
 } from '../state/chat'
 import { fmtDuration, t, tNode } from '../state/i18n'
 import { stripLatest } from '@shared/i18n'
@@ -112,6 +116,29 @@ function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileStat
     }
   }
   return out.sort((a, b) => a.index - b.index)
+}
+
+/**
+ * Text of the composer mirror: plain runs as-is, mentions as accent capsules. The capsule
+ * background reaches past the glyphs through box-shadow only (no padding / margin), so every
+ * character keeps the exact position it has in the textarea above and the caret lines up.
+ */
+function mirrorSegments(text: string, spans: { index: number; length: number }[]): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const s of spans) {
+    if (s.index > at) out.push(text.slice(at, s.index))
+    out.push(
+      <span key={s.index} className="mention-capsule rounded-[5px] bg-accent/18 text-accent">
+        {text.slice(s.index, s.index + s.length)}
+      </span>
+    )
+    at = s.index + s.length
+  }
+  if (at < text.length) out.push(text.slice(at))
+  // a trailing newline only gets its own line box when something follows it
+  out.push('\u200b')
+  return out
 }
 
 export function WorkbenchPage() {
@@ -1050,8 +1077,9 @@ function Composer({
   const { sendKey } = useSettings()
   useModelsVersion()
   const accounts = useSortedAccounts()
-  const [text, setText] = useState('')
-  const [atts, setAtts] = useState<Attachment[]>([])
+  const draftKey = threadId ?? NEW_DRAFT
+  const [text, setText] = useState(() => composerDraft(draftKey)?.text ?? '')
+  const [atts, setAtts] = useState<Attachment[]>(() => composerDraft(draftKey)?.atts ?? [])
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
@@ -1076,6 +1104,32 @@ function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
+  const mirror = useRef<HTMLDivElement>(null)
+  // per-conversation drafts: park the leaving chat's input, bring back the target's
+  const live = useRef({ key: draftKey, text, atts })
+  live.current.text = text
+  live.current.atts = atts
+  useLayoutEffect(() => {
+    const cur = live.current
+    if (cur.key === draftKey) return
+    saveComposerDraft(cur.key, cur.text, cur.atts)
+    const d = composerDraft(draftKey)
+    cur.key = draftKey
+    setText(d?.text ?? '')
+    setAtts(d?.atts ?? [])
+    setMention(null)
+    setSlash(null)
+  }, [draftKey])
+  useEffect(() => () => saveComposerDraft(live.current.key, live.current.text, live.current.atts), [])
+  // mention capsules drawn in a mirror under the (transparent-text) textarea
+  const mentionSpans = useMemo(() => parseMentions(text, accounts), [text, accounts])
+  const syncMirror = useCallback(() => {
+    const el = ta.current
+    const m = mirror.current
+    if (!el || !m) return
+    m.style.width = el.clientWidth + 'px'
+    m.scrollTop = el.scrollTop
+  }, [])
   const ghost = !!suggestion && !text && !atts.length && !mention && !slash
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -1085,7 +1139,8 @@ function Composer({
     if (!el) return
     el.style.height = '0px'
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
-  }, [text])
+    syncMirror()
+  }, [text, syncMirror])
 
   useEffect(() => {
     const el = wrap.current
@@ -1240,6 +1295,7 @@ function Composer({
     const sentText = text
     const sentAtts = atts
     const r = onSend(text.trim(), atts)
+    clearComposerDraft(draftKey)
     setText('')
     setAtts([])
     // cancelled (e.g. the session is being written elsewhere): give the draft back if still empty
@@ -1455,41 +1511,51 @@ function Composer({
               Tab
             </span>
           )}
-          <textarea
-            ref={ta}
-            rows={1}
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value)
-              if (e.target.value && suggestion && threadId) clearSuggestion(threadId)
-              // mid-composition text is pinyin, not the query: wait for compositionend
-              if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
-            }}
-            onCompositionStart={() => (composingRef.current = true)}
-            onCompositionEnd={(e) => {
-              composingRef.current = false
-              syncMention(e.currentTarget.value, e.currentTarget.selectionStart)
-            }}
-            // caret moved (click, ←/→, Home/End) without typing: reopen / close for that position
-            onSelect={(e) => {
-              const el = e.currentTarget
-              if (!composingRef.current && el.selectionStart === el.selectionEnd) syncMention(el.value, el.selectionStart)
-            }}
-            onBlur={() => {
-              setMention(null)
-              setSlash(null)
-            }}
-            onKeyDown={onKey}
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files]
-              if (files.length) {
-                e.preventDefault()
-                void addFiles(files)
-              }
-            }}
-            placeholder={ghost ? suggestion! : driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
-            className={`block max-h-[200px] w-full resize-none bg-transparent pt-4 pb-1 pl-5 text-[15px] leading-[22px] text-ink outline-none placeholder:text-ink-3 ${ghost ? 'pr-16 placeholder:text-ink-3/80' : 'pr-5'}`}
-          />
+          <div className="relative">
+            <div
+              ref={mirror}
+              aria-hidden
+              className={`pointer-events-none absolute top-0 left-0 h-full overflow-hidden pt-4 pb-1 pl-5 text-[15px] leading-[22px] break-words whitespace-pre-wrap text-ink ${ghost ? 'pr-16' : 'pr-5'}`}
+            >
+              {mirrorSegments(text, mentionSpans)}
+            </div>
+            <textarea
+              ref={ta}
+              rows={1}
+              onScroll={syncMirror}
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value)
+                if (e.target.value && suggestion && threadId) clearSuggestion(threadId)
+                // mid-composition text is pinyin, not the query: wait for compositionend
+                if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
+              }}
+              onCompositionStart={() => (composingRef.current = true)}
+              onCompositionEnd={(e) => {
+                composingRef.current = false
+                syncMention(e.currentTarget.value, e.currentTarget.selectionStart)
+              }}
+              // caret moved (click, ←/→, Home/End) without typing: reopen / close for that position
+              onSelect={(e) => {
+                const el = e.currentTarget
+                if (!composingRef.current && el.selectionStart === el.selectionEnd) syncMention(el.value, el.selectionStart)
+              }}
+              onBlur={() => {
+                setMention(null)
+                setSlash(null)
+              }}
+              onKeyDown={onKey}
+              onPaste={(e) => {
+                const files = [...e.clipboardData.files]
+                if (files.length) {
+                  e.preventDefault()
+                  void addFiles(files)
+                }
+              }}
+              placeholder={ghost ? suggestion! : driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
+              className={`relative block max-h-[200px] w-full resize-none bg-transparent pt-4 pb-1 pl-5 text-[15px] leading-[22px] text-transparent caret-ink outline-none selection:bg-accent/25 placeholder:text-ink-3 ${ghost ? 'pr-16 placeholder:text-ink-3/80' : 'pr-5'}`}
+            />
+          </div>
 
           <div className="flex items-center gap-1 px-3 pt-1 pb-3">
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />

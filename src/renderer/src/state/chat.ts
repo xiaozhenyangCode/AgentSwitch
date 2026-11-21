@@ -284,9 +284,27 @@ export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir
  * Removes the chat and AgentSwitch's files for it (session map, run artefacts). With purgeCli the
  * CLI's own session files go to the Trash as well. Usage statistics are kept.
  */
+// ---- composer drafts -------------------------------------------------------------------------
+
+/** Draft key of the not-yet-created conversation (no thread selected). */
+export const NEW_DRAFT = '__new__'
+/** Unsent input per conversation (in memory only): switching chats never carries text over. */
+const drafts = new Map<string, { text: string; atts: Attachment[] }>()
+const deletedDrafts = new Set<string>()
+
+export const composerDraft = (key: string) => drafts.get(key) ?? null
+export function saveComposerDraft(key: string, text: string, atts: Attachment[]) {
+  if (deletedDrafts.has(key)) return
+  if (text || atts.length) drafts.set(key, { text, atts })
+  else drafts.delete(key)
+}
+export const clearComposerDraft = (key: string) => void drafts.delete(key)
+
 export async function deleteThread(id: string, purgeCli = false) {
   const t = state.threads.find((x) => x.id === id)
   if (!t) return null
+  drafts.delete(id)
+  deletedDrafts.add(id)
   if (t.activeTurn) await window.agentswitch.chat.stop(id)
   const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })

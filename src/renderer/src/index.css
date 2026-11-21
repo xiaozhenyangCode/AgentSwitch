@@ -343,3 +343,11 @@ label {
 .sheet-out { animation: sheet-out 150ms ease-in forwards; }
 .scrim-in { animation: scrim-in 150ms ease-out; }
 .scrim-out { animation: scrim-out 150ms ease-in forwards; pointer-events: none; }
+
+/* @mention in the composer mirror: the soft background grows through box-shadow only, so the
+   glyphs keep their exact textarea positions (no padding / margin) */
+.mention-capsule {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
