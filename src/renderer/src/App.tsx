@@ -5,7 +5,7 @@ import { LoginModal } from './components/LoginModal'
 import { Toasts } from './components/Toasts'
 import { ProfileConfigModal } from './components/ProfileConfigModal'
 import { AddAccountModal, CliConfigModal, ConfirmDialog } from './components/dialogs'
-import { WorkflowsPage } from './pages/WorkflowsPage'
+import { WorkbenchPage } from './pages/WorkbenchPage'
 import { EnginesPage } from './pages/EnginesPage'
 
 function Shell() {
@@ -17,7 +17,7 @@ function Shell() {
       <NavRail />
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
         <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
-          {page === 'workflows' ? <WorkflowsPage /> : <EnginesPage />}
+          {page === 'workbench' ? <WorkbenchPage /> : <EnginesPage />}
         </div>
         <DebugDrawer />
       </main>

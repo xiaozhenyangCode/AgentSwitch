@@ -1,8 +1,8 @@
 import { useApp, type Page } from '../state/AppContext'
-import { IconEngine, IconTerminal, IconWorkflow } from './icons'
+import { IconChat, IconEngine, IconTerminal } from './icons'
 
-const ITEMS: { page: Page; label: string; Icon: typeof IconWorkflow }[] = [
-  { page: 'workflows', label: '工作流', Icon: IconWorkflow },
+const ITEMS: { page: Page; label: string; Icon: typeof IconChat }[] = [
+  { page: 'workbench', label: '工作台', Icon: IconChat },
   { page: 'engines', label: '模型引擎', Icon: IconEngine }
 ]
 
@@ -27,7 +27,7 @@ export function NavRail() {
         </div>
         <div>
           <div className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentMux</div>
-          <div className="text-[12px] leading-4 text-ink-2">多模型工作流</div>
+          <div className="text-[12px] leading-4 text-ink-2">多模型工作台</div>
         </div>
       </div>
 

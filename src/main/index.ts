@@ -22,6 +22,8 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
+      // agents keep streaming while the window is hidden; don't throttle renderer timers
+      backgroundThrottling: false,
       nodeIntegration: false,
       sandbox: false
     }

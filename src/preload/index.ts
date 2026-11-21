@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import {
   IPC,
   type AppInfo,
@@ -64,7 +64,9 @@ const api = {
     openPath: (p: string): Promise<void> => ipcRenderer.invoke(IPC.openPath, p),
     pickDirectory: (defaultPath?: string, title?: string): Promise<string | null> =>
       ipcRenderer.invoke(IPC.pickDirectory, defaultPath, title),
-    info: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appInfo)
+    info: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appInfo),
+    /** Absolute path of a File picked/dropped in the renderer ('' for in-memory files). */
+    pathForFile: (file: File): string => webUtils.getPathForFile(file)
   }
 }
 

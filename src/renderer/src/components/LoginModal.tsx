@@ -90,7 +90,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
 
   useEffect(() => {
     if (phase !== 'success') return
-    toast({ kind: 'success', title: `${profile?.name ?? profileId} 已登录`, desc: '账号已就绪，可以在工作流中使用了。' })
+    toast({ kind: 'success', title: `${profile?.name ?? profileId} 已登录`, desc: '账号已就绪，可以在工作台中使用了。' })
     const t = setTimeout(closeLogin, 1000)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,7 +127,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
         <KindAvatar kind={profile.kind} size={44} />
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="text-[20px] leading-6 font-semibold tracking-tight text-ink">登录 {profile.name}</div>
-          <div className="mt-1 text-[14px] text-ink-2">授权后，此账号即可在工作流中使用</div>
+          <div className="mt-1 text-[14px] text-ink-2">授权后，此账号即可在工作台中使用</div>
         </div>
         <button className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-fill hover:text-ink" onClick={cancel} title="取消">
           <IconX size={16} />

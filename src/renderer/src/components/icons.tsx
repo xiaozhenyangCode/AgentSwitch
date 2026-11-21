@@ -121,3 +121,55 @@ export const IconClock = (p: P) => (
     <path d="M12 7v5l3 2" />
   </svg>
 )
+export const IconArrowUp = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 19V5M6 11l6-6 6 6" />
+  </svg>
+)
+export const IconPlus = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+)
+export const IconStop = ({ size = 16, ...rest }: P) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" {...rest}>
+    <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" />
+  </svg>
+)
+export const IconSliders = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
+    <circle cx="16" cy="7" r="2" />
+    <circle cx="10" cy="17" r="2" />
+  </svg>
+)
+export const IconCompose = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
+    <path d="M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 8.5-8.5Z" />
+  </svg>
+)
+export const IconFile = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+    <path d="M14 3v5h5" />
+  </svg>
+)
+export const IconSparkle = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 3c.4 3.9 2.1 5.6 6 6-3.9.4-5.6 2.1-6 6-.4-3.9-2.1-5.6-6-6 3.9-.4 5.6-2.1 6-6Z" />
+    <path d="M19 15c.2 1.6.9 2.3 2.5 2.5-1.6.2-2.3.9-2.5 2.5-.2-1.6-.9-2.3-2.5-2.5 1.6-.2 2.3-.9 2.5-2.5Z" />
+  </svg>
+)
+export const IconChat = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M20 11.5a7.5 7.5 0 0 1-11.2 6.5L4 19.5l1.4-4.3A7.5 7.5 0 1 1 20 11.5Z" />
+    <path d="M9 10h6M9 13.5h3.5" />
+  </svg>
+)
+export const IconAt = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="3.6" />
+    <path d="M15.6 8.4v4.8a2.4 2.4 0 0 0 4.8 0V12a8.4 8.4 0 1 0-3.3 6.7" />
+  </svg>
+)

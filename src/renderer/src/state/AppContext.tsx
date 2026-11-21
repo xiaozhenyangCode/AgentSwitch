@@ -11,7 +11,7 @@ import {
 } from '@shared/types'
 import { KIND_META } from '../lib/ui'
 
-export type Page = 'workflows' | 'engines'
+export type Page = 'workbench' | 'engines'
 
 export interface Toast {
   id: number
@@ -88,7 +88,7 @@ export const useApp = (): AppState => {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [snap, setSnap] = useState<Snapshot | null>(null)
-  const [page, setPage] = useState<Page>('workflows')
+  const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
   const [drawer, setDrawer] = useState<AppState['drawer']>({ open: false, session: null })
   const [loginId, setLoginId] = useState<ProfileId | null>(null)

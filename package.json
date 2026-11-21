@@ -13,7 +13,10 @@
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
