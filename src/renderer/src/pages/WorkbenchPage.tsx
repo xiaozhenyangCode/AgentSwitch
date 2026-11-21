@@ -40,6 +40,21 @@ const DRAFT_KEY = 'agentmux.draft.v1'
 const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 const fmtDur = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`)
+const pad2 = (n: number) => String(n).padStart(2, '0')
+/** Message time: today HH:mm · 昨天 HH:mm · MM-DD HH:mm (hover: full). */
+function msgTime(ts: number): string {
+  const d = new Date(ts)
+  const day = new Date()
+  day.setHours(0, 0, 0, 0)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (ts >= day.getTime()) return hm
+  if (ts >= day.getTime() - 86400_000) return `昨天 ${hm}`
+  return `${d.getFullYear() !== day.getFullYear() ? d.getFullYear() + '-' : ''}${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`
+}
+const fullTime = (ts: number) => {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const pill =
@@ -458,11 +473,14 @@ function UserBubble({ msg }: { msg: UserMessage }) {
           <IconCheck size={11} /> {msg.note}
         </div>
       )}
-      {!msg.mentions.length && (
-        <div className="flex items-center gap-1 text-[11px] text-ink-3">
-          发给 <KindAvatar kind={msg.driver.kind} size={13} /> {msg.driver.name}
-        </div>
-      )}
+      <div className="flex items-center gap-1 text-[11px] text-ink-3">
+        {!msg.mentions.length && (
+          <>
+            发给 <KindAvatar kind={msg.driver.kind} size={13} /> {msg.driver.name} ·
+          </>
+        )}
+        <span title={fullTime(msg.createdAt)}>{msgTime(msg.createdAt)}</span>
+      </div>
     </div>
   )
 }
@@ -519,7 +537,8 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
         <span className="text-[12px] text-ink-3">等待中</span>
       ) : (
         msg.startedAt && (
-          <span className="text-[12px] text-ink-3">
+          <span className="text-[12px] text-ink-3" title={`开始 ${fullTime(msg.startedAt)}${msg.endedAt ? `\n结束 ${fullTime(msg.endedAt)}` : ''}`}>
+            {msgTime(msg.startedAt)} ·{' '}
             {msg.status === 'stopped' ? '已停止 · ' : ''}
             {fmtDur((msg.endedAt ?? Date.now()) - msg.startedAt)}
           </span>

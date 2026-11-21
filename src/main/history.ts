@@ -507,6 +507,21 @@ function codexItem(cur: Extract<HistoryMessage, { role: 'assistant' }>, it: any)
   }
 }
 
+/** Codex desktop wraps answers to its in-chat questions in a protocol tag: show them readably. */
+function codexUserText(text: string): string {
+  const m = /^<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>$/.exec(text)
+  if (!m) return text
+  try {
+    const items = JSON.parse(m[1]) as { question?: string; answer?: string }[]
+    if (!Array.isArray(items)) return text
+    return items
+      .map((q) => `回答提问「${oneLine(String(q.question ?? ''), 80)}」\n${String(q.answer ?? '').trim()}`)
+      .join('\n\n')
+  } catch {
+    return text
+  }
+}
+
 async function parseCodex(path: string): Promise<HistoryMessage[]> {
   const msgs: HistoryMessage[] = []
   const fallback: HistoryMessage[] = [] // older rollouts without item_completed events
@@ -530,7 +545,7 @@ async function parseCodex(path: string): Promise<HistoryMessage[]> {
       const it = p.item
       if (it?.type === 'UserMessage') {
         const text = (Array.isArray(it.content) ? it.content : []).map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : c?.type ? '[图片]' : '')).join('\n').trim()
-        if (text) msgs.push({ role: 'user', text, at })
+        if (text) msgs.push({ role: 'user', text: codexUserText(text), at })
         cur = null
         continue
       }
