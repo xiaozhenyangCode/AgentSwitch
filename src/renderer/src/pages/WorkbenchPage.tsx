@@ -881,8 +881,9 @@ function Composer({
     ta.current?.focus()
   }, [threadId])
 
-  // @ candidates: ready accounts (participants first). Display name wins; the underlying CLI
-  // name ("Claude Code") is only a fallback when nothing matches by name, so `@cod` → Codex only.
+  // @ candidates: ready accounts; others first (participants before the rest), the current driver
+  // last. Display name wins; the underlying CLI name ("Claude Code") is only a fallback when
+  // nothing matches by name, so `@cod` → Codex only.
   const matches = useMemo(() => {
     if (!mention) return []
     const q = mention.query.toLowerCase()
@@ -897,11 +898,12 @@ function Composer({
     }
     const scored = accounts
       .filter(isReady)
-      .map((p, i) => ({ p, s: score(p), i: i - (participants.includes(p.id) ? 1000 : 0) }))
+      .map((p, i) => ({ p, s: score(p), i: i - (participants.includes(p.id) ? 1000 : 0) + (p.id === driver?.id ? 100000 : 0) }))
       .filter((x) => x.s >= 0)
     const byName = scored.filter((x) => x.s < 9)
-    return (byName.length ? byName : scored).sort((a, b) => a.s - b.s || a.i - b.i).map((x) => x.p)
-  }, [mention, accounts, participants])
+    const isDriver = (x: { p: ProfileState }) => Number(x.p.id === driver?.id)
+    return (byName.length ? byName : scored).sort((a, b) => isDriver(a) - isDriver(b) || a.s - b.s || a.i - b.i).map((x) => x.p)
+  }, [mention, accounts, participants, driver])
 
   // preload model lists for the @ menu's sub-model column
   useEffect(() => {
@@ -915,10 +917,24 @@ function Composer({
   // effort chosen in the @ sub-model column (applies to the inserted model if it supports it)
   const [subEffort, setSubEffort] = useState<string | null>(null)
 
-  const syncMention = (value: string, caret: number) => {
-    const m = /(^|\s)@([^\s@]{0,24})$/.exec(value.slice(0, caret))
-    setMention(m ? { start: caret - m[2].length - 1, query: m[2], index: 0, sub: null, subIndex: 0 } : null)
+  /**
+   * Opens / updates / closes the @ menu from the text before the caret. `@` (or full-width `＠`)
+   * triggers anywhere except right after a letter or digit (e-mail addresses): line start, after a
+   * space and right after Chinese text (`让@`). Same `@` and query -> the menu keeps its selection.
+   */
+  const syncMention = (value: string, caret: number | null) => {
+    if (caret === null) return setMention(null)
+    // closed with Esc: stay closed until the text or the caret changes
+    const d = dismissed.current
+    if (d && d.value === value && d.caret === caret) return
+    dismissed.current = null
+    const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(value.slice(0, caret))
+    if (!m) return setMention(null)
+    const start = caret - m[1].length - 1
+    setMention((cur) => (cur && cur.start === start && cur.query === m[1] ? cur : { start, query: m[1], index: 0, sub: null, subIndex: 0 }))
   }
+  const composingRef = useRef(false)
+  const dismissed = useRef<{ value: string; caret: number } | null>(null)
 
   /** Replaces `@query` with `@Name` or `@Name(model)` followed by a space. */
   const insertMention = (p: ProfileState, picked: string | null) => {
@@ -989,6 +1005,7 @@ function Composer({
       }
       if (e.key === 'Escape') {
         e.preventDefault()
+        dismissed.current = { value: e.currentTarget.value, caret: e.currentTarget.selectionStart }
         return setMention(null)
       }
     }
@@ -1015,6 +1032,8 @@ function Composer({
                     active={i === (mention.sub ?? mention.index)}
                     onClick={() => insertMention(p, null)}
                     trailing={
+                      <>
+                      {p.id === driver?.id && <span className="text-[11px] text-ink-3">当前</span>}
                       <span
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={(e) => {
@@ -1026,6 +1045,7 @@ function Composer({
                       >
                         {p.defaultModel ? modelLabel(p.defaultModel, p.id) : '默认'} ›
                       </span>
+                      </>
                     }
                   />
                 ))
@@ -1105,7 +1125,18 @@ function Composer({
             value={text}
             onChange={(e) => {
               setText(e.target.value)
-              syncMention(e.target.value, e.target.selectionStart)
+              // mid-composition text is pinyin, not the query: wait for compositionend
+              if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
+            }}
+            onCompositionStart={() => (composingRef.current = true)}
+            onCompositionEnd={(e) => {
+              composingRef.current = false
+              syncMention(e.currentTarget.value, e.currentTarget.selectionStart)
+            }}
+            // caret moved (click, ←/→, Home/End) without typing: reopen / close for that position
+            onSelect={(e) => {
+              const el = e.currentTarget
+              if (!composingRef.current && el.selectionStart === el.selectionEnd) syncMention(el.value, el.selectionStart)
             }}
             onBlur={() => setMention(null)}
             onKeyDown={onKey}
