@@ -83,7 +83,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         loginCommand: form.loginCommand,
         runCommand: form.runCommand,
         defaultModel: form.defaultModel ?? '',
-        autoApprove: form.autoApprove === 'full' ? 'full' : 'edits',
+        autoApprove: form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli',
         extraEnv: textToEnv(envText)
       })
       setPreview(await window.agentmux.profiles.envPreview(profile.id, previewMode))
@@ -189,16 +189,19 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         <Field
           label="对话中的自动授权"
           hint={
-            form.autoApprove === 'full'
+            form.autoApprove === 'cli'
+              ? '和你在终端里用这个 CLI 一样：沿用它自己的权限设置（Claude：settings 里的 defaultMode 与 allow/deny 规则，未设置时用 auto 模式；Codex：config.toml 的 sandbox / approval；agy：默认模式）。'
+              : form.autoApprove === 'full'
               ? '⚠️ 完全放行：模型可以不经确认执行任意命令、读写项目以外的文件（Claude bypassPermissions / Codex danger-full-access / agy --dangerously-skip-permissions）。只在你信任当前任务时开启。'
               : '仅项目目录内编辑：允许直接修改项目里的文件，执行命令受 CLI 自身的限制（Claude acceptEdits / Codex workspace-write 沙箱 / agy accept-edits）。'
           }
         >
           <Segmented
-            value={form.autoApprove === 'full' ? 'full' : 'edits'}
+            value={form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli'}
             onChange={(v) => set('autoApprove', v)}
             options={[
-              { value: 'edits', label: '仅项目内编辑（推荐）' },
+              { value: 'cli', label: '跟随 CLI（推荐）' },
+              { value: 'edits', label: '仅项目内编辑' },
               { value: 'full', label: '完全放行' }
             ]}
           />

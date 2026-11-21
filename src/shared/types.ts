@@ -59,6 +59,8 @@ export interface ProfileConfig {
   defaultModel: string
   /**
    * Auto-approval for chat runs.
+   * cli:   the CLI's own permissions, as in the terminal (claude: settings defaultMode, else auto;
+   *        codex: config.toml sandbox/approval, else workspace-write; agy: its default mode)
    * edits: edits confined to the project (claude acceptEdits / codex workspace-write / agy accept-edits)
    * full:  bypass all permission prompts and sandboxing
    */
@@ -66,7 +68,7 @@ export interface ProfileConfig {
   createdAt: number
 }
 
-export type AutoApprove = 'edits' | 'full'
+export type AutoApprove = 'cli' | 'edits' | 'full'
 
 // ---- sub-models ------------------------------------------------------------------
 

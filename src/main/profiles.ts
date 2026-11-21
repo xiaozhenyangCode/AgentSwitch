@@ -91,7 +91,7 @@ function detectExisting(): ProfileConfig[] {
       ...COMMAND_DEFAULTS[kind],
       extraEnv: {},
       defaultModel: '',
-      autoApprove: 'edits',
+      autoApprove: 'cli',
       createdAt: now + out.length
     })
 
@@ -138,7 +138,7 @@ export function initProfiles(): void {
         ...COMMAND_DEFAULTS.gemini,
         extraEnv: {},
         defaultModel: '',
-        autoApprove: 'edits',
+        autoApprove: 'cli',
         createdAt: Date.now()
       })
     }
@@ -151,7 +151,7 @@ export function initProfiles(): void {
 const withDefaults = (p: ProfileConfig): ProfileConfig => ({
   ...p,
   defaultModel: p.defaultModel ?? '',
-  autoApprove: p.autoApprove === 'full' ? 'full' : 'edits',
+  autoApprove: p.autoApprove === 'full' || p.autoApprove === 'edits' ? p.autoApprove : 'cli',
   extraEnv: { ...p.extraEnv }
 })
 
@@ -213,7 +213,7 @@ export function addProfile(kind: ProfileKind, name?: string): ProfileConfig {
     ...COMMAND_DEFAULTS[kind],
     extraEnv: {},
     defaultModel: '',
-    autoApprove: 'edits',
+    autoApprove: 'cli',
     createdAt: Date.now()
   }
   store.profiles.push(p)
@@ -227,7 +227,7 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   const { id: _i, kind: _k, imported: _m, createdAt: _c, ...rest } = patch
   if (rest.name !== undefined) rest.name = rest.name.trim() || store.profiles[i].name
   if (rest.defaultModel !== undefined) rest.defaultModel = rest.defaultModel.trim()
-  if (rest.autoApprove !== undefined && rest.autoApprove !== 'full') rest.autoApprove = 'edits'
+  if (rest.autoApprove !== undefined && rest.autoApprove !== 'full' && rest.autoApprove !== 'edits') rest.autoApprove = 'cli'
   store.profiles[i] = { ...store.profiles[i], ...rest }
   persist()
   return getConfig(id)

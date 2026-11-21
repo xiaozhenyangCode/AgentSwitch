@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
@@ -117,6 +117,43 @@ export function unwrapShell(cmd: string): string {
   return m[1] === '"' ? m[2].replace(/\\(["\\$`])/g, '$1') : m[2]
 }
 
+// ---- permissions: follow the CLI's own settings ----------------------------------------------
+
+const readJson = (p: string): any => {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8'))
+  } catch {
+    return null
+  }
+}
+const CLAUDE_MODES = new Set(['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'])
+/** permissions.defaultMode as the terminal would see it (project local > project > user); 'auto' otherwise.
+ *  'default' / 'manual' would only deny every prompt in -p mode, so they also map to auto. */
+function claudeCliMode(cfg: ProfileConfig, cwd: string): string {
+  const home = expandHome(cfg.configDir)
+  const userDir = cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home
+  for (const f of [join(cwd, '.claude', 'settings.local.json'), join(cwd, '.claude', 'settings.json'), join(userDir, 'settings.json')]) {
+    const m = readJson(f)?.permissions?.defaultMode
+    if (typeof m === 'string' && m) return CLAUDE_MODES.has(m) ? m : 'auto'
+  }
+  return 'auto'
+}
+/** Top-level keys set in codex config.toml (user's own sandbox / approval choices win). */
+function codexTopKeys(codexHome: string): Set<string> {
+  const out = new Set<string>()
+  try {
+    for (const line of readFileSync(join(codexHome, 'config.toml'), 'utf8').split('\n')) {
+      const l = line.trim()
+      if (l.startsWith('[')) break
+      const m = /^([\w-]+)\s*=/.exec(l)
+      if (m) out.add(m[1])
+    }
+  } catch {
+    /* no config */
+  }
+  return out
+}
+
 // ---- claude --------------------------------------------------------------------------------
 
 function claudeAdapter(s: RunSpec): Adapter {
@@ -134,7 +171,7 @@ function claudeAdapter(s: RunSpec): Adapter {
     '--verbose',
     '--include-partial-messages',
     '--permission-mode',
-    s.cfg.autoApprove === 'full' ? 'bypassPermissions' : 'acceptEdits'
+    s.cfg.autoApprove === 'full' ? 'bypassPermissions' : s.cfg.autoApprove === 'edits' ? 'acceptEdits' : claudeCliMode(s.cfg, s.cwd)
   ]
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', spec.model)
@@ -249,7 +286,9 @@ function deniedText(tools: string[], level: AutoApprove): string {
   const names = [...new Set(tools)].join('、')
   return level === 'full'
     ? `有 ${tools.length} 次工具调用被拒绝（${names}）`
-    : `有 ${tools.length} 次工具调用因「仅项目内编辑」授权被自动拒绝（${names}）。需要执行命令时，可在账号设置里切换为「完全放行」。`
+    : level === 'cli'
+      ? `有 ${tools.length} 次工具调用被 CLI 的权限设置拒绝（${names}）。可在 CLI 的 settings 里放行，或在账号设置里切换为「完全放行」。`
+      : `有 ${tools.length} 次工具调用因「仅项目内编辑」授权被自动拒绝（${names}）。需要执行命令时，可在账号设置里切换为「完全放行」。`
 }
 
 export function claudeTool(id: string, name: string, input: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
@@ -310,10 +349,11 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
   let thoughtSoFar = ''
+  const own = s.cfg.autoApprove === 'cli' ? codexTopKeys(codexHome) : new Set<string>()
   const policy =
     s.cfg.autoApprove === 'full'
       ? ['-c', 'sandbox_mode="danger-full-access"', '-c', 'approval_policy="never"']
-      : ['-c', 'sandbox_mode="workspace-write"', '-c', 'approval_policy="never"']
+      : [...(own.has('sandbox_mode') ? [] : ['-c', 'sandbox_mode="workspace-write"']), ...(own.has('approval_policy') ? [] : ['-c', 'approval_policy="never"'])]
   const spec = splitSpec(s.model)
   const common = [
     '--json',
@@ -487,7 +527,9 @@ function agyAdapter(s: RunSpec): Adapter {
   let lastTextStep = -1
   let thinkingTokens = 0
   const args = ['--output-format', 'stream-json']
-  args.push(...(s.cfg.autoApprove === 'full' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits']))
+  // cli: agy's own default mode (runs commands in -p, measured 1.5.13)
+  if (s.cfg.autoApprove === 'full') args.push('--dangerously-skip-permissions')
+  else if (s.cfg.autoApprove === 'edits') args.push('--mode', 'accept-edits')
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', agyModelId(s.cfg.id, spec.model, spec.effort))
   if (s.resume) args.push('--conversation', s.resume)
