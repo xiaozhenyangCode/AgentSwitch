@@ -48,8 +48,18 @@ const isDir = (p: string | null): boolean => {
 
 // ---- AgentMux's own sessions (hidden) / imported (kept) -----------------------------------------
 
+/** CLI sessions of chats deleted in AgentMux (userData/deleted-sessions.json): never listed again. */
+export function deletedSessions(): Set<string> {
+  try {
+    const j = JSON.parse(readFileSync(join(app.getPath('userData'), 'deleted-sessions.json'), 'utf8'))
+    return new Set(Array.isArray(j) ? j.filter((x: unknown): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
 export function ownSessions(): Set<string> {
-  const out = new Set<string>()
+  const out = deletedSessions()
   const dir = join(app.getPath('userData'), 'threads')
   let files: string[] = []
   try {

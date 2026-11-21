@@ -75,7 +75,7 @@ const fullTime = (ts: number) => {
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail() {
-  const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm } = useApp()
+  const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm, toast } = useApp()
   const chat = useChat()
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
@@ -96,13 +96,27 @@ export function NavRail() {
   }, [chat.threads, q])
 
   const remove = async (t: Thread) => {
+    let purgeCli = false
     const ok = await confirm({
       title: `删除「${t.title}」？`,
-      message: '只会删除这条对话记录，不会改动项目文件夹里的任何文件。',
+      message: '会删除这条对话及 AgentMux 为它保存的运行记录（项目里 .agentmux 下的附件副本与产物），不会改动你的项目文件。用量统计会保留。',
       confirmLabel: '删除对话',
-      destructive: true
+      destructive: true,
+      option: {
+        label: '同时删除 CLI 里的原始会话',
+        hint: t.imported
+          ? '这条对话是从「本机历史」导入的：会把你在终端里的那条原始会话也移到废纸篓，CLI 里将无法再 resume。'
+          : '把 Claude / Codex / Gemini CLI 为这条对话保存的会话文件移到废纸篓（可从废纸篓恢复）。',
+        onChange: (v) => (purgeCli = v)
+      }
     })
-    if (ok) deleteThread(t.id)
+    if (!ok) return
+    const r = await deleteThread(t.id, purgeCli).catch((e: unknown) => {
+      toast({ kind: 'warn', title: '对话已移除，但清理文件失败', desc: e instanceof Error ? e.message : String(e) })
+      return null
+    })
+    if (r?.failed.length) toast({ kind: 'warn', title: `有 ${r.failed.length} 个 CLI 会话文件没能移到废纸篓` })
+    else if (r?.trashed.length) toast({ kind: 'success', title: `已删除，CLI 会话文件 ${r.trashed.length} 个已移到废纸篓` })
   }
 
   const [width, onResize, resetWidth] = useSidebarWidth()

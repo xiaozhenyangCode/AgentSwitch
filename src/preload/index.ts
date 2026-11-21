@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import {
   IPC,
   type AppInfo,
+  type DeleteThreadRequest,
+  type DeleteThreadResult,
   type ChatEvent,
   type ModelList,
   type RunRequest,
@@ -75,7 +77,8 @@ const api = {
     onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb),
     /** Writes a handoff document (exported transcript); returns its absolute path. */
     exportHandoff: (threadId: string, turnId: string, projectDir: string | null, markdown: string): Promise<string> =>
-      ipcRenderer.invoke(IPC.chatExportHandoff, threadId, turnId, projectDir, markdown)
+      ipcRenderer.invoke(IPC.chatExportHandoff, threadId, turnId, projectDir, markdown),
+    deleteThread: (req: DeleteThreadRequest): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.chatDeleteThread, req)
   },
   usage: {
     get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),

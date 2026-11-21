@@ -406,6 +406,7 @@ export const IPC = {
   chatResume: 'chat:resume',
   chatEvent: 'chat:event',
   chatExportHandoff: 'chat:exportHandoff',
+  chatDeleteThread: 'chat:deleteThread',
   historyList: 'history:list',
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',
@@ -423,4 +424,20 @@ export interface AppInfo {
   path: string
   electron: string
   node: string
+}
+
+/** Really delete a chat: AgentMux's data always; the CLI's own session files only with purgeCli. */
+export interface DeleteThreadRequest {
+  threadId: string
+  projectDir: string | null
+  turnIds: string[]
+  /** Move the native CLI session files (~/.claude, ~/.codex, ~/.gemini) to the Trash. */
+  purgeCli: boolean
+}
+export interface DeleteThreadResult {
+  /** AgentMux files / folders removed. */
+  removed: number
+  /** Native CLI files moved to the Trash. */
+  trashed: string[]
+  failed: string[]
 }

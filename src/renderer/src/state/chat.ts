@@ -223,11 +223,18 @@ export const renameThread = (id: string, title: string) => title.trim() && patch
 export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir' | 'participants' | 'driver'>>) =>
   patchThread(id, (t) => ({ ...t, ...patch, workdir: patch.projectDir !== undefined ? patch.projectDir : t.workdir }))
 
-export function deleteThread(id: string) {
+/**
+ * Removes the chat and AgentMux's files for it (session map, run artefacts). With purgeCli the
+ * CLI's own session files go to the Trash as well. Usage statistics are kept.
+ */
+export async function deleteThread(id: string, purgeCli = false) {
   const t = state.threads.find((x) => x.id === id)
-  if (t?.activeTurn) void window.agentmux.chat.stop(id)
+  if (!t) return null
+  if (t.activeTurn) await window.agentmux.chat.stop(id)
   const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
+  const turnIds = [...new Set(t.messages.map((m) => m.turnId).filter(Boolean))]
+  return window.agentmux.chat.deleteThread({ threadId: id, projectDir: t.workdir ?? t.projectDir, turnIds, purgeCli })
 }
 
 // ---- sending ---------------------------------------------------------------------------------

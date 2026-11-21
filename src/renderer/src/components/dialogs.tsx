@@ -99,6 +99,7 @@ export function AddAccountModal() {
 export function ConfirmDialog() {
   const { confirmState: c } = useApp()
   const okRef = useRef<HTMLButtonElement>(null)
+  const [checked, setChecked] = useState(false)
   useEffect(() => {
     okRef.current?.focus()
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && c?.resolve(false)
@@ -111,6 +112,23 @@ export function ConfirmDialog() {
       <div className="p-7">
         <div className="text-[17px] font-semibold text-ink">{c.title}</div>
         <div className="mt-2 text-[14px] leading-relaxed text-ink-2">{c.message}</div>
+        {c.option && (
+          <label className="mt-4 flex cursor-default items-start gap-2.5 rounded-xl bg-fill px-3 py-2.5">
+            <input
+              type="checkbox"
+              className="mt-[3px] accent-[#FF3B30]"
+              checked={checked}
+              onChange={(e) => {
+                setChecked(e.target.checked)
+                c.option!.onChange(e.target.checked)
+              }}
+            />
+            <span>
+              <span className="block text-[13px] font-medium text-ink">{c.option.label}</span>
+              {c.option.hint && <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-3">{c.option.hint}</span>}
+            </span>
+          </label>
+        )}
         <div className="mt-7 flex justify-end gap-2.5">
           <button className={btnSecondary} onClick={() => c.resolve(false)}>
             取消

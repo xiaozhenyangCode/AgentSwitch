@@ -26,6 +26,8 @@ export interface ConfirmOptions {
   message: string
   confirmLabel: string
   destructive?: boolean
+  /** Optional checkbox (unchecked by default); its value is reported through onChange. */
+  option?: { label: string; hint?: string; onChange: (checked: boolean) => void }
 }
 
 interface AddAccountRequest {

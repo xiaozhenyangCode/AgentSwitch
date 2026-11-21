@@ -40,6 +40,7 @@ import {
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, listHistory, openHistory, writeHandoff } from './history'
+import { deleteThreadData } from './threadDelete'
 import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { allowRoot, isAllowedPath } from './fileProtocol'
@@ -234,6 +235,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const cwd = threadCwd(threadId, typeof projectDir === 'string' ? projectDir : null)
     allowRoot(cwd)
     return writeHandoff(cwd, turnId, markdown)
+  })
+
+  ipcMain.handle(IPC.chatDeleteThread, (_e, req: unknown) => {
+    const r = req as Record<string, unknown> | null
+    if (!r || typeof r.threadId !== 'string') throw new Error('bad request')
+    return deleteThreadData({
+      threadId: r.threadId,
+      projectDir: typeof r.projectDir === 'string' ? r.projectDir : null,
+      turnIds: Array.isArray(r.turnIds) ? r.turnIds.filter((t): t is string => typeof t === 'string') : [],
+      purgeCli: r.purgeCli === true
+    })
   })
 
   // ---- usage & quota ------------------------------------------------------------------------
