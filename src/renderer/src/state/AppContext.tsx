@@ -50,6 +50,9 @@ interface AppState {
   page: Page
   navigate: (page: Page, focus?: ProfileId | ProfileKind) => void
   engineFocus: { target: ProfileId | ProfileKind; at: number } | null
+  sidebarOpen: boolean
+  setSidebarOpen: (open: boolean) => void
+  toggleSidebar: () => void
   settingsSection: SettingsSection
   /** Settings is a dialog over the current page (which keeps its state). */
   settingsOpen: boolean
@@ -111,6 +114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [snap, setSnap] = useState<Snapshot | null>(null)
   const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
+  const [sidebarOpen, setSidebarOpenState] = useState<boolean>(() => localStorage.getItem('agentswitch.sidebar.open') !== '0')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawer, setDrawer] = useState<AppState['drawer']>({ open: false, session: null })
@@ -177,6 +181,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const navigate = useCallback((p: Page, focus?: ProfileId | ProfileKind) => {
     setPage(p)
     if (focus) setEngineFocus({ target: focus, at: Date.now() })
+  }, [])
+  const setSidebarOpen = useCallback((open: boolean) => {
+    localStorage.setItem('agentswitch.sidebar.open', open ? '1' : '0')
+    setSidebarOpenState(open)
+  }, [])
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpenState((o) => {
+      const next = !o
+      localStorage.setItem('agentswitch.sidebar.open', next ? '1' : '0')
+      return next
+    })
   }, [])
   const openSettings = useCallback((section?: SettingsSection) => {
     if (section) setSettingsSection(section)
@@ -266,6 +281,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       page,
       navigate,
       engineFocus,
+      sidebarOpen,
+      setSidebarOpen,
+      toggleSidebar,
       settingsSection,
       settingsOpen,
       openSettings,
@@ -293,7 +311,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dismissToast,
       install
     }),
-    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
+    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, sidebarOpen, setSidebarOpen, toggleSidebar, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

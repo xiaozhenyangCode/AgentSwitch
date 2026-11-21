@@ -689,6 +689,7 @@ function AppShortcuts() {
     <>
       <ShortcutRow label={t('set.scNewChat')} keys={['⌘', 'N']} />
       <ShortcutRow label={t('set.scSearch')} keys={['⌘', 'K']} />
+      <ShortcutRow label={t('set.scToggleSidebar')} keys={['⌘', '\\']} />
       <ShortcutRow label={t('set.scSettings')} keys={['⌘', ',']} />
       <ShortcutRow label={t('set.scQuit')} keys={['⌘', 'Q']} />
     </>

@@ -699,5 +699,9 @@ export const en: Dict = {
   'eng.openTerminal': 'Open terminal',
   'set.developer': 'Developer',
   'set.debugTerminal': 'Show debug terminal',
-  'set.debugTerminalHint': 'Adds a >_ button to the top toolbar that opens the built-in terminal and CLI debug log drawer'
+  'set.debugTerminalHint': 'Adds a >_ button to the top toolbar that opens the built-in terminal and CLI debug log drawer',
+  'nav.hideSidebar': 'Hide sidebar',
+  'nav.showSidebar': 'Show sidebar',
+  'menu.toggleSidebar': 'Toggle Sidebar',
+  'set.scToggleSidebar': 'Hide / show sidebar'
 }

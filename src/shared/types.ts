@@ -476,7 +476,7 @@ export interface AppInfo {
 }
 
 /** Native menu items the renderer acts on. */
-export type MenuCommand = 'about' | 'settings' | 'newThread' | 'search'
+export type MenuCommand = 'about' | 'settings' | 'newThread' | 'search' | 'toggleSidebar'
 
 /** Really delete a chat: AgentSwitch's data always; the CLI's own session files only with purgeCli. */
 export interface DeleteThreadRequest {

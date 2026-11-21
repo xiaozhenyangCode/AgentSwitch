@@ -5,7 +5,7 @@ import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { IconEngine, IconFolder, IconGauge, IconGear, IconPlus, IconRefresh, IconSearch, IconX, Spinner } from './icons'
+import { IconEngine, IconFolder, IconGauge, IconGear, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
@@ -18,8 +18,9 @@ const SIDEBAR_MAX = 420
 const clampWidth = (w: number) => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w)))
 
 /** Drag-to-resize sidebar width, clamped to [220, 420] and remembered across launches. */
-function useSidebarWidth(): [number, (e: React.PointerEvent<HTMLDivElement>) => void, () => void] {
+function useSidebarWidth(): [number, boolean, (e: React.PointerEvent<HTMLDivElement>) => void, () => void] {
   const [width, setWidth] = useState(() => clampWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT))
+  const [dragging, setDragging] = useState(false)
   useEffect(() => localStorage.setItem(SIDEBAR_KEY, String(width)), [width])
   const onResize = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -32,6 +33,7 @@ function useSidebarWidth(): [number, (e: React.PointerEvent<HTMLDivElement>) => 
       const prevCursor = document.body.style.cursor
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
+      setDragging(true)
       const move = (ev: PointerEvent) => setWidth(clampWidth(startW + ev.clientX - startX))
       const up = () => {
         el.removeEventListener('pointermove', move)
@@ -39,6 +41,7 @@ function useSidebarWidth(): [number, (e: React.PointerEvent<HTMLDivElement>) => 
         el.removeEventListener('pointercancel', up)
         document.body.style.cursor = prevCursor
         document.body.style.userSelect = ''
+        setDragging(false)
       }
       el.addEventListener('pointermove', move)
       el.addEventListener('pointerup', up)
@@ -46,7 +49,7 @@ function useSidebarWidth(): [number, (e: React.PointerEvent<HTMLDivElement>) => 
     },
     [width]
   )
-  return [width, onResize, () => setWidth(SIDEBAR_DEFAULT)]
+  return [width, dragging, onResize, () => setWidth(SIDEBAR_DEFAULT)]
 }
 
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -74,7 +77,7 @@ const fullTime = (ts: number) => {
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail() {
-  const { page, navigate, profiles, confirm, toast, openSettings, settingsOpen } = useApp()
+  const { page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar } = useApp()
   const chat = useChat()
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
@@ -127,10 +130,17 @@ export function NavRail() {
     else if (r?.trashed.length) toast({ kind: 'success', title: t('del.trashed', { n: r.trashed.length }) })
   }
 
-  const [width, onResize, resetWidth] = useSidebarWidth()
+  const [width, dragging, onResize, resetWidth] = useSidebarWidth()
 
   return (
-    <nav className="drag relative flex shrink-0 flex-col border-r border-black/[0.06] bg-sidebar/85 backdrop-blur-2xl dark:bg-sidebar/95" style={{ width }}>
+    <nav
+      aria-hidden={!sidebarOpen}
+      className={`drag relative shrink-0 overflow-hidden bg-sidebar/85 backdrop-blur-2xl dark:bg-sidebar/95 ${
+        dragging ? '' : 'transition-[width,opacity] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+      } ${sidebarOpen ? 'border-r border-black/[0.06] opacity-100' : 'pointer-events-none border-r-0 opacity-0'}`}
+      style={{ width: sidebarOpen ? width : 0 }}
+    >
+      <div className="flex h-full flex-col" style={{ width }}>
       {/* resize handle on the right edge (double-click resets) */}
       <div
         className="no-drag group absolute top-0 -right-px bottom-0 z-20 w-[7px] cursor-col-resize"
@@ -140,8 +150,17 @@ export function NavRail() {
       >
         <div className="ml-auto h-full w-px bg-transparent transition-colors duration-150 group-hover:bg-accent/50 group-active:bg-accent" />
       </div>
-      {/* traffic-light zone */}
-      <div className="h-[52px] shrink-0" />
+      {/* traffic-light zone + native macOS sidebar toggle */}
+      <div className="flex h-[52px] shrink-0 items-center justify-end pr-3 pl-[84px]">
+        <button
+          onClick={toggleSidebar}
+          className="no-drag flex h-7 w-7 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+          title={`${t('nav.hideSidebar')} (⌘\\)`}
+          aria-label={t('nav.hideSidebar')}
+        >
+          <IconSidebar size={16} strokeWidth={1.7} />
+        </button>
+      </div>
 
       <div className="flex items-center gap-2.5 px-5 pb-4">
         <BrandMark size={32} />
@@ -242,6 +261,7 @@ export function NavRail() {
           }
         />
         <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
+      </div>
       </div>
     </nav>
   )

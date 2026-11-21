@@ -19,7 +19,7 @@ import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
-import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
@@ -143,7 +143,7 @@ function mirrorSegments(text: string, spans: { index: number; length: number }[]
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer } = useApp()
+  const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
   const { showDebugTerminal } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
@@ -281,7 +281,17 @@ export function WorkbenchPage() {
   return (
     <div className="flex h-full">
       <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-clip">
-        <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
+        <div className={`drag flex h-14 shrink-0 items-center gap-2.5 pr-8 transition-[padding] duration-200 ${sidebarOpen ? 'pl-8' : 'pl-[86px]'}`}>
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              className="no-drag -ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+              title={`${t('nav.showSidebar')} (⌘\\)`}
+              aria-label={t('nav.showSidebar')}
+            >
+              <IconSidebar size={16} strokeWidth={1.7} />
+            </button>
+          )}
           <div className="min-w-0 truncate text-[14px] font-semibold text-ink" title={thread?.title}>
             {thread && !thread.preview ? thread.title : t('nav.newChat')}
           </div>

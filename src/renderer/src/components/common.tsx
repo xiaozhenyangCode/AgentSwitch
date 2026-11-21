@@ -83,16 +83,50 @@ export function Modal({ children, onClose, width = 500, escClose = true }: { chi
   )
 }
 
-/** AgentSwitch app mark: two opposing routes on a blue tile. */
+/** AgentSwitch app mark: silver macOS squircle with dark medallion and 3-orbit ice-cyan atom. */
 export function BrandMark({ size = 32 }: { size?: number }) {
+  const angles = [-12, 108, 228]
   return (
     <div
-      className="flex shrink-0 items-center justify-center bg-gradient-to-b from-[#3A8DFF] to-[#0066D6] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_1px_3px_rgba(0,102,214,0.35)]"
-      style={{ width: size, height: size, borderRadius: size * 0.28 }}
+      className="flex shrink-0 items-center justify-center bg-gradient-to-b from-[#F5F6F8] via-[#E5E7EB] to-[#C2C4C9] shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.9),inset_0_-1px_1px_rgba(0,0,0,0.08),0_1px_3px_rgba(0,0,0,0.22)]"
+      style={{ width: size, height: size, borderRadius: size * 0.24 }}
+      aria-label="AgentSwitch"
     >
-      <svg width={size * 0.56} height={size * 0.56} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4.5 8h14.5M15.5 4.5 19 8l-3.5 3.5" />
-        <path d="M19.5 16H5M8.5 12.5 5 16l3.5 3.5" />
+      <svg width={size} height={size} viewBox="0 0 100 100" fill="none" aria-hidden>
+        <circle cx="50" cy="50" r="36.5" fill="#272A36" />
+        {/* Under-pass: outer petal loops */}
+        {angles.map((a) => (
+          <path
+            key={`u${a}`}
+            d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2"
+            transform={`rotate(${a} 50 50)`}
+            stroke="#D4F6FF"
+            strokeWidth="3.5"
+            strokeLinecap="round"
+          />
+        ))}
+        {/* Over-pass: main orbital arms with dark halo for crisp weave */}
+        {angles.map((a) => (
+          <g key={`o${a}`} transform={`rotate(${a} 50 50)`}>
+            <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" strokeWidth="7.4" strokeLinecap="round" />
+            <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" strokeWidth="3.5" strokeLinecap="round" />
+          </g>
+        ))}
+        {/* Three orbital nodes */}
+        {angles.map((a) => (
+          <circle
+            key={`n${a}`}
+            cx="50"
+            cy="25"
+            r="4.1"
+            transform={`rotate(${a} 50 50)`}
+            fill="#272A36"
+            stroke="#D4F6FF"
+            strokeWidth="3.3"
+          />
+        ))}
+        {/* Center core */}
+        <circle cx="50" cy="50" r="3.6" fill="#D4F6FF" />
       </svg>
     </div>
   )

@@ -723,5 +723,9 @@ export const zhCN = {
   'eng.openTerminal': '打开终端',
   'set.developer': '开发者',
   'set.debugTerminal': '显示调试终端',
-  'set.debugTerminalHint': '在顶部工具栏显示 >_ 按钮，打开内置终端与 CLI 调试日志抽屉'
+  'set.debugTerminalHint': '在顶部工具栏显示 >_ 按钮，打开内置终端与 CLI 调试日志抽屉',
+  'nav.hideSidebar': '隐藏侧边栏',
+  'nav.showSidebar': '显示侧边栏',
+  'menu.toggleSidebar': '切换侧边栏',
+  'set.scToggleSidebar': '隐藏 / 显示侧边栏'
 } as const

@@ -56,6 +56,7 @@ export function buildMenu(getWindow: () => BrowserWindow | null): void {
     {
       label: t('menu.view'),
       submenu: [
+        { label: t('menu.toggleSidebar'), accelerator: 'CmdOrCtrl+\\', click: send('toggleSidebar') },
         { label: t('menu.searchChats'), accelerator: 'CmdOrCtrl+K', click: send('search') },
         { type: 'separator' },
         { label: t('menu.reload'), role: 'reload' },

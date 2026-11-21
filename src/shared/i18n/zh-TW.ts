@@ -721,5 +721,9 @@ export const zhTW: Dict = {
   'eng.openTerminal': '開啟終端機',
   'set.developer': '開發者',
   'set.debugTerminal': '顯示除錯終端機',
-  'set.debugTerminalHint': '在頂部工具列顯示 >_ 按鈕，開啟內建終端機與 CLI 除錯日誌抽屜'
+  'set.debugTerminalHint': '在頂部工具列顯示 >_ 按鈕，開啟內建終端機與 CLI 除錯日誌抽屜',
+  'nav.hideSidebar': '隱藏側邊欄',
+  'nav.showSidebar': '顯示側邊欄',
+  'menu.toggleSidebar': '切換側邊欄',
+  'set.scToggleSidebar': '隱藏 / 顯示側邊欄'
 }

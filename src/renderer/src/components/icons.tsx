@@ -247,3 +247,9 @@ export const IconStar = ({ filled, ...p }: P & { filled?: boolean }) => (
     <path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.9l-4.9 2.7 1.1-5.3-4-3.7 5.4-.6L12 4Z" />
   </svg>
 )
+export const IconSidebar = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4.5" width="18" height="15" rx="3" />
+    <path d="M9 4.5v15M5.75 8.5h1M5.75 11.5h1" />
+  </svg>
+)

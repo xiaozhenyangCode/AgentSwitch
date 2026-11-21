@@ -17,7 +17,7 @@ import { activeThread, useChat } from './state/chat'
 
 /** Native menu bar → navigation (About / Settings… ⌘, / New Chat ⌘N / Search ⌘K). */
 function MenuBridge() {
-  const { openSettings, toggleSettings, closeSettings, settingsOpen, navigate } = useApp()
+  const { openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen } = useApp()
   const start = useStartThread()
   const chat = useChat()
   useEffect(
@@ -25,15 +25,19 @@ function MenuBridge() {
       window.agentswitch.onMenu((cmd) => {
         if (cmd === 'about') openSettings('about')
         else if (cmd === 'settings') toggleSettings()
+        else if (cmd === 'toggleSidebar') toggleSidebar()
         else {
           // chat commands act on the page under the dialog
           if (settingsOpen) closeSettings()
           navigate('workbench')
           if (cmd === 'newThread') start(activeThread(chat)?.projectDir ?? null)
-          else if (cmd === 'search') window.dispatchEvent(new Event('agentswitch:focus-search'))
+          else if (cmd === 'search') {
+            setSidebarOpen(true)
+            requestAnimationFrame(() => window.dispatchEvent(new Event('agentswitch:focus-search')))
+          }
         }
       }),
-    [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, start, chat]
+    [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen, start, chat]
   )
   return null
 }

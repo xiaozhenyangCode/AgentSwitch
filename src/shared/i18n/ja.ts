@@ -699,5 +699,9 @@ export const ja: Dict = {
   'eng.openTerminal': 'ターミナルを開く',
   'set.developer': '開発者',
   'set.debugTerminal': 'デバッグターミナルを表示',
-  'set.debugTerminalHint': '上部ツールバーに >_ ボタンを表示し、内蔵ターミナルと CLI デバッグログのドロワーを開けるようにします'
+  'set.debugTerminalHint': '上部ツールバーに >_ ボタンを表示し、内蔵ターミナルと CLI デバッグログのドロワーを開けるようにします',
+  'nav.hideSidebar': 'サイドバーを非表示',
+  'nav.showSidebar': 'サイドバーを表示',
+  'menu.toggleSidebar': 'サイドバーを切り替え',
+  'set.scToggleSidebar': 'サイドバーを表示 / 非表示'
 }
