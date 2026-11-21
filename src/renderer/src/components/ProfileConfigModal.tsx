@@ -3,6 +3,8 @@ import type { EnvPreview, ProfileConfig, ProfileState, PtyMode } from '@shared/t
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal, Segmented } from './common'
 import { IconFolder, IconX } from './icons'
+import { useApp } from '../state/AppContext'
+import { modelLabel } from '../lib/models'
 
 interface Props {
   profile: ProfileState
@@ -44,6 +46,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Props) {
+  const { kindState } = useApp()
   const [form, setForm] = useState<ProfileConfig>(profile)
   const [envText, setEnvText] = useState(envToText(profile.extraEnv))
   const [preview, setPreview] = useState<EnvPreview | null>(null)
@@ -77,6 +80,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         configDir: form.configDir,
         loginCommand: form.loginCommand,
         runCommand: form.runCommand,
+        defaultModel: form.defaultModel ?? '',
         extraEnv: textToEnv(envText)
       })
       setPreview(await window.agentmux.profiles.envPreview(profile.id, previewMode))
@@ -142,6 +146,23 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
                 onClick={() => set('configDir', p.value)}
               >
                 {p.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="默认子模型" hint={`留空则跟随 CLI 自身默认。正式运行时以 --model <模型名> 传给 ${KIND_META[profile.kind].cli}；对话中仍可临时切换。`}>
+          <input className={mono} value={form.defaultModel ?? ''} onChange={(e) => set('defaultModel', e.target.value)} placeholder="默认（跟随 CLI）" />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {['', ...(kindState(profile.kind)?.models ?? [])].map((m) => (
+              <button
+                key={m || '_'}
+                className={`h-7 rounded-full px-3 text-[12px] font-medium transition-colors ${
+                  (form.defaultModel ?? '') === m ? 'bg-accent text-white' : 'bg-fill text-ink-2 hover:bg-fill-hover hover:text-ink'
+                }`}
+                onClick={() => set('defaultModel', m)}
+              >
+                {m ? modelLabel(m) : '默认'}
               </button>
             ))}
           </div>

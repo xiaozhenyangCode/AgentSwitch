@@ -28,6 +28,8 @@ export interface KindConfig {
   installCommand: string
   /** Used by 「更新」 once installed; falls back to installCommand when empty. */
   updateCommand: string
+  /** Sub-model presets offered in pickers (any other name can still be typed). */
+  models: string[]
 }
 
 export interface KindState extends KindConfig {
@@ -53,6 +55,8 @@ export interface ProfileConfig {
   runCommand: string
   /** Extra env vars injected into login/run/test/shell sessions. */
   extraEnv: Record<string, string>
+  /** Default sub-model id passed as `--model <id>`; '' = CLI's own default. */
+  defaultModel: string
   createdAt: number
 }
 

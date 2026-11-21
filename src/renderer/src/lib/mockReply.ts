@@ -1,128 +1,203 @@
-import { plainExcerpt, type Activity, type Message, type UserMessage } from '../state/chat'
+import type { Activity, AgentRef, Message, UserMessage } from '../state/chat'
+import { modelLabel } from './models'
 
 /**
- * DEMO ONLY: fabricates a plausible streamed reply so the conversation UI can be judged
- * before real CLI output is wired in. Delete when the CLI streaming lands.
+ * DEMO ONLY: fabricates a plausible multi-model exchange so the conversation UI can be
+ * judged before the real CLI engine exists. Delete when Phase 2 lands.
  */
 
-const OPENER: Record<string, string> = {
-  claude: '好的，我先看了一下相关上下文。',
-  codex: '直接上结果。',
-  gemini: '我检查了相关内容，结论如下。'
+export interface PlannedReply {
+  agent: AgentRef
+  dispatchedBy: AgentRef | null
+  activity: Activity[]
+  markdown: string
 }
-
-const brief = (t: string, n = 24) => (t.length > n ? t.slice(0, n) + '…' : t) || '这个任务'
 
 /** Mock images are referenced as `mock-image://<seed>` and drawn as SVG by the renderer. */
 export function mockImageUrl(src: string): string | null {
   const m = /^mock-image:\/\/(\d+)/.exec(src)
   if (!m) return null
   const seed = Number(m[1])
-  const h1 = (seed * 67) % 360
+  // last digit = item index: 0 ice (cyan hexagon), 1 fire (orange drop), 2 leaf (green), 3 orb
+  const k = seed % 10
+  const h1 = ([188, 22, 128, 262][k % 4] + Math.floor(seed / 10) * 9) % 360
   const h2 = (h1 + 40) % 360
   const shapes = [
-    '<circle cx="128" cy="128" r="62" fill="white" fill-opacity=".9"/><circle cx="128" cy="128" r="34" fill="url(#g)"/>',
-    '<rect x="70" y="70" width="116" height="116" rx="30" fill="white" fill-opacity=".9" transform="rotate(45 128 128)"/>',
-    '<path d="M128 56l20 46 50 4-38 33 12 49-44-27-44 27 12-49-38-33 50-4z" fill="white" fill-opacity=".92"/>',
-    '<path d="M128 196s-64-38-64-84a36 36 0 0 1 64-22 36 36 0 0 1 64 22c0 46-64 84-64 84z" fill="white" fill-opacity=".92"/>'
+    '<path d="M128 52l58 34v68l-58 34-58-34V86z" fill="white" fill-opacity=".92"/><path d="M128 52v136M70 86l116 68M186 86L70 154" stroke="url(#g)" stroke-width="6" stroke-opacity=".5"/>',
+    '<path d="M128 46c26 40 52 62 52 96a52 52 0 0 1-104 0c0-34 26-56 52-96z" fill="white" fill-opacity=".92"/>',
+    '<path d="M76 168c0-66 40-104 104-112-6 64-44 106-104 112z" fill="white" fill-opacity=".92"/><path d="M76 168l70-78" stroke="url(#g)" stroke-width="7" stroke-linecap="round"/>',
+    '<circle cx="128" cy="128" r="62" fill="white" fill-opacity=".9"/><circle cx="128" cy="128" r="34" fill="url(#g)"/>'
   ]
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h1},85%,62%)"/><stop offset="1" stop-color="hsl(${h2},80%,48%)"/></linearGradient></defs><rect width="256" height="256" rx="48" fill="url(#g)"/>${shapes[seed % shapes.length]}</svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h1},85%,64%)"/><stop offset="1" stop-color="hsl(${h2},80%,46%)"/></linearGradient></defs><rect width="256" height="256" rx="56" fill="url(#g)"/>${shapes[k % shapes.length]}</svg>`
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg)
 }
 
-export function mockReply(user: UserMessage, history: Message[]): { activity: Activity[]; markdown: string } {
-  const kind = user.to.kind
-  const text = user.text
-  const images = user.attachments.filter((a) => a.isImage)
-  const files = user.attachments.filter((a) => !a.isImage)
+type TaskType = 'prompt' | 'image' | 'review' | 'code' | 'general'
+
+const detect = (t: string): TaskType =>
+  /验收|审核|审查|检查|复核|评审|review/i.test(t)
+    ? 'review'
+    : /提示词|prompt|文案|描述/i.test(t)
+      ? 'prompt'
+      : /图|画|image|素材|icon|图标|插画|海报/i.test(t)
+        ? 'image'
+        : /代码|函数|bug|修复|测试|实现|重构|脚本|报错/i.test(t)
+          ? 'code'
+          : 'general'
+
+const ITEMS = [
+  { id: 'ice-crystal', name: '冰晶', prompt: 'a faceted ice crystal gem, soft cyan glow, glossy highlights, centered, game item icon, transparent background' },
+  { id: 'fire-drop', name: '火焰宝石', prompt: 'a teardrop-shaped fire gem, warm orange gradient, inner glow, centered, game item icon, transparent background' },
+  { id: 'leaf-charm', name: '叶片护符', prompt: 'a stylized green leaf charm, smooth gradient, subtle rim light, centered, game item icon, transparent background' }
+]
+
+const tag = (a: AgentRef) => `**${a.name}**`
+const PUNCT = /^[\s，,。、；;]+|[\s，,。、；;]+$/g
+const clean = (t: string) =>
+  t.replace(PUNCT, '').replace(/^(然后|再|并且|最后|接着)?(让|由|请)?/, '').replace(/(然后|再|并且|最后|接着)?(让|由|请)?$/, '').replace(PUNCT, '')
+
+/** Splits "@A 写提示词，然后让 @B 出图" into per-mention tasks. */
+function tasksOf(user: UserMessage): { ref: AgentRef; task: string }[] {
+  const marks = user.mentions
+    .map((ref) => {
+      const i = user.text.indexOf('@' + ref.name)
+      return { ref, i, end: i < 0 ? -1 : i + ref.name.length + 1 }
+    })
+    .filter((m) => m.i >= 0)
+    .sort((a, b) => a.i - b.i)
+  return marks.map((m, k) => {
+    let rest = user.text.slice(m.end, k + 1 < marks.length ? marks[k + 1].i : undefined)
+    rest = rest.replace(/^\([^)]*\)/, '')
+    return { ref: m.ref, task: clean(rest) || '协助完成任务' }
+  })
+}
+
+export function mockConversation(user: UserMessage, history: Message[]): PlannedReply[] {
+  const driver = user.driver
+  const refs = user.attachments.filter((a) => a.isImage)
   const readAttach: Activity[] = user.attachments.map((a) => ({ type: 'read', target: a.path ?? a.name }))
-  const opener = OPENER[kind]
-  const turn = history.filter((m) => m.role === 'assistant').length + 1
+  const turn = history.filter((m) => m.role === 'user').length + 1
+  const tasks = tasksOf(user)
+  const others = tasks.filter((t) => t.ref.profileId !== driver.profileId)
 
-  // ---- handoff: review another model's answer
-  if (user.handoff) {
-    const h = user.handoff
-    return {
-      activity: [...readAttach, { type: 'read', target: `${h.from.name} 的回复` }],
-      markdown: `${opener}我读了 **${h.from.name}** 上一轮的回复，针对你的问题「${brief(text)}」补充如下：
-
-> ${plainExcerpt(h.excerpt).slice(0, 120)}…
-
-### 同意的部分
-- 整体思路没问题，拆分方式清晰
-- 关键路径上的文件定位准确
-
-### 建议调整
-1. 边界情况没有覆盖：空输入、超长输入需要单独处理
-2. 错误信息建议统一走一个出口，便于日志检索
-3. 可以把重复逻辑抽成一个小函数：
-
-\`\`\`ts
-export function safeParse<T>(raw: string, fallback: T): T {
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return fallback
-  }
-}
-\`\`\`
-
-需要的话我可以直接按这些建议改一版。`
-    }
+  // ---- single speaker
+  if (!others.length) {
+    const own = tasks.find((t) => t.ref.profileId === driver.profileId)?.task ?? user.text.replace(/@\S+(\s*账号\s*\d+)?(\([^)]*\))?/g, '').trim()
+    return [{ agent: driver, dispatchedBy: null, ...single(detect(own), own, refs.map((r) => r.name), readAttach, turn) }]
   }
 
-  // ---- image generation
-  if (/图|画|image|素材|logo|icon|图标|插画|海报|头像/i.test(text) || images.length) {
-    const seeds = [turn * 3, turn * 3 + 1, turn * 3 + 2]
-    return {
-      activity: [
-        ...readAttach,
-        ...seeds.map((s, i) => ({ type: 'write' as const, target: `assets/generated/candidate-${turn}-${i + 1}.png` })),
-        ...(seeds.length ? [{ type: 'run' as const, target: 'optimize-png assets/generated/*.png' }] : [])
-      ],
-      markdown: `${opener}${images.length ? `参考了你给的 ${images.map((a) => `\`${a.name}\``).join('、')}，` : ''}按「${brief(text)}」生成了 3 张候选：
+  // ---- driver plans, then each mentioned account speaks in order, then driver wraps up
+  const ownTask = tasks.find((t) => t.ref.profileId === driver.profileId)?.task
+  const out: PlannedReply[] = []
+  const planRows = tasks.map((t, i) => `| ${i + 1} | ${t.ref.profileId === driver.profileId ? '我' : tag(t.ref)} · ${modelLabel(t.ref.model)} | ${t.task} |`).join('\n')
+  const writesPrompts = !!ownTask && detect(ownTask) === 'prompt'
+  out.push({
+    agent: driver,
+    dispatchedBy: null,
+    activity: [...readAttach, { type: 'read', target: 'assets/' }, ...(writesPrompts ? [{ type: 'write' as const, target: '.agentmux/prompts.json' }] : [])],
+    markdown: `收到，这个任务我来拆解和调度${refs.length ? `，参考图 ${refs.map((r) => `\`${r.name}\``).join('、')} 已读取` : ''}：
 
-![候选 1](mock-image://${seeds[0]}) ![候选 2](mock-image://${seeds[1]}) ![候选 3](mock-image://${seeds[2]})
-
-| 文件 | 尺寸 | 说明 |
+| 步骤 | 执行者 | 任务 |
 | --- | --- | --- |
-| \`candidate-${turn}-1.png\` | 512 × 512 | 圆形主体，对比度最高 |
-| \`candidate-${turn}-2.png\` | 512 × 512 | 菱形主体，适合小尺寸 |
-| \`candidate-${turn}-3.png\` | 512 × 512 | 星形主体，辨识度强 |
+${planRows}
+${
+  writesPrompts
+    ? `
+先完成我这一步，**${ITEMS.length} 条图像提示词**如下（已写入 \`.agentmux/prompts.json\`）：
 
-都已保存到 \`assets/generated/\`，背景透明。想要统一风格的话，可以告诉我选哪一张作为基准继续出图。`
+${ITEMS.map((it, i) => `${i + 1}. **${it.name}**\n   \`\`\`text\n   ${it.prompt}\n   \`\`\``).join('\n')}
+`
+    : ''
+}
+接下来交给 ${others.map((o) => tag(o.ref)).join(' → ')}。`
+  })
+
+  const images: { file: string; seed: number; name: string }[] = []
+  for (const t of others) {
+    const type = detect(t.task)
+    if (type === 'image') {
+      ITEMS.forEach((it, i) => images.push({ file: `assets/generated/${it.id}.png`, seed: turn * 10 + i, name: it.name }))
+      out.push({
+        agent: t.ref,
+        dispatchedBy: driver,
+        activity: [
+          { type: 'read', target: '.agentmux/prompts.json' },
+          ...images.map((im) => ({ type: 'write' as const, target: im.file })),
+          { type: 'run', target: 'pngquant --skip-if-larger assets/generated/*.png' }
+        ],
+        markdown: `按 ${tag(driver)} 给的提示词生成了 ${images.length} 张图，均为 512 × 512、透明背景：
+
+${images.map((im) => `![${im.name}](mock-image://${im.seed})`).join(' ')}
+
+| 文件 | 大小 | 备注 |
+| --- | --- | --- |
+${images.map((im, i) => `| \`${im.file}\` | ${[38, 41, 35][i % 3]} KB | ${['高光略强', '边缘干净', '对比度适中'][i % 3]} |`).join('\n')}
+
+已压缩，路径可以直接在项目里引用。`
+      })
+    } else if (type === 'review') {
+      const files = images.length ? images : ITEMS.map((it, i) => ({ file: `assets/generated/${it.id}.png`, seed: i, name: it.name }))
+      out.push({
+        agent: t.ref,
+        dispatchedBy: driver,
+        activity: files.map((f) => ({ type: 'read' as const, target: f.file })),
+        markdown: `我逐张检查了 ${files.length} 个产出：
+
+| 文件 | 尺寸 | 透明背景 | 风格一致 | 结论 |
+| --- | --- | --- | --- | --- |
+${files.map((f, i) => `| \`${f.file.split('/').pop()}\` | ✅ | ✅ | ${i === 0 ? '⚠️ 高光偏亮' : '✅'} | ${i === 0 ? '建议微调' : '通过'} |`).join('\n')}
+
+**修改意见**
+- \`${files[0].file.split('/').pop()}\` 的高光比另外两张亮约 15%，放在一起会抢视觉焦点，建议降低高光强度
+- 命名符合 \`kebab-case\` 规范，无需调整
+
+\`\`\`json
+{ "status": "PASS", "reason": "3 张均符合规格，1 张建议微调高光（非阻塞）" }
+\`\`\``
+      })
+    } else {
+      out.push({ agent: t.ref, dispatchedBy: driver, ...single(type, t.task, [], [], turn) })
     }
   }
 
-  // ---- code task
-  if (/代码|函数|bug|修复|测试|test|实现|重构|脚本|script|报错|接口/i.test(text) || files.length) {
-    return {
-      activity: [
-        ...readAttach,
-        { type: 'search', target: 'parseConfig' },
-        { type: 'read', target: 'src/config/loader.ts' },
-        { type: 'read', target: 'src/config/loader.test.ts' },
-        { type: 'run', target: 'pnpm test --filter config' },
-        { type: 'write', target: 'src/config/loader.ts' }
-      ],
-      markdown: `${opener}问题出在 \`loadConfig\` 读取失败时直接抛出，调用方没有兜底，导致「${brief(text)}」里提到的异常。
-
-**改动**（\`src/config/loader.ts\`）：
-
-\`\`\`ts
-import { readFile } from 'node:fs/promises'
-
-export interface Config {
-  name: string
-  retries: number
+  out.push({
+    agent: driver,
+    dispatchedBy: null,
+    activity: [],
+    markdown: `**汇总**：${others.map((o) => `${tag(o.ref)} 已完成「${o.task}」`).join('；')}。${
+      images.length ? `\n\n产出在 \`assets/generated/\`。需要按验收意见再调一版的话，直接说“按意见重做第 1 张”即可。` : ''
+    }`
+  })
+  return out
 }
 
-const DEFAULTS: Config = { name: 'app', retries: 3 }
+function single(type: TaskType, task: string, refNames: string[], readAttach: Activity[], turn: number): { activity: Activity[]; markdown: string } {
+  const brief = task.length > 24 ? task.slice(0, 24) + '…' : task || '这个任务'
+  if (type === 'image') {
+    const seeds = [turn * 10, turn * 10 + 1, turn * 10 + 2]
+    return {
+      activity: [...readAttach, ...ITEMS.map((it) => ({ type: 'write' as const, target: `assets/generated/${it.id}.png` }))],
+      markdown: `${refNames.length ? `参考了 ${refNames.map((n) => `\`${n}\``).join('、')}，` : ''}按「${brief}」生成了 3 张候选：
 
+${seeds.map((s, i) => `![${ITEMS[i].name}](mock-image://${s})`).join(' ')}
+
+都已保存到 \`assets/generated/\`，背景透明。选一张作为基准，我可以继续统一风格。`
+    }
+  }
+  if (type === 'prompt')
+    return {
+      activity: [...readAttach],
+      markdown: `按「${brief}」写了 3 条提示词：\n\n${ITEMS.map((it, i) => `${i + 1}. **${it.name}**：\`${it.prompt}\``).join('\n')}`
+    }
+  if (type === 'code')
+    return {
+      activity: [...readAttach, { type: 'search', target: 'loadConfig' }, { type: 'read', target: 'src/config/loader.ts' }, { type: 'run', target: 'pnpm test' }, { type: 'write', target: 'src/config/loader.ts' }],
+      markdown: `问题出在 \`loadConfig\` 读取失败时直接抛出，调用方没有兜底。
+
+\`\`\`ts
 export async function loadConfig(path: string): Promise<Config> {
   try {
-    const raw = await readFile(path, 'utf8')
-    return { ...DEFAULTS, ...JSON.parse(raw) }
+    return { ...DEFAULTS, ...JSON.parse(await readFile(path, 'utf8')) }
   } catch (err) {
     console.warn(\`[config] fallback to defaults: \${(err as Error).message}\`)
     return DEFAULTS
@@ -130,45 +205,31 @@ export async function loadConfig(path: string): Promise<Config> {
 }
 \`\`\`
 
-**验证**：
-
 \`\`\`bash
 pnpm test --filter config
-# ✓ loads valid file (4 ms)
-# ✓ falls back to defaults on missing file (2 ms)
-# ✓ falls back to defaults on invalid JSON (1 ms)
-\`\`\`
-
-- [x] 补充了 2 个失败场景的测试
-- [x] 现有用例全部通过
-- [ ] 建议后续给 \`retries\` 加上范围校验`
+# ✓ 3 passed
+\`\`\``
     }
-  }
-
-  // ---- general
+  if (type === 'review')
+    return {
+      activity: [...readAttach, { type: 'run', target: 'git diff --stat HEAD~1' }],
+      markdown: `看了最近的改动，整体没问题，两点建议：\n\n1. 错误处理分散在多个调用点，建议统一出口\n2. 新增逻辑缺少空输入的测试`
+    }
   return {
-    activity: [...readAttach, { type: 'read', target: 'package.json' }, { type: 'read', target: 'README.md' }, { type: 'search', target: 'TODO' }],
-    markdown: `${opener}关于「${brief(text)}」，我的建议分三步：
+    activity: [...readAttach, { type: 'read', target: 'package.json' }, { type: 'read', target: 'README.md' }],
+    markdown: `关于「${brief}」，建议分三步：
 
-## 1. 先摸清现状
-- 列出入口文件和主要模块，确认依赖关系
+## 1. 摸清现状
+- 列出入口文件和主要模块
 - 用 \`git log --oneline -20\` 看最近的改动方向
 
 ## 2. 拆分任务
-| 优先级 | 任务 | 预估 |
-| --- | --- | --- |
-| 高 | 梳理目录结构与模块职责 | 0.5 天 |
-| 中 | 补齐缺失的文档与示例 | 1 天 |
-| 低 | 清理过期的 TODO | 0.5 天 |
+| 优先级 | 任务 |
+| --- | --- |
+| 高 | 梳理目录结构与模块职责 |
+| 中 | 补齐文档与示例 |
 
 ## 3. 逐项落地
-每完成一项就提交一次，方便回滚：
-
-\`\`\`bash
-git checkout -b chore/cleanup
-git commit -am "docs: describe module layout"
-\`\`\`
-
-> 如果想让另一个模型复核这份计划，可以点下方的「转交给其他模型…」。`
+每完成一项提交一次，方便回滚。`
   }
 }

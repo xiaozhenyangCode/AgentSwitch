@@ -25,10 +25,27 @@ const HOME_LINKS = ['.gitconfig', '.npmrc', '.ssh']
 export const KIND_LABEL: Record<ProfileKind, string> = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }
 
 export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
-  claude: { binary: 'claude', installCommand: 'curl -fsSL https://claude.ai/install.sh | bash', updateCommand: 'claude update' },
-  // Gemini = Google Antigravity CLI (`agy`)
-  gemini: { binary: 'agy', installCommand: 'curl -fsSL https://antigravity.google/cli/install.sh | bash', updateCommand: 'agy update' },
-  codex: { binary: 'codex', installCommand: 'npm install -g @openai/codex', updateCommand: 'npm install -g @openai/codex@latest' }
+  // claude --model accepts aliases for the latest model of a family (verified via `claude --help`)
+  claude: {
+    binary: 'claude',
+    installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
+    updateCommand: 'claude update',
+    models: ['fable', 'opus', 'sonnet', 'haiku']
+  },
+  // Gemini = Google Antigravity CLI (`agy`). Presets are editable; `agy models` lists what the account can use.
+  gemini: {
+    binary: 'agy',
+    installCommand: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+    updateCommand: 'agy update',
+    models: ['gemini-3-pro', 'gemini-3-flash']
+  },
+  // codex -m/--model; presets are editable defaults.
+  codex: {
+    binary: 'codex',
+    installCommand: 'npm install -g @openai/codex',
+    updateCommand: 'npm install -g @openai/codex@latest',
+    models: ['gpt-5-codex', 'gpt-5']
+  }
 }
 
 const COMMAND_DEFAULTS: Record<ProfileKind, Pick<ProfileConfig, 'loginCommand' | 'runCommand'>> = {
@@ -71,6 +88,7 @@ function detectExisting(): ProfileConfig[] {
       imported: true,
       ...COMMAND_DEFAULTS[kind],
       extraEnv: {},
+      defaultModel: '',
       createdAt: now + out.length
     })
 
@@ -116,6 +134,7 @@ export function initProfiles(): void {
         imported: true,
         ...COMMAND_DEFAULTS.gemini,
         extraEnv: {},
+        defaultModel: '',
         createdAt: Date.now()
       })
     }
@@ -125,7 +144,9 @@ export function initProfiles(): void {
   persist()
 }
 
-export const listConfigs = (): ProfileConfig[] => store.profiles.map((p) => ({ ...p, extraEnv: { ...p.extraEnv } }))
+const withDefaults = (p: ProfileConfig): ProfileConfig => ({ ...p, defaultModel: p.defaultModel ?? '', extraEnv: { ...p.extraEnv } })
+
+export const listConfigs = (): ProfileConfig[] => store.profiles.map(withDefaults)
 
 export function hasProfile(id: unknown): id is ProfileId {
   return typeof id === 'string' && store.profiles.some((p) => p.id === id)
@@ -134,15 +155,23 @@ export function hasProfile(id: unknown): id is ProfileId {
 export function getConfig(id: ProfileId): ProfileConfig {
   const p = store.profiles.find((x) => x.id === id)
   if (!p) throw new Error(`unknown account: ${id}`)
-  return { ...p, extraEnv: { ...p.extraEnv } }
+  return withDefaults(p)
 }
 
 export function getKindConfig(kind: ProfileKind): KindConfig {
   return { kind, ...KIND_DEFAULTS[kind], ...(store.kinds[kind] ?? {}) }
 }
 
+/**
+ * CLI args selecting a sub-model. All three CLIs accept `--model <id>`
+ * (claude: alias or full name; codex: -m/--model; agy: --model). '' -> CLI default.
+ * Phase 2: appended to run commands for each turn.
+ */
+export const modelArgs = (model: string | null | undefined): string[] => (model?.trim() ? ['--model', model.trim()] : [])
+
 export function updateKindConfig(kind: ProfileKind, patch: Partial<KindConfig>): KindConfig {
   const { kind: _k, ...rest } = patch
+  if (rest.models) rest.models = [...new Set(rest.models.map((m) => m.trim()).filter(Boolean))]
   store.kinds[kind] = { ...(store.kinds[kind] ?? {}), ...rest }
   persist()
   return getKindConfig(kind)
@@ -174,6 +203,7 @@ export function addProfile(kind: ProfileKind, name?: string): ProfileConfig {
     imported: false,
     ...COMMAND_DEFAULTS[kind],
     extraEnv: {},
+    defaultModel: '',
     createdAt: Date.now()
   }
   store.profiles.push(p)
@@ -186,6 +216,7 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   if (i < 0) throw new Error(`unknown account: ${id}`)
   const { id: _i, kind: _k, imported: _m, createdAt: _c, ...rest } = patch
   if (rest.name !== undefined) rest.name = rest.name.trim() || store.profiles[i].name
+  if (rest.defaultModel !== undefined) rest.defaultModel = rest.defaultModel.trim()
   store.profiles[i] = { ...store.profiles[i], ...rest }
   persist()
   return getConfig(id)

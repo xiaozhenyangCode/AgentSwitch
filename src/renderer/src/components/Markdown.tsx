@@ -1,4 +1,5 @@
-import { Children, isValidElement, memo, useState, type ReactElement, type ReactNode } from 'react'
+import { Children, isValidElement, memo, useEffect, useState, type ReactElement, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -37,6 +38,33 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   )
 }
 
+/** Inline preview; click for a large lightbox view (Esc / click to close). */
+function ZoomImage({ src, alt }: { src: string; alt: string }) {
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+  return (
+    <>
+      <span className="md-figure" onClick={() => setOpen(true)} title="点击查看大图">
+        <img src={src} alt={alt} loading="lazy" />
+        {alt && <span className="md-caption">{alt}</span>}
+      </span>
+      {open &&
+        createPortal(
+          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-black/55 backdrop-blur-md" onClick={() => setOpen(false)}>
+            <img src={src} alt={alt} className="max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)]" />
+            {alt && <div className="text-[14px] font-medium text-white/90">{alt}</div>}
+          </div>,
+          document.body
+        )}
+    </>
+  )
+}
+
 const components: Components = {
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   a: ({ href, children }) => (
@@ -53,7 +81,7 @@ const components: Components = {
   ),
   img: ({ src, alt }) => {
     const url = typeof src === 'string' ? (mockImageUrl(src) ?? src) : undefined
-    return url ? <img src={url} alt={alt ?? ''} title={alt ?? undefined} loading="lazy" /> : null
+    return url ? <ZoomImage src={url} alt={alt ?? ''} /> : null
   },
   table: ({ children }) => (
     <div className="md-table">

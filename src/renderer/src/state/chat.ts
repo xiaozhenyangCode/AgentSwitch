@@ -1,11 +1,11 @@
 import { useSyncExternalStore } from 'react'
 import type { ProfileId, ProfileKind } from '@shared/types'
-import { mockReply } from '../lib/mockReply'
+import { mockConversation } from '../lib/mockReply'
 
 /**
- * Multi-model conversation: one timeline, each turn addressed to any account.
- * Module-level so it survives page switches. Replies are SIMULATED (streamed mock
- * markdown) until the real CLI streaming is wired in.
+ * Threads of one unified multi-model conversation each. Module-level store so it
+ * survives page switches; persisted to localStorage. Replies are SIMULATED (streamed
+ * mock markdown) until the real CLI engine lands in Phase 2.
  */
 
 export interface Attachment {
@@ -19,17 +19,12 @@ export interface Attachment {
   thumb: string | null
 }
 
-export interface Agent {
+/** Who speaks: account + sub-model (null = account/CLI default). */
+export interface AgentRef {
   profileId: ProfileId
   name: string
   kind: ProfileKind
-}
-
-/** A previous reply carried into the next turn ("转交给其他模型"). */
-export interface Handoff {
-  messageId: string
-  from: Agent
-  excerpt: string
+  model: string | null
 }
 
 export interface UserMessage {
@@ -37,8 +32,10 @@ export interface UserMessage {
   id: string
   text: string
   attachments: Attachment[]
-  to: Agent
-  handoff: Handoff | null
+  /** Driver account chosen in the composer. */
+  driver: AgentRef
+  /** @-mentioned accounts, in order of appearance. */
+  mentions: AgentRef[]
   createdAt: number
 }
 
@@ -50,50 +47,63 @@ export interface Activity {
 export interface AssistantMessage {
   role: 'assistant'
   id: string
-  agent: Agent
-  status: 'streaming' | 'done' | 'stopped' | 'error'
+  agent: AgentRef
+  /** Set when this reply was dispatched by the driver rather than asked directly. */
+  dispatchedBy: AgentRef | null
+  status: 'queued' | 'streaming' | 'done' | 'stopped' | 'error'
   /** Markdown. */
   content: string
   activity: Activity[]
-  startedAt: number
+  startedAt: number | null
   endedAt: number | null
 }
 
 export type Message = UserMessage | AssistantMessage
 
-interface ChatState {
+export interface Thread {
+  id: string
+  title: string
+  projectDir: string | null
+  /** Accounts allowed to take part in this thread. */
+  participants: ProfileId[]
+  driver: { profileId: ProfileId | null; model: string | null }
   messages: Message[]
+  createdAt: number
+  updatedAt: number
 }
 
-const LS_KEY = 'agentmux.chat.v2'
+interface ChatState {
+  threads: Thread[]
+  activeId: string | null
+}
+
+const LS_KEY = 'agentmux.threads.v1'
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
 
 function load(): ChatState {
   try {
     const v = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as ChatState
-    for (const m of v.messages)
-      if (m.role === 'assistant' && m.status === 'streaming') {
-        m.status = 'stopped'
-        m.endedAt = m.endedAt ?? now()
-      }
+    for (const t of v.threads)
+      for (const m of t.messages)
+        if (m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')) {
+          m.status = 'stopped'
+          m.endedAt = m.endedAt ?? now()
+        }
     return v
   } catch {
-    return { messages: [] }
+    return { threads: [], activeId: null }
   }
 }
 
 let state: ChatState = load()
 const listeners = new Set<() => void>()
 let persistTimer: ReturnType<typeof setTimeout> | null = null
-let streamTimer: ReturnType<typeof setTimeout> | null = null
-let streamingId: string | null = null
 
 function set(next: ChatState) {
   state = next
   listeners.forEach((l) => l())
-  // streaming updates are frequent; persist at most every 400ms
-  if (persistTimer) return
+  if (persistTimer) return // streaming updates are frequent; persist at most every 400ms
   persistTimer = setTimeout(() => {
     persistTimer = null
     try {
@@ -104,8 +114,10 @@ function set(next: ChatState) {
   }, 400)
 }
 
-function patch(id: string, fn: (m: AssistantMessage) => AssistantMessage) {
-  set({ messages: state.messages.map((m) => (m.role === 'assistant' && m.id === id ? fn(m) : m)) })
+const patchThread = (id: string, fn: (t: Thread) => Thread) => set({ ...state, threads: state.threads.map((t) => (t.id === id ? fn(t) : t)) })
+
+function patchMsg(threadId: string, msgId: string, fn: (m: AssistantMessage) => AssistantMessage) {
+  patchThread(threadId, (t) => ({ ...t, messages: t.messages.map((m) => (m.role === 'assistant' && m.id === msgId ? fn(m) : m)) }))
 }
 
 export function useChat(): ChatState {
@@ -118,65 +130,131 @@ export function useChat(): ChatState {
   )
 }
 
-export const isBusy = (s: ChatState) => s.messages.some((m) => m.role === 'assistant' && m.status === 'streaming')
+export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
+export const isThreadBusy = (t: Thread | null) =>
+  !!t && t.messages.some((m) => m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued'))
 
-export function send(input: { text: string; attachments: Attachment[]; to: Agent; handoff: Handoff | null }) {
+// ---- thread management -----------------------------------------------------------------
+
+export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'>): string {
+  const t: Thread = { id: uid(), title: '新对话', messages: [], createdAt: now(), updatedAt: now(), ...init }
+  set({ threads: [t, ...state.threads], activeId: t.id })
+  return t.id
+}
+
+export const selectThread = (id: string) => set({ ...state, activeId: id })
+export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim() }))
+export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir' | 'participants' | 'driver'>>) =>
+  patchThread(id, (t) => ({ ...t, ...patch }))
+
+export function deleteThread(id: string) {
+  if (runs.get(id)) stop(id)
+  const threads = state.threads.filter((t) => t.id !== id)
+  set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
+}
+
+// ---- sending (simulated orchestration) ------------------------------------------------------
+
+/** Pending timers per thread so a thread's run can be stopped independently. */
+const runs = new Map<string, { timer: ReturnType<typeof setTimeout> | null; cancelled: boolean }>()
+
+export function send(threadId: string, input: { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[] }) {
+  const thread = state.threads.find((t) => t.id === threadId)
+  if (!thread) return
   const user: UserMessage = { role: 'user', id: uid(), createdAt: now(), ...input }
-  const reply: AssistantMessage = {
+  const plan = mockConversation(user, thread.messages)
+  const replies: AssistantMessage[] = plan.map((p) => ({
     role: 'assistant',
     id: uid(),
-    agent: input.to,
-    status: 'streaming',
+    agent: p.agent,
+    dispatchedBy: p.dispatchedBy,
+    status: 'queued',
     content: '',
     activity: [],
-    startedAt: now(),
+    startedAt: null,
     endedAt: null
-  }
-  const history = state.messages
-  set({ messages: [...history, user, reply] })
-  simulate(reply.id, user, history)
-}
+  }))
+  const firstTurn = !thread.messages.some((m) => m.role === 'user')
+  patchThread(threadId, (t) => ({
+    ...t,
+    title: firstTurn ? titleFrom(input.text) : t.title,
+    messages: [...t.messages, user, ...replies],
+    updatedAt: now()
+  }))
 
-/** Stand-in for CLI streaming: activity first, then markdown in small chunks. */
-function simulate(id: string, user: UserMessage, history: Message[]) {
-  const { activity, markdown } = mockReply(user, history)
-  streamingId = id
-  let i = 0
-  const step = () => {
-    if (i < activity.length) {
-      const a = activity[i++]
-      patch(id, (m) => ({ ...m, activity: [...m.activity, a] }))
-      streamTimer = setTimeout(step, 350 + Math.random() * 300)
+  // stream replies one after another, like speakers in a group chat
+  const run = { timer: null as ReturnType<typeof setTimeout> | null, cancelled: false }
+  runs.set(threadId, run)
+  let r = 0
+  let a = 0
+  let pos = 0
+  const tick = () => {
+    if (run.cancelled) return
+    if (r >= replies.length) {
+      runs.delete(threadId)
+      patchThread(threadId, (t) => ({ ...t, updatedAt: now() }))
       return
     }
-    const pos = i - activity.length
-    if (pos >= markdown.length) {
-      patch(id, (m) => ({ ...m, status: 'done', endedAt: now() }))
-      streamingId = streamTimer = null
+    const id = replies[r].id
+    const { activity, markdown } = plan[r]
+    if (a === 0 && pos === 0) patchMsg(threadId, id, (m) => ({ ...m, status: 'streaming', startedAt: now() }))
+    if (a < activity.length) {
+      const item = activity[a++]
+      patchMsg(threadId, id, (m) => ({ ...m, activity: [...m.activity, item] }))
+      run.timer = setTimeout(tick, 320 + Math.random() * 280)
       return
     }
-    const n = 6 + Math.floor(Math.random() * 18)
-    const chunk = markdown.slice(pos, pos + n)
-    i += chunk.length
-    patch(id, (m) => ({ ...m, content: m.content + chunk }))
-    streamTimer = setTimeout(step, 22 + Math.random() * 30)
+    if (pos < markdown.length) {
+      const chunk = markdown.slice(pos, pos + 6 + Math.floor(Math.random() * 18))
+      pos += chunk.length
+      patchMsg(threadId, id, (m) => ({ ...m, content: m.content + chunk }))
+      run.timer = setTimeout(tick, 18 + Math.random() * 26)
+      return
+    }
+    patchMsg(threadId, id, (m) => ({ ...m, status: 'done', endedAt: now() }))
+    r++
+    a = pos = 0
+    run.timer = setTimeout(tick, 500)
   }
-  streamTimer = setTimeout(step, 450)
+  run.timer = setTimeout(tick, 400)
 }
 
-export function stop() {
-  if (streamTimer) clearTimeout(streamTimer)
-  if (streamingId) patch(streamingId, (m) => ({ ...m, status: 'stopped', endedAt: now() }))
-  streamTimer = null
-  streamingId = null
+export function stop(threadId: string) {
+  const run = runs.get(threadId)
+  if (run) {
+    run.cancelled = true
+    if (run.timer) clearTimeout(run.timer)
+    runs.delete(threadId)
+  }
+  patchThread(threadId, (t) => ({
+    ...t,
+    messages: t.messages.map((m) =>
+      m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued') ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null } : m
+    )
+  }))
 }
 
-export function newConversation() {
-  stop()
-  set({ messages: [] })
+const titleFrom = (text: string) => {
+  const t = text
+    .replace(/(然后|最后|接着|并且|再)?(让|由|请)?\s*@\S+(\s*账号\s*\d+)?(\([^)]*\))?\s*/g, '')
+    .replace(/^[，,、\s]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (t.length > 22 ? t.slice(0, 22) + '…' : t) || '新对话'
 }
 
-// ---- attachments -------------------------------------------------------------------
+// ---- helpers -----------------------------------------------------------------------------
+
+/** One-line plain-text preview of markdown. */
+export const plainExcerpt = (md: string): string =>
+  md
+    .replace(/```[\s\S]*?(```|$)/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s*\|?[\s:-]+\|[\s|:-]*$/gm, ' ')
+    .replace(/[#>*`|_~]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|heic|svg)$/i
 
@@ -213,14 +291,3 @@ export async function toAttachment(file: File): Promise<Attachment> {
     thumb: isImage ? await thumbnail(file) : null
   }
 }
-
-/** One-line plain-text preview of markdown (quotes, handoff chips). */
-export const plainExcerpt = (md: string): string =>
-  md
-    .replace(/```[\s\S]*?(```|$)/g, ' ')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^\s*\|?[\s:-]+\|[\s|:-]*$/gm, ' ')
-    .replace(/[#>*`|_~]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()

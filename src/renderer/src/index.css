@@ -162,16 +162,29 @@ label {
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.05);
 }
-.md img {
-  display: inline-block;
-  width: 168px;
-  height: 168px;
-  object-fit: cover;
-  margin: 2px 10px 10px 0;
-  border-radius: 16px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.06);
+.md-figure {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 12px 12px 0;
   vertical-align: top;
+  cursor: zoom-in;
 }
+.md-figure img {
+  width: 200px;
+  height: 200px;
+  object-fit: cover;
+  border-radius: 18px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 10px rgba(0, 0, 0, 0.07);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.md-figure:hover img {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 10px 24px rgba(0, 0, 0, 0.12);
+}
+.md-code pre code.language-text { white-space: pre-wrap; word-break: break-word; }
+.md-caption { font-size: 12px; color: var(--ink-2); }
 .md-code {
   margin: 0 0 14px;
   border-radius: 14px;
