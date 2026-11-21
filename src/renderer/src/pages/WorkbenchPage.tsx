@@ -12,8 +12,14 @@ import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
+  exportHandoff,
   isThreadBusy,
+  lastSpeaker,
+  loadHistory,
   newThread,
+  sessionAccounts,
+  skipHandoff,
+  threadMessages,
   resolvePause,
   send,
   stop,
@@ -109,7 +115,53 @@ export function WorkbenchPage() {
 
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  const messages = thread?.messages ?? []
+  const messages = useMemo(() => threadMessages(thread), [thread])
+  // imported history is not persisted: re-read it from the CLI files when the thread opens
+  useEffect(() => {
+    if (!thread?.imported || thread.history || thread.historyState) return
+    const p = byId(thread.imported.profileId)
+    if (!p) return // wait for account names (or the account was removed: nothing to resume with)
+    void loadHistory(thread.id, { profileId: p.id, name: p.name, kind: p.kind, model: null })
+  }, [thread?.id, thread?.imported, thread?.history, thread?.historyState, byId])
+
+  // ---- cross-model handoff: the driver changed to an account with no session in this thread
+  const speaker = thread ? lastSpeaker(thread) : null
+  const srcP = speaker ? byId(speaker.profileId) : undefined
+  const handoffNeeded =
+    !!thread &&
+    !!driverP &&
+    !!speaker &&
+    !isThreadBusy(thread) &&
+    speaker.profileId !== driverP.id &&
+    !sessionAccounts(thread).has(driverP.id) &&
+    thread.handoff?.to !== driverP.id &&
+    !(thread.handoffSkip ?? []).includes(driverP.id)
+  const handoffReady = !!thread?.handoff && !!driverP && thread.handoff.to === driverP.id && !isThreadBusy(thread)
+  const handoffFailed = !!thread?.handoffFailed && thread.handoffFailed.to === driverP?.id
+  const srcOk = !!srcP && isReady(srcP)
+  const [exporting, setExporting] = useState(false)
+  const startHandoff = () => {
+    if (!thread || !driverP || !srcP || !speaker) return
+    stick.current = true
+    send(thread.id, {
+      text: `生成交接文档，交给 ${driverP.name}`,
+      attachments: [],
+      driver: { ...ref(srcP, null), model: speaker.model },
+      mentions: [],
+      participants,
+      projectDir: ctx.projectDir,
+      handoffTo: ref(driverP, driverModel)
+    })
+  }
+  const doExport = async () => {
+    if (!thread || !driverP) return
+    setExporting(true)
+    try {
+      await exportHandoff(thread.id, ref(driverP, driverModel))
+    } finally {
+      setExporting(false)
+    }
+  }
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
@@ -157,6 +209,17 @@ export function WorkbenchPage() {
         }}
       >
         <div className="mx-auto flex min-h-full max-w-[820px] flex-col px-8 pt-2" style={{ paddingBottom: composerH + 28 }}>
+          {thread?.imported && (
+            <div className="mb-5 flex items-start gap-2 rounded-xl bg-black/[0.035] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
+              <KindAvatar kind={thread.imported.kind} size={16} />
+              <span className="min-w-0 flex-1">
+                从本机 CLI 历史导入（只读，不会改动原记录）· 用 {byId(thread.imported.profileId)?.name ?? '原账号'} 继续发送会接着原会话
+                {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">· 正在读取…</span>}
+                {thread.historyState === 'error' && <span className="ml-1 text-[#A05A00]">· 历史读取失败</span>}
+                {thread.imported.notice && <span className="block text-[#A05A00]">{thread.imported.notice}</span>}
+              </span>
+            </div>
+          )}
           {messages.length === 0 ? (
             <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
           ) : (
@@ -180,6 +243,42 @@ export function WorkbenchPage() {
         onSend={onSend}
         onStop={() => thread && stop(thread.id)}
       />
+      {!thread?.pause && (handoffNeeded || handoffReady) && driverP && (
+        <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+          {handoffReady ? (
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-[#EEF5FF] px-4 py-2.5 text-[13px] text-[#0B4FA8] shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
+              <IconCheck size={15} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                交接文档已就绪，下一条消息会同步给 <span className="font-semibold">{driverP.name}</span>
+              </span>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentmux.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
+                查看文档
+              </button>
+            </div>
+          ) : (
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-white px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_8px_24px_rgba(0,0,0,0.08)]">
+              <IconArrowRight size={15} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1">
+                切换到 <span className="font-semibold">{driverP.name}</span> 需同步前文上下文
+                {handoffFailed && <span className="block text-[12px] text-[#A05A00]">{srcP?.name ?? '原账号'} 生成交接失败{thread!.handoffFailed!.error === 'rate_limited' ? '（触发用量限制）' : ''}，可改为导出最近对话</span>}
+                {!srcOk && !handoffFailed && <span className="block text-[12px] text-[#A05A00]">{srcP?.name ?? '原账号'} 当前不可用，可导出最近对话作为交接</span>}
+              </span>
+              {srcOk && !handoffFailed ? (
+                <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoff}>
+                  让 {srcP!.name} 生成交接并切换
+                </button>
+              ) : (
+                <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport()}>
+                  {exporting ? '导出中…' : '导出最近对话作为交接'}
+                </button>
+              )}
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => skipHandoff(thread!.id, driverP.id)}>
+                直接切换
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {thread?.pause && (
         <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
           <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-[#FFF6E5] px-4 py-3 text-[13px] text-[#8A5300] shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
@@ -344,8 +443,20 @@ function UserBubble({ msg }: { msg: UserMessage }) {
           ))}
         </div>
       )}
-      {msg.text && (
-        <div className="max-w-full rounded-[20px] rounded-br-md bg-accent px-4 py-2.5 text-[15px] leading-[1.7] whitespace-pre-wrap text-white select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
+      {msg.text && msg.kind === 'handoff' ? (
+        <div className="flex items-center gap-1.5 rounded-full bg-black/[0.05] px-3 py-1 text-[12.5px] text-ink-2">
+          <IconArrowRight size={13} className="text-accent" />
+          {msg.text}
+        </div>
+      ) : (
+        msg.text && (
+          <div className="max-w-full rounded-[20px] rounded-br-md bg-accent px-4 py-2.5 text-[15px] leading-[1.7] whitespace-pre-wrap text-white select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
+        )
+      )}
+      {msg.note && (
+        <div className="flex items-center gap-1 text-[11px] text-[#0B4FA8]">
+          <IconCheck size={11} /> {msg.note}
+        </div>
       )}
       {!msg.mentions.length && (
         <div className="flex items-center gap-1 text-[11px] text-ink-3">

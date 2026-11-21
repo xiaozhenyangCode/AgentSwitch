@@ -82,12 +82,12 @@ export function capText(t: unknown, max = MAX_OUT): string {
   return `${s.slice(0, half)}\n… (省略 ${s.length - max} 个字符) …\n${s.slice(-half)}`
 }
 
-const capJson = (v: unknown, max = MAX_IN): string => capText(typeof v === 'string' ? v : JSON.stringify(v, null, 2), max)
+export const capJson = (v: unknown, max = MAX_IN): string => capText(typeof v === 'string' ? v : JSON.stringify(v, null, 2), max)
 
 const other = (kind: string, payload: unknown): AgentEvent => ({ t: 'other_event', kind, payload: capText(payload, MAX_OTHER) })
 
 /** Text of an Anthropic tool_result content (string or content blocks). */
-function resultText(c: unknown): string {
+export function resultText(c: unknown): string {
   if (typeof c === 'string') return c
   if (Array.isArray(c)) return c.map((b: any) => (b?.type === 'text' ? b.text : b?.type === 'image' ? '[图片]' : JSON.stringify(b))).join('\n')
   return c === undefined || c === null ? '' : JSON.stringify(c)
@@ -104,13 +104,13 @@ function patchText(file: string, hunks: any[]): string {
 }
 
 /** Whole-file "created" diff. */
-function createdDiff(file: string, content: string): string {
+export function createdDiff(file: string, content: string): string {
   const lines = content.replace(/\n$/, '').split('\n')
   return capText([`--- /dev/null`, `+++ b/${file}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => '+' + l)].join('\n') + '\n', 16 * 1024)
 }
 
 /** `/bin/zsh -lc "cmd"` → `cmd` (codex wraps every command in a login shell). */
-function unwrapShell(cmd: string): string {
+export function unwrapShell(cmd: string): string {
   const m = /^\/bin\/(?:ba|z)?sh -lc (?:(["'])([\s\S]*)\1|([^"'\s][\s\S]*))$/.exec(cmd.trim())
   if (!m) return cmd
   if (m[3] !== undefined) return m[3]
@@ -246,7 +246,7 @@ function deniedText(tools: string[], level: AutoApprove): string {
     : `有 ${tools.length} 次工具调用因「仅项目内编辑」授权被自动拒绝（${names}）。需要执行命令时，可在账号设置里切换为「完全放行」。`
 }
 
-function claudeTool(id: string, name: string, input: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
+export function claudeTool(id: string, name: string, input: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
   const path = String(input.file_path ?? input.notebook_path ?? input.path ?? '')
   const base = { t: 'activity' as const, id, status: 'running' as const }
   switch (name) {
@@ -274,7 +274,7 @@ function claudeTool(id: string, name: string, input: Record<string, any>): Extra
   }
 }
 
-function claudeResult(name: string, input: Record<string, any>, a: Extract<AgentEvent, { t: 'activity' }>, block: any, r: any): Extract<AgentEvent, { t: 'activity' }> {
+export function claudeResult(name: string, input: Record<string, any>, a: Extract<AgentEvent, { t: 'activity' }>, block: any, r: any): Extract<AgentEvent, { t: 'activity' }> {
   const isErr = !!block.is_error
   const raw = resultText(block.content)
   const detail = { ...a.detail }
@@ -556,7 +556,7 @@ function agyAdapter(s: RunSpec): Adapter {
  *   tool_info:{name, parameters:{CommandLine|Path|AbsolutePath|Query…}, output?}}
  * run_command output: "…Command exited with code N.\n\nCommand output:\n<text>"
  */
-function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
+export function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
   let info: any = u.tool_info
   if (typeof info === 'string') {
     try {

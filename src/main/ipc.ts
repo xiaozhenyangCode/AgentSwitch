@@ -38,11 +38,12 @@ import {
   updateProfile
 } from './profiles'
 import { PtyManager } from './ptyManager'
-import { Orchestrator } from './orchestrator'
+import { Orchestrator, importSession, threadCwd } from './orchestrator'
+import { cwdExists, listHistory, openHistory, writeHandoff } from './history'
 import { forgetModels, listModels } from './models'
 import { allowRoot, isAllowedPath } from './fileProtocol'
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
@@ -220,8 +221,30 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       driver: { profileId: assertId(req.driver?.profileId), model: req.driver?.model || null },
       mentions: (Array.isArray(req.mentions) ? req.mentions : []).filter((m) => hasProfile(m?.profileId)).map((m) => ({ profileId: m.profileId, model: m.model || null })),
       participants: (Array.isArray(req.participants) ? req.participants : []).filter((p) => hasProfile(p)),
-      transcript: typeof req.transcript === 'string' ? req.transcript.slice(-12000) : ''
+      transcript: typeof req.transcript === 'string' ? req.transcript.slice(-12000) : '',
+      mode: req.mode === 'handoff' ? 'handoff' : 'chat',
+      handoffTo: hasProfile(req.handoffTo) ? req.handoffTo : undefined,
+      handoffDoc: typeof req.handoffDoc === 'string' && isAbsolute(req.handoffDoc) ? req.handoffDoc : null,
+      allowMissingProject: req.allowMissingProject === true
     })
+  })
+  ipcMain.handle(IPC.chatExportHandoff, (_e, threadId: unknown, turnId: unknown, projectDir: unknown, markdown: unknown) => {
+    if (typeof threadId !== 'string' || typeof turnId !== 'string' || typeof markdown !== 'string') throw new Error('bad request')
+    const cwd = threadCwd(threadId, typeof projectDir === 'string' ? projectDir : null)
+    allowRoot(cwd)
+    return writeHandoff(cwd, turnId, markdown)
+  })
+
+  // ---- local CLI history (read-only) ------------------------------------------------------
+  ipcMain.handle(IPC.historyList, (_e, force?: boolean) => listHistory(force === true))
+  ipcMain.handle(IPC.historyOpen, async (_e, key: unknown) => {
+    if (typeof key !== 'string') throw new Error('bad key')
+    const h = await openHistory(key)
+    if (h.entry.cwd && cwdExists(h.entry.cwd)) allowRoot(h.entry.cwd)
+    return { ...h, cwdExists: !!h.entry.cwd && cwdExists(h.entry.cwd) }
+  })
+  ipcMain.handle(IPC.historyImport, (_e, threadId: unknown, profileId: unknown, nativeId: unknown) => {
+    if (typeof threadId === 'string' && typeof nativeId === 'string' && hasProfile(profileId)) importSession(threadId, profileId, nativeId)
   })
   ipcMain.handle(IPC.chatStop, (_e, threadId: unknown) => typeof threadId === 'string' && orchestrator.stop(threadId))
   ipcMain.handle(IPC.chatResume, (_e, threadId: unknown, turnId: unknown, action: unknown) => {

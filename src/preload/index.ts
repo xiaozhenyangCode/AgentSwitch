@@ -6,6 +6,8 @@ import {
   type ModelList,
   type RunRequest,
   type EnvPreview,
+  type HistoryEntry,
+  type HistoryThread,
   type KindConfig,
   type LoginSuccessEvent,
   type ProfileConfig,
@@ -69,7 +71,16 @@ const api = {
     stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
     resume: (threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): Promise<void> =>
       ipcRenderer.invoke(IPC.chatResume, threadId, turnId, action),
-    onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb)
+    onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb),
+    /** Writes a handoff document (exported transcript); returns its absolute path. */
+    exportHandoff: (threadId: string, turnId: string, projectDir: string | null, markdown: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.chatExportHandoff, threadId, turnId, projectDir, markdown)
+  },
+  history: {
+    list: (force = false): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.historyList, force),
+    open: (key: string): Promise<HistoryThread & { cwdExists: boolean }> => ipcRenderer.invoke(IPC.historyOpen, key),
+    /** Links an AgentMux thread to the native session so the same account resumes it. */
+    import: (threadId: string, profileId: ProfileId, nativeId: string): Promise<void> => ipcRenderer.invoke(IPC.historyImport, threadId, profileId, nativeId)
   },
   attach: {
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */

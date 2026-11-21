@@ -77,12 +77,48 @@ function loadSessions(threadId: string): Record<string, string> {
     return {}
   }
 }
-function saveSession(threadId: string, profileId: ProfileId, sid: string): void {
+function saveSession(threadId: string, profileId: ProfileId, sid: string, imported = false): void {
   const f = sessionsFile(threadId)
   mkdirSync(join(f, '..'), { recursive: true })
-  const sessions = { ...loadSessions(threadId), [profileId]: sid }
-  writeFileSync(f, JSON.stringify({ sessions }, null, 2))
+  let prev: { sessions?: Record<string, string>; imported?: string[] } = {}
+  try {
+    prev = JSON.parse(readFileSync(f, 'utf8'))
+  } catch {
+    /* new */
+  }
+  const sessions = { ...(prev.sessions ?? {}), [profileId]: sid }
+  const imp = new Set(prev.imported ?? [])
+  if (imported) imp.add(sid)
+  writeFileSync(f, JSON.stringify({ sessions, imported: [...imp] }, null, 2))
 }
+
+/** Imported CLI history: the thread continues that native session (--resume / exec resume / --conversation). */
+export const importSession = (threadId: string, profileId: ProfileId, sid: string): void => saveSession(threadId, profileId, sid, true)
+export const threadSessions = (threadId: string): Record<string, string> => loadSessions(threadId)
+
+/** Folder a thread's runs use: its project, or AgentMux's private workspace when unset/missing. */
+export function threadCwd(threadId: string, projectDir: string | null): string {
+  if (projectDir && isAbsolute(projectDir) && existsSync(projectDir) && statSync(projectDir).isDirectory()) return projectDir
+  const cwd = join(app.getPath('userData'), 'workspaces', threadId.replace(/[^\w-]/g, ''))
+  mkdirSync(cwd, { recursive: true })
+  return cwd
+}
+
+const HANDOFF_DOC_CHARS = 20000
+const handoffPrompt = (target: string): string =>
+  [
+    `用户要把这个对话交给另一个模型（${target}）继续。请根据你在本对话中的全部上下文，写一份交接文档，让对方无需翻看历史就能接手。`,
+    '只输出文档本身（Markdown），不要修改任何文件、不要执行命令。不要复述 AgentMux 的环境说明（授权方式、交接目录、输出目录、回复格式等，对方会收到自己的版本），只写与任务本身有关的内容。按以下小节组织，没有内容的小节写「无」：',
+    '',
+    '## 目标',
+    '用户最终要达成什么，验收标准是什么。',
+    '## 已完成的工作',
+    '做了什么；列出修改/新建过的文件路径（相对项目目录）。',
+    '## 关键决策与约束',
+    '已经定下的方案、用户明确提出的要求和禁忌、踩过的坑。',
+    '## 未完成事项与下一步',
+    '还没做完的事，按优先级给出具体的下一步。'
+  ].join('\n')
 
 // ---- file snapshots (fallback detection of produced files) ------------------------------------
 
@@ -182,14 +218,9 @@ export class Orchestrator {
     if (this.turns.has(req.threadId)) throw new Error('这个对话还有任务在运行')
     if (!hasProfile(req.driver.profileId)) throw new Error('主控账号不存在')
 
-    let cwd: string
-    if (req.projectDir) {
+    if (req.projectDir && !req.allowMissingProject)
       if (!isAbsolute(req.projectDir) || !existsSync(req.projectDir) || !statSync(req.projectDir).isDirectory()) throw new Error(`项目文件夹不存在：${req.projectDir}`)
-      cwd = req.projectDir
-    } else {
-      cwd = join(app.getPath('userData'), 'workspaces', req.threadId.replace(/[^\w-]/g, ''))
-      mkdirSync(cwd, { recursive: true })
-    }
+    const cwd = threadCwd(req.threadId, req.projectDir)
     allowRoot(cwd)
     const base = join(cwd, '.agentmux')
     mkdirSync(base, { recursive: true })
@@ -220,6 +251,12 @@ export class Orchestrator {
     this.emit({ kind: 'turn-start', threadId: req.threadId, turnId: req.turnId, cwd })
 
     const driver = req.driver
+    if (req.mode === 'handoff') {
+      this.add(turn, { profileId: driver.profileId, model: driver.model, task: '生成交接文档', kind: 'own', dispatchedBy: null, allowDispatch: false })
+      this.writeTask(turn)
+      void this.next(turn)
+      return
+    }
     const tasks = mentionTasks(req)
     const others = tasks.filter((t) => t.ref.profileId !== driver.profileId)
     if (!others.length) {
@@ -376,7 +413,23 @@ export class Orchestrator {
     }
 
     const parts: string[] = []
-    if (turn.req.transcript.trim()) parts.push('## 之前的对话（节选）', turn.req.transcript.trim(), '')
+    const fresh = !loadSessions(turn.req.threadId)[step.profileId]
+    if (turn.req.transcript.trim() && (fresh || turn.req.mode !== 'handoff')) parts.push('## 之前的对话（节选）', turn.req.transcript.trim(), '')
+    if (turn.req.mode === 'handoff') {
+      const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
+      parts.push('## 你的任务', handoffPrompt(to))
+      return { prompt: parts.join('\n'), system: sys.join('\n') }
+    }
+    if (turn.req.handoffDoc && fresh) {
+      let doc = ''
+      try {
+        doc = readFileSync(turn.req.handoffDoc, 'utf8')
+      } catch {
+        /* missing: path is still given */
+      }
+      if (doc.length > HANDOFF_DOC_CHARS) doc = doc.slice(0, HANDOFF_DOC_CHARS) + '\n…（已截断，完整内容见文件）'
+      parts.push(`## 交接文档（前一个模型写给你的，文件：${turn.req.handoffDoc}）`, doc || '（文件读取失败，请自行打开上面的路径）', '', '请先阅读交接文档，在此基础上继续。', '')
+    }
     if (turn.attachments.length) parts.push('## 用户附件（绝对路径，可直接读取查看）', ...turn.attachments.map((p) => `- ${p}`), '')
     const prev = turn.steps.slice(0, turn.steps.indexOf(step)).filter((s) => s.status === 'done')
     if (prev.length) {
@@ -513,10 +566,24 @@ export class Orchestrator {
       step.status = 'error'
       if (r.error) this.emit({ kind: 'agent', ...ids, event: { t: 'error', message: r.error } })
       this.emit({ kind: 'step-end', ...ids, status: 'error' })
+      if (turn.req.mode === 'handoff')
+        this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to: turn.req.handoffTo ?? step.profileId, ok: false, error: r.rateLimited ? 'rate_limited' : (r.error ?? '生成失败') })
       return this.end(turn, 'error')
     }
 
     step.status = 'done'
+    if (turn.req.mode === 'handoff') {
+      const to = turn.req.handoffTo ?? step.profileId
+      try {
+        const dir = join(turn.cwd, '.agentmux', 'handoffs')
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, `${turn.req.turnId.replace(/[^\w-]/g, '')}.md`)
+        writeFileSync(file, step.text.trim() + '\n')
+        this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: file, to, ok: true })
+      } catch (e) {
+        this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to, ok: false, error: String(e) })
+      }
+    }
     const verdict = step.review ? verdictOf(step.text) : null
     if (step.review && !verdict) this.emit({ kind: 'agent', ...ids, event: { t: 'notice', message: '验收步骤没有给出 PASS / REJECT 结论，按通过处理。' } })
     this.emit({ kind: 'step-end', ...ids, status: 'done', verdict: verdict ?? undefined })

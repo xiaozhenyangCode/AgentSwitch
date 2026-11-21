@@ -120,6 +120,14 @@ export interface RunRequest {
   participants: ProfileId[]
   /** Plain-text recap of the recent conversation, oldest first. */
   transcript: string
+  /** 'handoff': the driver only writes a handoff document (saved to .agentmux/handoffs/). */
+  mode?: 'chat' | 'handoff'
+  /** Handoff target account (mode 'handoff'). */
+  handoffTo?: ProfileId
+  /** Handoff document to inject for accounts that have no session in this thread yet. */
+  handoffDoc?: string | null
+  /** Imported history whose original folder is gone: run in the private workspace instead of failing. */
+  allowMissingProject?: boolean
 }
 
 export type ActivityType = 'read' | 'write' | 'run' | 'search' | 'tool'
@@ -169,6 +177,42 @@ export type AgentEvent =
   | { t: 'notice'; message: string }
   | { t: 'error'; message: string }
 
+// ---- local CLI history ---------------------------------------------------------------
+
+/** One past CLI session found on disk (read-only). */
+export interface HistoryEntry {
+  /** `${profileId}:${nativeId}` */
+  key: string
+  profileId: ProfileId
+  kind: ProfileKind
+  /** claude sessionId / codex thread id / agy conversation id (what --resume takes). */
+  nativeId: string
+  title: string
+  /** Project folder the session ran in (null if unknown). */
+  cwd: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface HistoryActivity {
+  id?: string
+  type: ActivityType
+  target: string
+  status?: 'running' | 'done' | 'error'
+  detail?: ActivityDetail
+}
+
+export type HistoryMessage =
+  | { role: 'user'; text: string; at: number }
+  | { role: 'assistant'; text: string; thinking: string; activity: HistoryActivity[]; outputs: string[]; model: string | null; at: number; endAt: number }
+
+export interface HistoryThread {
+  entry: HistoryEntry
+  messages: HistoryMessage[]
+  /** Set when the session could only be partly read (shown as a notice, never an error). */
+  notice: string | null
+}
+
 export type StepStatus = 'done' | 'error' | 'stopped'
 
 export type ChatEvent =
@@ -178,6 +222,8 @@ export type ChatEvent =
   | { kind: 'agent'; threadId: string; turnId: string; stepId: string; event: AgentEvent }
   | { kind: 'step-end'; threadId: string; turnId: string; stepId: string; status: StepStatus; verdict?: { status: 'PASS' | 'REJECT'; reason: string } }
   | { kind: 'paused'; threadId: string; turnId: string; reason: string }
+  /** Handoff document written (mode 'handoff', or exported from the transcript). */
+  | { kind: 'handoff'; threadId: string; turnId: string; path: string; to: ProfileId; ok: boolean; error?: string }
   | { kind: 'turn-end'; threadId: string; turnId: string; status: 'done' | 'stopped' | 'error' }
 
 export interface ProfileState extends ProfileConfig {
@@ -291,6 +337,10 @@ export const IPC = {
   chatStop: 'chat:stop',
   chatResume: 'chat:resume',
   chatEvent: 'chat:event',
+  chatExportHandoff: 'chat:exportHandoff',
+  historyList: 'history:list',
+  historyOpen: 'history:open',
+  historyImport: 'history:import',
   appInfo: 'app:info'
 } as const
 

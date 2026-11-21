@@ -173,3 +173,10 @@ export const IconAt = (p: P) => (
     <path d="M15.6 8.4v4.8a2.4 2.4 0 0 0 4.8 0V12a8.4 8.4 0 1 0-3.3 6.7" />
   </svg>
 )
+
+export const IconSearch = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m20 20-4.2-4.2" />
+  </svg>
+)

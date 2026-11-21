@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { HistoryEntry } from '@shared/types'
 import { useApp } from '../state/AppContext'
-import { activeThread, deleteThread, isThreadBusy, renameThread, selectThread, useChat, type Thread } from '../state/chat'
+import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, useChat, type Thread } from '../state/chat'
 import { useStartThread } from '../state/threads'
-import { IconEngine, IconFolder, IconPlus, IconTerminal, Spinner } from './icons'
+import { isReady } from '../lib/ui'
+import { KindAvatar, Segmented } from './common'
+import { IconEngine, IconFolder, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
 
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 
@@ -15,6 +18,22 @@ function ago(ts: number): string {
   return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
+const pad = (n: number) => String(n).padStart(2, '0')
+/** today HH:mm · 昨天 HH:mm · MM-DD */
+function shortTime(ts: number): string {
+  const d = new Date(ts)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (ts >= today.getTime()) return hm
+  if (ts >= today.getTime() - 86400_000) return `昨天 ${hm}`
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+const fullTime = (ts: number) => {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail() {
   const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm } = useApp()
@@ -22,16 +41,20 @@ export function NavRail() {
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
   const current = activeThread(chat)
+  const [tab, setTab] = useState<'threads' | 'history'>('threads')
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
 
   // group by project; groups ordered by their most recent thread
   const groups = useMemo(() => {
     const map = new Map<string, Thread[]>()
     for (const t of [...chat.threads].sort((a, b) => b.updatedAt - a.updatedAt)) {
+      if (q && !t.title.toLowerCase().includes(q) && !(t.projectDir ?? '').toLowerCase().includes(q)) continue
       const k = t.projectDir ?? ''
       map.set(k, [...(map.get(k) ?? []), t])
     }
     return [...map.entries()]
-  }, [chat.threads])
+  }, [chat.threads, q])
 
   const remove = async (t: Thread) => {
     const ok = await confirm({
@@ -69,8 +92,38 @@ export function NavRail() {
         </button>
       </div>
 
+      <div className="no-drag space-y-2 px-3 pb-2">
+        <Segmented
+          size="sm"
+          value={tab}
+          onChange={(v) => setTab(v as 'threads' | 'history')}
+          options={[
+            { value: 'threads', label: '对话' },
+            { value: 'history', label: '本机历史', title: '各 CLI 在本机留下的会话（只读导入）' }
+          ]}
+        />
+        <div className="flex h-7 items-center gap-1.5 rounded-lg bg-black/[0.04] px-2 text-ink-3 focus-within:bg-white focus-within:ring-1 focus-within:ring-accent/40">
+          <IconSearch size={13} className="shrink-0" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
+            placeholder={tab === 'threads' ? '搜索对话' : '搜索本机历史'}
+            className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-3"
+          />
+          {query && (
+            <button onClick={() => setQuery('')} className="rounded p-0.5 hover:bg-black/[0.06]" title="清除">
+              <IconX size={11} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {tab === 'history' ? (
+        <HistoryList query={q} />
+      ) : (
       <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        {groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">还没有对话</div>}
+        {groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? '没有匹配的对话' : '还没有对话'}</div>}
         {groups.map(([dir, threads]) => (
           <div key={dir || '_'} className="mb-3">
             <div className="flex h-7 items-center gap-1.5 px-2.5 text-[12px] font-medium text-ink-3" title={dir || undefined}>
@@ -92,6 +145,7 @@ export function NavRail() {
           </div>
         ))}
       </div>
+      )}
 
       <div className="border-t border-black/[0.05] px-3 pt-2 pb-4">
         <button
@@ -129,6 +183,102 @@ export function NavRail() {
         </button>
       </div>
     </nav>
+  )
+}
+
+// ---- local CLI history ---------------------------------------------------------------------
+
+let historyCache: HistoryEntry[] | null = null
+
+function HistoryList({ query }: { query: string }) {
+  const { profiles, byId, navigate, toast } = useApp()
+  const chat = useChat()
+  const current = activeThread(chat)
+  const [items, setItems] = useState<HistoryEntry[] | null>(historyCache)
+  const [loading, setLoading] = useState(false)
+  const [opening, setOpening] = useState<string | null>(null)
+
+  const load = useCallback(async (force: boolean) => {
+    setLoading(true)
+    try {
+      historyCache = await window.agentmux.history.list(force)
+      setItems(historyCache)
+    } catch (e) {
+      toast({ kind: 'error', title: '读取本机历史失败', desc: String(e instanceof Error ? e.message : e) })
+    } finally {
+      setLoading(false)
+    }
+  }, [toast])
+  useEffect(() => {
+    void load(false)
+  }, [load])
+
+  const groups = useMemo(() => {
+    const map = new Map<string, HistoryEntry[]>()
+    for (const e of items ?? []) {
+      if (!byId(e.profileId)) continue
+      if (query && !e.title.toLowerCase().includes(query) && !(e.cwd ?? '').toLowerCase().includes(query)) continue
+      const k = e.cwd ?? ''
+      map.set(k, [...(map.get(k) ?? []), e])
+    }
+    return [...map.entries()]
+  }, [items, query, byId])
+
+  const open = async (e: HistoryEntry) => {
+    const p = byId(e.profileId)
+    if (!p || opening) return
+    setOpening(e.key)
+    try {
+      await openHistory(e, { profileId: p.id, name: p.name, kind: p.kind, model: null }, profiles.filter(isReady).map((x) => x.id))
+      navigate('workbench')
+    } catch (err) {
+      toast({ kind: 'error', title: '打开历史失败', desc: String(err instanceof Error ? err.message : err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') })
+    } finally {
+      setOpening(null)
+    }
+  }
+
+  return (
+    <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+      <div className="flex h-6 items-center justify-between px-2.5 text-[11px] text-ink-3">
+        <span>{items ? `${items.length} 个会话 · 只读` : '正在扫描…'}</span>
+        <button onClick={() => void load(true)} className="flex items-center gap-1 rounded px-1 hover:bg-black/[0.05] hover:text-ink-2" title="重新扫描">
+          {loading ? <Spinner size={11} /> : <IconRefresh size={11} />}
+        </button>
+      </div>
+      {items && groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] text-ink-3">{query ? '没有匹配的历史' : '没有找到本机 CLI 历史'}</div>}
+      {groups.map(([dir, list]) => (
+        <div key={dir || '_'} className="mb-3">
+          <div className="flex h-7 items-center gap-1.5 px-2.5 text-[12px] font-medium text-ink-3" title={dir || '未知项目'}>
+            <IconFolder size={13} className="shrink-0" />
+            <span className="truncate">{dir ? baseName(dir) : '未知项目'}</span>
+          </div>
+          {list.map((e) => {
+            const p = byId(e.profileId)!
+            const linked = importedThreadOf(e.key)
+            const active = !!linked && linked.id === current?.id
+            return (
+              <button
+                key={e.key}
+                onClick={() => void open(e)}
+                title={`${e.title}\n${p.name} · ${fullTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
+                className={`flex h-[46px] w-full items-center gap-2 rounded-lg px-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
+              >
+                <KindAvatar kind={e.kind} size={16} />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className={`truncate text-[13px] leading-[18px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>{e.title}</span>
+                  <span className="flex items-center gap-1 truncate text-[11px] leading-4 text-ink-3">
+                    {opening === e.key && <Spinner size={10} className="text-accent" />}
+                    {shortTime(e.updatedAt)} · {p.name}
+                    {linked && <span className="text-accent">· 已导入</span>}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      ))}
+    </div>
   )
 }
 

@@ -79,7 +79,7 @@ export function ThinkingCard({ t, live }: { t: Thinking; live: boolean }) {
         className="flex h-6 items-center gap-1.5 rounded-md px-1 -ml-1 text-[12px] text-ink-3 transition-colors enabled:hover:bg-black/[0.04] enabled:hover:text-ink-2"
       >
         <span>
-          已思考{timed ? ' ' : ' · '}
+          已思考{secs || tokens ? (timed ? ' ' : ' · ') : ''}
           {secs}
           {tokens}
         </span>
