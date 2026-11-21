@@ -198,3 +198,22 @@ export const IconAuto = (p: P) => (
     <path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor" stroke="none" />
   </svg>
 )
+export const IconGauge = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4.2 17.5a9 9 0 1 1 15.6 0" />
+    <path d="m12 13 4-5" />
+    <circle cx="12" cy="13" r="1.3" />
+  </svg>
+)
+export const IconKeyboard = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="2.5" y="6" width="19" height="12" rx="2" />
+    <path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9" />
+  </svg>
+)
+export const IconDatabase = (p: P) => (
+  <svg {...base(p)}>
+    <ellipse cx="12" cy="6" rx="7.5" ry="3" />
+    <path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3" />
+  </svg>
+)

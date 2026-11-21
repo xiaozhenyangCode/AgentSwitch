@@ -6,6 +6,7 @@ import { btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal } from './common'
 import { DRAWER_HEIGHT } from './DebugDrawer'
 import { IconCheck, IconChevronDown, IconCopy, IconExternal, IconTerminal, IconX, Spinner } from './icons'
+import { t, tNode } from '../state/i18n'
 
 type Phase = 'starting' | 'waiting' | 'url' | 'exited' | 'success'
 
@@ -15,7 +16,7 @@ const HINT_AFTER = 6
 const KEYS: { label: string; seq: string }[] = [
   { label: '↑', seq: '\x1b[A' },
   { label: '↓', seq: '\x1b[B' },
-  { label: '回车', seq: '\r' },
+  { label: 'enter', seq: '\r' },
   { label: 'Esc', seq: '\x1b' }
 ]
 
@@ -42,7 +43,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
       await window.agentswitch.pty.start({ profileId, mode: 'login', ...dims(profileId) })
       setPhase('waiting')
     } catch (e) {
-      toast({ kind: 'error', title: '无法开始登录', desc: String(e) })
+      toast({ kind: 'error', title: t('login.startFailed'), desc: String(e) })
       setPhase('exited')
     }
   }
@@ -90,9 +91,9 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
 
   useEffect(() => {
     if (phase !== 'success') return
-    toast({ kind: 'success', title: `${profile?.name ?? profileId} 已登录`, desc: '账号已就绪，可以在工作台中使用了。' })
-    const t = setTimeout(closeLogin, 1000)
-    return () => clearTimeout(t)
+    toast({ kind: 'success', title: t('login.success', { name: profile?.name ?? profileId }), desc: t('login.successDesc') })
+    const timer = setTimeout(closeLogin, 1000)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
@@ -118,7 +119,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   if (!profile) return null
 
   const stepIndex = phase === 'success' ? 3 : phase === 'url' ? 1 : 0
-  const steps = ['准备登录', '在浏览器中授权', '完成']
+  const steps = [t('login.step1'), t('login.step2'), t('login.step3')]
 
   const body = (
     <div className="p-7">
@@ -126,10 +127,10 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
       <div className="flex items-start gap-3.5">
         <KindAvatar kind={profile.kind} size={44} />
         <div className="min-w-0 flex-1 pt-0.5">
-          <div className="text-[20px] leading-6 font-semibold tracking-tight text-ink">登录 {profile.name}</div>
-          <div className="mt-1 text-[14px] text-ink-2">授权后，此账号即可在工作台中使用</div>
+          <div className="text-[20px] leading-6 font-semibold tracking-tight text-ink">{t('login.title', { name: profile.name })}</div>
+          <div className="mt-1 text-[14px] text-ink-2">{t('login.subtitle')}</div>
         </div>
-        <button className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-fill hover:text-ink" onClick={cancel} title="取消">
+        <button className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-fill hover:text-ink" onClick={cancel} title={t('common.cancel')}>
           <IconX size={16} />
         </button>
       </div>
@@ -163,13 +164,13 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
         {(phase === 'starting' || phase === 'waiting') && (
           <div className="flex flex-col items-center rounded-2xl bg-fill px-6 py-9 text-center">
             <Spinner size={26} className="text-accent" />
-            <div className="mt-4 text-[15px] font-medium text-ink">{phase === 'starting' ? '正在启动登录…' : '正在获取授权链接…'}</div>
+            <div className="mt-4 text-[15px] font-medium text-ink">{phase === 'starting' ? t('login.starting') : t('login.fetchingUrl')}</div>
             <div className="mt-1.5 text-[14px] leading-relaxed text-ink-2">
               {phase === 'waiting' && elapsed >= HINT_AFTER
                 ? profile?.kind === 'gemini'
-                  ? 'agy 可能在等你选择登录方式。用下方按键选择，或输入 /login 后回车。'
-                  : '命令行可能在等你选择登录方式，可以用下方的按键操作。'
-                : '通常只需要几秒钟'}
+                  ? t('login.agyWaiting')
+                  : t('login.cliWaiting')
+                : t('login.fewSeconds')}
             </div>
           </div>
         )}
@@ -177,10 +178,9 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
         {phase === 'url' && primary && (
           <div>
             <div className="rounded-2xl bg-fill px-5 py-4">
-              <div className="text-[15px] font-medium text-ink">授权链接已准备好</div>
+              <div className="text-[15px] font-medium text-ink">{t('login.urlReady')}</div>
               <div className="mt-1 text-[14px] leading-relaxed text-ink-2">
-                如果你有多个账号，建议复制链接到浏览器的<span className="font-medium text-ink">无痕窗口</span>
-                中打开，避免用错账号授权。
+                {tNode('login.incognito', { w: <span className="font-medium text-ink">{t('login.incognitoWord')}</span> })}
               </div>
               <div className="mt-3 truncate rounded-lg bg-surface px-3 py-2 font-mono text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)] select-text" title={primary.url}>
                 {primary.url}
@@ -188,15 +188,15 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
             </div>
             <div className="mt-5 flex flex-col gap-2.5">
               <button className={btnPrimary + ' h-11 text-[15px]'} onClick={() => void window.agentswitch.sys.openExternal(primary.url)}>
-                <IconExternal size={16} /> 打开浏览器授权
+                <IconExternal size={16} /> {t('login.openBrowser')}
               </button>
               <button className={btnSecondary + ' h-11 text-[15px]'} onClick={() => void copy()}>
                 {copied ? <IconCheck size={16} className="text-ok" /> : <IconCopy size={16} />}
-                {copied ? '已复制，粘贴到无痕窗口打开' : '复制链接（无痕窗口防串号）'}
+                {copied ? t('login.copiedUrl') : t('login.copyUrl')}
               </button>
             </div>
             <div className="mt-4 flex items-center justify-center gap-2 text-[13px] text-ink-2">
-              <Spinner size={13} /> 授权完成后会自动继续
+              <Spinner size={13} /> {t('login.autoContinue')}
             </div>
           </div>
         )}
@@ -206,25 +206,25 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green text-white shadow-[0_4px_12px_rgba(52,199,89,0.35)]">
               <IconCheck size={24} strokeWidth={2.6} />
             </div>
-            <div className="mt-4 text-[16px] font-semibold text-ink">登录成功</div>
+            <div className="mt-4 text-[16px] font-semibold text-ink">{t('login.done')}</div>
           </div>
         )}
 
         {phase === 'exited' && (
           <div className="flex flex-col items-center rounded-2xl bg-fill px-6 py-8 text-center">
             <div className="text-[15px] font-medium text-ink">
-              {byId(profileId)?.loggedIn ? '登录流程已结束' : '登录没有完成'}
+              {byId(profileId)?.loggedIn ? t('login.ended') : t('login.notDone')}
             </div>
             <div className="mt-1.5 text-[14px] leading-relaxed text-ink-2">
-              {byId(profileId)?.loggedIn ? '账号目前处于已登录状态。' : '没有检测到登录信息，可以重试或查看日志了解原因。'}
-              {exitCode !== null && exitCode !== 0 && <span className="text-ink-3">（退出码 {exitCode}）</span>}
+              {byId(profileId)?.loggedIn ? t('login.isLoggedIn') : t('login.noCreds')}
+              {exitCode !== null && exitCode !== 0 && <span className="text-ink-3">{t('login.exitCode', { code: exitCode })}</span>}
             </div>
             <div className="mt-5 flex gap-2.5">
               <button className={btnSecondary} onClick={closeLogin}>
-                关闭
+                {t('common.close')}
               </button>
               <button className={btnPrimary} onClick={() => void start()}>
-                重新登录
+                {t('login.retry')}
               </button>
             </div>
           </div>
@@ -236,27 +236,27 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
         <div className="mt-5">
           <button className="flex items-center gap-1 text-[13px] font-medium text-ink-2 hover:text-ink" onClick={() => setShowInput((s) => !s)}>
             <IconChevronDown size={14} className={`transition-transform ${showInput ? '' : '-rotate-90'}`} />
-            命令行需要我输入？
+            {t('login.needInput')}
           </button>
           {showInput && (
             <div className="mt-3 space-y-2.5">
               <div className="flex gap-2">
                 <input
                   className={inputCls}
-                  placeholder="粘贴授权码后按回车"
+                  placeholder={t('login.pastePlaceholder')}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitCode()}
                 />
                 <button className={btnSecondary} onClick={submitCode} disabled={!code.trim()}>
-                  提交
+                  {t('login.submit')}
                 </button>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="mr-1 text-[13px] text-ink-3">发送按键</span>
+                <span className="mr-1 text-[13px] text-ink-3">{t('login.sendKey')}</span>
                 {KEYS.map((k) => (
-                  <button key={k.label} className="h-8 min-w-10 rounded-lg bg-fill px-2.5 text-[13px] font-medium text-ink hover:bg-fill-hover active:scale-95" onClick={() => send(k.seq)}>
-                    {k.label}
+                  <button key={k.label === 'enter' ? t('login.enter') : k.label} className="h-8 min-w-10 rounded-lg bg-fill px-2.5 text-[13px] font-medium text-ink hover:bg-fill-hover active:scale-95" onClick={() => send(k.seq)}>
+                    {k.label === 'enter' ? t('login.enter') : k.label}
                   </button>
                 ))}
               </div>
@@ -267,11 +267,11 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
 
       <div className="mt-6 flex items-center justify-between border-t border-hairline pt-4">
         <button className="inline-flex items-center gap-1.5 text-[13px] text-ink-3 hover:text-ink-2" onClick={() => openDrawer(profileId)}>
-          <IconTerminal size={14} /> 查看终端日志
+          <IconTerminal size={14} /> {t('login.viewTerminal')}
         </button>
         {phase !== 'success' && phase !== 'exited' && (
           <button className="text-[13px] font-medium text-ink-2 hover:text-ink" onClick={cancel}>
-            取消
+            {t('common.cancel')}
           </button>
         )}
       </div>

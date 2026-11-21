@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { KINDS, installSessionId, type ProfileKind, type ProfileState } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { KIND_META } from '../lib/ui'
-import { KindAvatar, Segmented } from '../components/common'
+import { KindAvatar } from '../components/common'
 import { IconDownload, IconGear, Spinner } from '../components/icons'
-import { AccountQuotaCells, QuotaGroupChip, RefreshUsage, UsageView, todayBrief } from '../components/Usage'
-import { fmtTokens, setEnginesTab, tokenSum, useEnginesTab, useUsage } from '../state/usage'
+import { AccountQuotaCells, QuotaGroupChip, todayBrief } from '../components/Usage'
+import { fmtTokens, tokenSum, useUsage } from '../state/usage'
+import { t } from '../state/i18n'
 
 /** macOS card material: white, hairline border, barely-there shadow. */
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
@@ -27,50 +28,27 @@ const DOT_COLOR: Record<ProfileState['status'], string> = {
   uninstalled: 'var(--muted-dot)'
 }
 /** Tag shown only when something needs attention (healthy rows just get the dot). */
-const ALERT: Partial<Record<ProfileState['status'] | 'login', { label: string; cls: string }>> = {
-  login: { label: '登录中', cls: 'bg-accent/10 text-info' },
-  not_logged_in: { label: '未登录', cls: 'bg-orange/12 text-warn' },
-  rate_limited: { label: '限流', cls: 'bg-red/10 text-danger' },
-  uninstalled: { label: '未安装', cls: 'bg-black/[0.05] text-ink-3' }
-}
+const alertOf = (s: ProfileState['status'] | 'login'): { label: string; cls: string } | undefined =>
+  ({
+    login: { label: t('status.loggingIn'), cls: 'bg-accent/10 text-info' },
+    not_logged_in: { label: t('status.notLoggedIn'), cls: 'bg-orange/12 text-warn' },
+    rate_limited: { label: t('status.rateLimited'), cls: 'bg-red/10 text-danger' },
+    uninstalled: { label: t('status.uninstalled'), cls: 'bg-black/[0.05] text-ink-3' }
+  })[s as 'login']
 
 export function EnginesPage() {
   const { profiles, loaded } = useApp()
-  const tab = useEnginesTab()
   return (
     <div className="h-full overflow-y-auto">
       <div className="drag h-14" />
       <div className="mx-auto max-w-4xl px-10 pb-16">
-        <div className="flex items-center gap-4">
-          <h1 className="text-[26px] leading-tight font-semibold tracking-tight text-ink">模型引擎</h1>
-          <div className="no-drag flex-1">
-            <Segmented
-              value={tab}
-              onChange={setEnginesTab}
-              options={[
-                { value: 'accounts', label: '引擎与账号' },
-                { value: 'usage', label: '用量统计' }
-              ]}
-            />
-          </div>
-          <div className="no-drag">
-            <RefreshUsage />
-          </div>
-        </div>
-        <p className="mt-2 text-[13px] leading-relaxed text-ink-3">
-          {tab === 'accounts' ? '安装命令行工具并添加账号。每个账号的登录信息相互独立，可以同时使用多个账号。' : '各账号的 Token 用量与额度窗口，随每次对话自动更新。'}
-        </p>
+        <h1 className="text-[26px] leading-tight font-semibold tracking-tight text-ink">{t('eng.title')}</h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-ink-3">{t('eng.desc')}</p>
         {loaded && (
-          <div className="mt-7">
-            {tab === 'accounts' ? (
-              <div className="space-y-5">
-                {KINDS.map((k) => (
-                  <EngineGroup key={k} kind={k} accounts={profiles.filter((p) => p.kind === k)} />
-                ))}
-              </div>
-            ) : (
-              <UsageView />
-            )}
+          <div className="mt-7 space-y-5">
+            {KINDS.map((k) => (
+              <EngineGroup key={k} kind={k} accounts={profiles.filter((p) => p.kind === k)} />
+            ))}
           </div>
         )}
       </div>
@@ -123,7 +101,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
     const found = !!s.kinds.find((k) => k.kind === kind)?.binaryPath
     toast({
       kind: found ? 'success' : 'warn',
-      title: found ? `已找到 ${meta.cli}` : `没有找到 ${meta.cli}`
+      title: found ? t('eng.found', { cli: meta.cli }) : t('eng.notFound', { cli: meta.cli })
     })
   }
 
@@ -135,7 +113,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
           <span className="shrink-0 text-[14px] font-semibold text-ink">{meta.cli}</span>
           {installing ? (
-            <span className="truncate text-[12px] text-ink-3">{installed ? '正在更新…' : '正在安装，通常需要 1–2 分钟…'}</span>
+            <span className="truncate text-[12px] text-ink-3">{installed ? t('eng.updating') : t('eng.installing')}</span>
           ) : installed ? (
             version && (
               <span className="text-[12px] text-ink-3 tabular-nums" title={ks?.binaryPath ?? undefined}>
@@ -143,39 +121,39 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
               </span>
             )
           ) : (
-            <span className="text-[12px] text-ink-3">尚未安装</span>
+            <span className="text-[12px] text-ink-3">{t('eng.notInstalled')}</span>
           )}
         </div>
         {installing ? (
           <>
             <button className={btnText} onClick={() => openDrawer(installSessionId(kind))}>
-              查看进度
+              {t('eng.viewProgress')}
             </button>
             <span className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-accent/10 px-2.5 text-[12.5px] font-medium text-accent">
-              <Spinner size={12} /> 安装中
+              <Spinner size={12} /> {t('eng.installingBadge')}
             </span>
           </>
         ) : installed ? (
           <button className={btnText} onClick={() => void install(kind, true)} title={ks?.updateCommand || ks?.installCommand}>
-            检查更新
+            {t('eng.checkUpdate')}
           </button>
         ) : (
           <>
-            <button className={btnText} onClick={() => void recheck()} disabled={checking} title="已经手动安装过？重新检测">
-              {checking ? <Spinner size={12} /> : '重新检测'}
+            <button className={btnText} onClick={() => void recheck()} disabled={checking} title={t('eng.recheckHint')}>
+              {checking ? <Spinner size={12} /> : t('eng.recheck')}
             </button>
             <button className={btnSolid} onClick={() => void install(kind)} title={ks?.installCommand}>
-              <IconDownload size={13} /> 一键安装
+              <IconDownload size={13} /> {t('eng.install')}
             </button>
           </>
         )}
-        <button className={btnIcon} onClick={() => openCliConfig(kind)} title="命令行工具设置">
+        <button className={btnIcon} onClick={() => openCliConfig(kind)} title={t('eng.cliSettings')}>
           <IconGear size={16} strokeWidth={1.6} />
         </button>
       </div>
 
       {accounts.length === 0 ? (
-        <div className="px-4 py-5 text-[13px] text-ink-3">还没有 {meta.name} 账号</div>
+        <div className="px-4 py-5 text-[13px] text-ink-3">{t('eng.noAccounts', { name: meta.name })}</div>
       ) : (
         <div className="divide-y divide-black/[0.05]">
           {accounts.map((a) => (
@@ -189,7 +167,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
         className="flex h-10 w-full items-center gap-2 rounded-b-xl border-t border-black/[0.05] px-4 text-left text-[12.5px] font-medium text-ink-3 transition-colors hover:bg-black/[0.02] hover:text-accent active:bg-black/[0.04]"
       >
         <span className="text-[15px] leading-none">+</span>
-        添加 {meta.name} 账号
+        {t('eng.addAccount', { name: meta.name })}
       </button>
     </section>
   )
@@ -203,15 +181,15 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   const usage = useUsage()?.accounts[a.id]
   useEffect(() => setName(a.name), [a.name])
   const loggingIn = a.sessionMode === 'login'
-  const alert = ALERT[loggingIn ? 'login' : a.status]
-  const where = a.imported ? `本机已有配置 · ${a.resolvedConfigDir}` : `独立配置目录 · ${a.resolvedConfigDir}`
+  const alert = alertOf(loggingIn ? 'login' : a.status)
+  const where = a.imported ? t('eng.whereImported', { dir: a.resolvedConfigDir }) : t('eng.whereOwn', { dir: a.resolvedConfigDir })
 
   const commitRename = async () => {
     setEditing(false)
     const n = name.trim()
     if (!n || n === a.name) return setName(a.name)
     await window.agentswitch.profiles.update(a.id, { name: n })
-    toast({ kind: 'success', title: `已重命名为「${n}」` })
+    toast({ kind: 'success', title: t('eng.renamed', { name: n }) })
   }
 
   return (
@@ -236,15 +214,15 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
               }}
             />
           ) : (
-            <span className="truncate text-[14px] font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={`${where}\n双击重命名`}>
+            <span className="truncate text-[14px] font-semibold text-ink" onDoubleClick={() => setEditing(true)} title={`${where}\n${t('eng.dblRename')}`}>
               {a.name}
             </span>
           )}
           {alert && <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${alert.cls}`}>{alert.label}</span>}
           {a.loggedIn && <QuotaGroupChip u={usage} model={a.defaultModel} />}
         </div>
-        <div className="mt-0.5 pl-3.5 text-[12px] text-ink-3 tabular-nums" title={usage ? `本周 ${fmtTokens(tokenSum(usage.week))} · 累计 ${fmtTokens(tokenSum(usage.total))}` : undefined}>
-          {a.loggedIn ? todayBrief(usage) : '登录后即可使用'}
+        <div className="mt-0.5 pl-3.5 text-[12px] text-ink-3 tabular-nums" title={usage ? t('eng.weekTotal', { week: fmtTokens(tokenSum(usage.week)), total: fmtTokens(tokenSum(usage.total)) }) : undefined}>
+          {a.loggedIn ? todayBrief(usage) : t('eng.loginToUse')}
         </div>
       </div>
 
@@ -253,18 +231,18 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
         <AccountQuotaCells kind={a.kind} u={usage} model={a.defaultModel} />
       ) : (
         <div className="col-span-2 flex justify-end">
-          <button className={btnSolid} disabled={!cliReady || loggingIn} onClick={() => openLogin(a.id)} title={cliReady ? undefined : '请先安装命令行工具'}>
-            {loggingIn ? '登录中…' : '登录'}
+          <button className={btnSolid} disabled={!cliReady || loggingIn} onClick={() => openLogin(a.id)} title={cliReady ? undefined : t('eng.installFirst')}>
+            {loggingIn ? t('eng.loggingIn') : t('eng.login')}
           </button>
         </div>
       )}
 
       <RowMenu
         items={[
-          ...(a.loggedIn ? [{ label: '重新登录', run: () => openLogin(a.id), disabled: !cliReady || loggingIn }] : []),
-          { label: '账号设置…', run: () => openConfig(a.id) },
-          { label: '重命名', run: () => setEditing(true) },
-          { label: '删除账号…', run: () => void removeAccount(a.id), destructive: true }
+          ...(a.loggedIn ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }] : []),
+          { label: t('eng.accountSettings'), run: () => openConfig(a.id) },
+          { label: t('common.rename'), run: () => setEditing(true) },
+          { label: t('eng.deleteAccount'), run: () => void removeAccount(a.id), destructive: true }
         ]}
       />
     </div>
@@ -282,7 +260,7 @@ function RowMenu({ items }: { items: { label: string; run: () => void; destructi
   }, [open])
   return (
     <div ref={ref} className="relative flex justify-end">
-      <button className={btnIcon + ` ${open ? 'bg-black/[0.05] text-ink' : ''}`} onClick={() => setOpen((o) => !o)} title="更多">
+      <button className={btnIcon + ` ${open ? 'bg-black/[0.05] text-ink' : ''}`} onClick={() => setOpen((o) => !o)} title={t('common.more')}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
           <circle cx="5.5" cy="12" r="1.6" />
           <circle cx="12" cy="12" r="1.6" />

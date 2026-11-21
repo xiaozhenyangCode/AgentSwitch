@@ -6,6 +6,8 @@ import { registerIpc } from './ipc'
 import { initShellEnv } from './shellEnv'
 import { handleFileProtocol, registerFileScheme } from './fileProtocol'
 import { initTheme } from './theme'
+import { initI18n } from './i18n'
+import { buildMenu } from './menu'
 
 registerFileScheme()
 
@@ -53,6 +55,9 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   // appearance (system / light / dark): window chrome, vibrancy and menus follow nativeTheme
   initTheme()
+  // UI language (system / pinned): the menu is rebuilt when it changes
+  initI18n(() => buildMenu(() => mainWindow))
+  buildMenu(() => mainWindow)
   let broadcastAll = (): void => {}
   await initShellEnv(join(app.getPath('userData'), 'shell-env.json'), () => broadcastAll())
   initProfiles()

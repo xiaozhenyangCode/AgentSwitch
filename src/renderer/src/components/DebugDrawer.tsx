@@ -4,19 +4,20 @@ import { useApp } from '../state/AppContext'
 import { dims, terminals } from '../lib/terminals'
 import { XtermView } from './XtermView'
 import { IconTerminal, IconX } from './icons'
+import { t } from '../state/i18n'
 
-const TEST_PRESETS: { label: string; cmd: string }[] = [
+const testPresets = (): { label: string; cmd: string }[] => [
   {
-    label: '查看隔离环境变量',
+    label: t('dbg.envVars'),
     cmd: `echo "HOME=$HOME"; echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"; echo "CODEX_HOME=$CODEX_HOME"; echo "AGENTSWITCH_PROFILE=$AGENTSWITCH_PROFILE"; ls -la "$HOME" | head -20`
   },
-  { label: 'PATH 检查 (which)', cmd: 'echo "$PATH" | tr ":" "\\n"; which node npm pnpm claude gemini codex' },
+  { label: t('dbg.pathCheck'), cmd: 'echo "$PATH" | tr ":" "\\n"; which node npm pnpm claude gemini codex' },
   {
-    label: '模拟 OAuth URL 输出',
+    label: t('dbg.mockOauth'),
     cmd: `printf 'Open this URL to sign in:\\n\\nhttps://accounts.example.com/o/oauth2/auth?client_id=agentswitch-test&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8085&state=%s\\n\\nWaiting for authorization...\\n' "$RANDOM"; sleep 2`
   },
-  { label: '交互输入测试 (read)', cmd: 'read "name?你的名字: "; echo "hello, $name"' },
-  { label: '颜色 / 宽度测试', cmd: 'for i in {0..15}; do printf "\\e[48;5;${i}m  \\e[0m"; done; echo; tput cols; tput lines' }
+  { label: t('dbg.readTest'), cmd: `read "name?${t('dbg.yourName')}: "; echo "hello, $name"` },
+  { label: t('dbg.colorTest'), cmd: 'for i in {0..15}; do printf "\\e[48;5;${i}m  \\e[0m"; done; echo; tput cols; tput lines' }
 ]
 
 export const DRAWER_HEIGHT = 340
@@ -70,7 +71,7 @@ export function DebugDrawer() {
       await window.agentswitch.pty.start({ profileId, mode, command, ...dims(profileId) })
       requestAnimationFrame(() => terminals.get(profileId)?.focus())
     } catch (e) {
-      toast({ kind: 'error', title: '启动失败', desc: String(e) })
+      toast({ kind: 'error', title: t('dbg.startFailed'), desc: String(e) })
     }
   }
 
@@ -88,7 +89,7 @@ export function DebugDrawer() {
       }}
     >
       <div className="flex h-11 shrink-0 items-center gap-3 border-b border-white/[0.06] bg-[#2C2C2E] px-3">
-        <span className="shrink-0 font-mono text-[12px] font-medium text-white/50">&gt;_ 调试日志</span>
+        <span className="shrink-0 font-mono text-[12px] font-medium text-white/50">&gt;_ {t('nav.debugLog')}</span>
 
         {/* tabs: scroll horizontally, never squeeze the toolbar */}
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [&::-webkit-scrollbar]:hidden">
@@ -99,7 +100,7 @@ export function DebugDrawer() {
               className={`flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[12px] whitespace-nowrap transition-colors ${
                 s.sessionId === active ? 'bg-white/[0.12] text-white' : 'text-white/50 hover:text-white/85'
               }`}
-              title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? ' · 运行中' : ' · 已结束'}`}
+              title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? t('dbg.alive') : t('dbg.ended')}`}
             >
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-green' : 'bg-white/25'}`} />
               {s.label}
@@ -114,9 +115,9 @@ export function DebugDrawer() {
             value=""
             disabled={profiles.length === 0}
             onChange={(e) => e.target.value && void start(e.target.value, 'shell')}
-            title="在某个账号的隔离环境中打开 Shell"
+            title={t('dbg.openShellHint')}
           >
-            <option value="">打开 Shell…</option>
+            <option value="">{t('dbg.openShell')}</option>
             {profiles.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -128,22 +129,22 @@ export function DebugDrawer() {
             value=""
             disabled={!activeProfile}
             onChange={(e) => e.target.value && activeProfile && void start(activeProfile, 'test', e.target.value)}
-            title={activeProfile ? '在当前账号的隔离环境中执行测试命令' : '先选择一个账号会话'}
+            title={activeProfile ? t('dbg.testHint') : t('dbg.pickSession')}
           >
-            <option value="">测试命令…</option>
-            {TEST_PRESETS.map((t) => (
-              <option key={t.label} value={t.cmd}>
-                {t.label}
+            <option value="">{t('dbg.testCmd')}</option>
+            {testPresets().map((x) => (
+              <option key={x.label} value={x.cmd}>
+                {x.label}
               </option>
             ))}
           </select>
           <button className={chip} disabled={!activeInfo?.alive} onClick={() => active && void window.agentswitch.pty.kill(active)}>
-            结束
+            {t('dbg.end')}
           </button>
           <button className={chip} disabled={!active} onClick={() => active && terminals.get(active)?.clear()}>
-            清屏
+            {t('dbg.clear')}
           </button>
-          <button className="ml-0.5 shrink-0 rounded-md p-1.5 text-white/50 hover:bg-white/10 hover:text-white" onClick={closeDrawer} title="收起">
+          <button className="ml-0.5 shrink-0 rounded-md p-1.5 text-white/50 hover:bg-white/10 hover:text-white" onClick={closeDrawer} title={t('common.collapse')}>
             <IconX size={14} />
           </button>
         </div>
@@ -153,7 +154,7 @@ export function DebugDrawer() {
         {sessions.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-white/40">
             <IconTerminal size={22} />
-            <div className="text-[13px]">暂无活动日志</div>
+            <div className="text-[13px]">{t('dbg.empty')}</div>
           </div>
         ) : (
           sessions.map((s) => <XtermView key={s.sessionId} sessionId={s.sessionId} visible={drawer.open && s.sessionId === active} />)

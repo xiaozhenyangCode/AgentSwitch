@@ -7,6 +7,30 @@ import { ProfileConfigModal } from './components/ProfileConfigModal'
 import { AddAccountModal, CliConfigModal, ConfirmDialog } from './components/dialogs'
 import { WorkbenchPage } from './pages/WorkbenchPage'
 import { EnginesPage } from './pages/EnginesPage'
+import { UsagePage } from './pages/UsagePage'
+import { SettingsPage } from './pages/SettingsPage'
+import { useEffect } from 'react'
+import { useI18n } from './state/i18n'
+import { useStartThread } from './state/threads'
+import { activeThread, useChat } from './state/chat'
+
+/** Native menu bar → navigation (About / Settings… ⌘, / New Chat ⌘N / Search ⌘K). */
+function MenuBridge() {
+  const { openSettings } = useApp()
+  const start = useStartThread()
+  const chat = useChat()
+  useEffect(
+    () =>
+      window.agentswitch.onMenu((cmd) => {
+        if (cmd === 'about') openSettings('about')
+        else if (cmd === 'settings') openSettings()
+        else if (cmd === 'newThread') start(activeThread(chat)?.projectDir ?? null)
+        else if (cmd === 'search') window.dispatchEvent(new Event('agentswitch:focus-search'))
+      }),
+    [openSettings, start, chat]
+  )
+  return null
+}
 
 function Shell() {
   const { page, drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
@@ -17,7 +41,7 @@ function Shell() {
       <NavRail />
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
         <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
-          {page === 'workbench' ? <WorkbenchPage /> : <EnginesPage />}
+          {page === 'workbench' ? <WorkbenchPage /> : page === 'usage' ? <UsagePage /> : page === 'settings' ? <SettingsPage /> : <EnginesPage />}
         </div>
         <DebugDrawer />
       </main>
@@ -36,14 +60,17 @@ function Shell() {
       {addRequest && <AddAccountModal key={addRequest.kind} />}
       {confirmState && <ConfirmDialog />}
       <Toasts />
+      <MenuBridge />
     </div>
   )
 }
 
 export default function App() {
+  // a language switch re-mounts the shell so every t() call re-renders in the new language
+  const { locale } = useI18n()
   return (
     <AppProvider>
-      <Shell />
+      <Shell key={locale} />
     </AppProvider>
   )
 }

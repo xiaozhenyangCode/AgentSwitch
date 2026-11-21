@@ -80,3 +80,18 @@ export function Modal({ children, onClose, width = 500 }: { children: ReactNode;
     </div>
   )
 }
+
+/** AgentSwitch app mark: two opposing routes on a blue tile. */
+export function BrandMark({ size = 32 }: { size?: number }) {
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center bg-gradient-to-b from-[#3A8DFF] to-[#0066D6] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_1px_3px_rgba(0,102,214,0.35)]"
+      style={{ width: size, height: size, borderRadius: size * 0.28 }}
+    >
+      <svg width={size * 0.56} height={size * 0.56} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4.5 8h14.5M15.5 4.5 19 8l-3.5 3.5" />
+        <path d="M19.5 16H5M8.5 12.5 5 16l3.5 3.5" />
+      </svg>
+    </div>
+  )
+}

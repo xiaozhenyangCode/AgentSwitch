@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryThread, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
+import { t as tr } from './i18n'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
@@ -226,7 +227,7 @@ export function lastSpeaker(t: Thread): AgentRef | null {
 // ---- thread management -----------------------------------------------------------------
 
 export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'>): string {
-  const t: Thread = { id: uid(), title: '新对话', workdir: init.projectDir, messages: [], activeTurn: null, pause: null, createdAt: now(), updatedAt: now(), ...init }
+  const t: Thread = { id: uid(), title: tr('chat.newThread'), workdir: init.projectDir, messages: [], activeTurn: null, pause: null, createdAt: now(), updatedAt: now(), ...init }
   set({ threads: [t, ...state.threads], activeId: t.id })
   return t.id
 }
@@ -313,7 +314,7 @@ export function send(
     mentions: input.mentions,
     createdAt: now(),
     ...(mode === 'handoff' ? { kind: 'handoff' as const } : {}),
-    ...(doc ? { note: `已向 ${[input.driver, ...input.mentions].find((a) => a.profileId === doc.to)?.name ?? ''} 同步交接文档` } : {})
+    ...(doc ? { note: tr('chat.handoffSynced', { name: [input.driver, ...input.mentions].find((a) => a.profileId === doc.to)?.name ?? '' }) } : {})
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
   const transcript = transcriptOf(thread)
@@ -447,7 +448,7 @@ function onEvent(e: ChatEvent) {
           case 'notice':
             return { ...m, notices: [...(m.notices ?? []), ev.message] }
           case 'rate_limited':
-            return { ...m, error: m.error ?? '账号触发了用量限制（rate limit）' }
+            return { ...m, error: m.error ?? tr('chat.rateLimited') }
           default:
             return m // e.g. quota: consumed by the main process
         }
@@ -457,7 +458,7 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
     case 'handoff':
       return patchThread(e.threadId, (t) =>
-        e.ok ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null } : { ...t, handoffFailed: { to: e.to, error: e.error ?? '生成失败' } }
+        e.ok ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null } : { ...t, handoffFailed: { to: e.to, error: e.error ?? tr('chat.genFailed') } }
       )
     case 'paused':
       return patchThread(e.threadId, (t) => ({ ...t, pause: { turnId: e.turnId, reason: e.reason } }))
@@ -482,7 +483,7 @@ const titleFrom = (text: string) => {
     .replace(/^[，,、\s]+/, '')
     .replace(/\s+/g, ' ')
     .trim()
-  return (t.length > 22 ? t.slice(0, 22) + '…' : t) || '新对话'
+  return (t.length > 22 ? t.slice(0, 22) + '…' : t) || tr('chat.newThread')
 }
 
 // ---- helpers -----------------------------------------------------------------------------
@@ -554,7 +555,7 @@ export async function exportHandoff(threadId: string, to: AgentRef): Promise<voi
     }
   }
   const path = await window.agentswitch.chat.exportHandoff(threadId, uid() + uid(), t.projectDir, lines.join('\n'))
-  patchThread(threadId, (x) => ({ ...x, handoff: { to: to.profileId, path, from: '最近对话导出' }, handoffFailed: null }))
+  patchThread(threadId, (x) => ({ ...x, handoff: { to: to.profileId, path, from: tr('chat.exportedFrom') }, handoffFailed: null }))
 }
 
 export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(threadId, (t) => ({ ...t, handoffSkip: [...new Set([...(t.handoffSkip ?? []), to])], handoffFailed: null }))
@@ -621,7 +622,7 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
       kind: entry.kind,
       nativeId: entry.nativeId,
       importedAt: Date.now(),
-      notice: [h.notice, entry.cwd && !h.cwdExists ? `原项目目录已不存在（${entry.cwd}），新消息会在 AgentSwitch 私有工作区运行。` : null].filter(Boolean).join(' ') || null
+      notice: [h.notice, entry.cwd && !h.cwdExists ? tr('chat.cwdMissing', { dir: entry.cwd }) : null].filter(Boolean).join(' ') || null
     },
     history: fromHistory(h, agent),
     preview: true

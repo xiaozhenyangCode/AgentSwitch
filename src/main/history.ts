@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { AgentEvent, HistoryActivity, HistoryEntry, HistoryMessage, HistoryThread, ProfileConfig, ProfileId } from '@shared/types'
 import { agyTool, capJson, capText, claudeResult, claudeTool, createdDiff, unwrapShell } from './agentRunner'
 import { expandHome, listConfigs } from './profiles'
+import { t } from './i18n'
 
 /**
  * Local CLI history (strictly read-only): claude ~/.claude/projects/*.jsonl, codex
@@ -175,7 +176,7 @@ function userText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   return content
-    .map((b: any) => (b?.type === 'text' ? String(b.text ?? '') : b?.type === 'image' ? '[图片]' : ''))
+    .map((b: any) => (b?.type === 'text' ? String(b.text ?? '') : b?.type === 'image' ? t('main.image') : ''))
     .filter(Boolean)
     .join('\n')
 }
@@ -345,7 +346,7 @@ function listClaude(profiles: ProfileConfig[], own: Set<string>, userData: strin
           profileId,
           kind: 'claude',
           nativeId: sid,
-          title: oneLine(meta.title || meta.firstPrompt || owner?.display || '未命名会话'),
+          title: oneLine(meta.title || meta.firstPrompt || owner?.display || t('main.untitled')),
           cwd: meta.cwd ?? owner?.project ?? null,
           createdAt: meta.createdAt,
           updatedAt: meta.updatedAt
@@ -472,7 +473,7 @@ function listCodex(p: ProfileConfig, own: Set<string>, userData: string): Histor
       profileId: p.id,
       kind: 'codex',
       nativeId: id,
-      title: oneLine(String(r.name || r.title || first || '未命名会话')),
+      title: oneLine(String(r.name || r.title || first || t('main.untitled'))),
       cwd,
       createdAt: toMs(r.created_at_ms) || toMs(r.created_at),
       updatedAt: toMs(r.updated_at_ms) || toMs(r.updated_at) || toMs(r.recency_at_ms)
@@ -549,7 +550,7 @@ function codexUserText(text: string): string {
     const items = JSON.parse(m[1]) as { question?: string; answer?: string }[]
     if (!Array.isArray(items)) return text
     return items
-      .map((q) => `回答提问「${oneLine(String(q.question ?? ''), 80)}」\n${String(q.answer ?? '').trim()}`)
+      .map((q) => `${t('main.answered', { q: oneLine(String(q.question ?? ''), 80) })}\n${String(q.answer ?? '').trim()}`)
       .join('\n\n')
   } catch {
     return text
@@ -578,7 +579,7 @@ async function parseCodex(path: string): Promise<HistoryMessage[]> {
       sawItems = true
       const it = p.item
       if (it?.type === 'UserMessage') {
-        const text = (Array.isArray(it.content) ? it.content : []).map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : c?.type ? '[图片]' : '')).join('\n').trim()
+        const text = (Array.isArray(it.content) ? it.content : []).map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : c?.type ? t('main.image') : '')).join('\n').trim()
         if (text) msgs.push({ role: 'user', text: codexUserText(text), at })
         cur = null
         continue
@@ -717,7 +718,7 @@ function listAgy(p: ProfileConfig, own: Set<string>, userData: string): HistoryE
       profileId: p.id,
       kind: 'gemini',
       nativeId: id,
-      title: oneLine(String(r.title || preview || '未命名会话')),
+      title: oneLine(String(r.title || preview || t('main.untitled'))),
       cwd,
       createdAt: created || toMs(r.last_modified_time),
       updatedAt: toMs(r.last_modified_time) || toMs(r.last_user_input_time)
@@ -828,7 +829,7 @@ export function claudePath(entry: HistoryEntry): string | null {
 export async function openHistory(key: string): Promise<HistoryThread> {
   let entry = (cache?.entries ?? listHistory()).find((e) => e.key === key)
   if (!entry) entry = listHistory(true).find((e) => e.key === key)
-  if (!entry) throw new Error('找不到这条历史记录（可能已被 CLI 删除）')
+  if (!entry) throw new Error(t('main.historyMissing'))
   const cfg = listConfigs().find((c) => c.id === entry!.profileId)
   let messages: HistoryMessage[] = []
   let notice: string | null = null
@@ -841,15 +842,15 @@ export async function openHistory(key: string): Promise<HistoryThread> {
       if (p) messages = await parseCodex(p)
     } else if (cfg) messages = parseAgy(cfg, entry.nativeId)
   } catch (e) {
-    notice = `解析中断：${String(e instanceof Error ? e.message : e)}`
+    notice = t('main.parseInterrupted', { error: String(e instanceof Error ? e.message : e) })
   }
   if (!messages.length) {
     const preview = entry.kind === 'gemini' ? agyPreview.get(entry.nativeId) : null
     messages = preview ? [{ role: 'user', text: preview, at: entry.createdAt }] : []
-    notice = '此对话格式无法完整解析，仅显示摘要。继续发消息仍会接着原会话。'
+    notice = t('main.parsePartial')
   }
   if (messages.length > MAX_MESSAGES) {
-    notice = `对话较长，仅显示最近 ${MAX_MESSAGES} 条消息。`
+    notice = t('main.historyTrimmed', { n: MAX_MESSAGES })
     messages = messages.slice(-MAX_MESSAGES)
   }
   return { entry, messages, notice }

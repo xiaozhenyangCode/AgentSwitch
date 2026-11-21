@@ -16,6 +16,7 @@ import {
 } from '@shared/types'
 import { getBaseEnv, realHome, strippedVarNames } from './shellEnv'
 import { loadStore, saveStore, type StoreData } from './store'
+import { t } from './i18n'
 
 const SHELL = '/bin/zsh'
 
@@ -96,10 +97,10 @@ function detectExisting(): ProfileConfig[] {
     })
 
   const h = (p: string) => join(realHome, p)
-  if (existsSync(h('.claude'))) add('claude', '~/.claude', 'Claude 账号 1')
-  if (existsSync(h('.claude2'))) add('claude', '~/.claude2', existsSync(h('.claude')) ? 'Claude 账号 2' : 'Claude 账号 1')
-  if (hasAgySetup(realHome)) add('gemini', '~', 'Gemini 账号 1')
-  if (existsSync(h('.codex/auth.json')) || existsSync(h('.codex/config.toml'))) add('codex', '~/.codex', 'Codex 账号 1')
+  if (existsSync(h('.claude'))) add('claude', '~/.claude', defaultName('claude', 1))
+  if (existsSync(h('.claude2'))) add('claude', '~/.claude2', defaultName('claude', existsSync(h('.claude')) ? 2 : 1))
+  if (hasAgySetup(realHome)) add('gemini', '~', defaultName('gemini', 1))
+  if (existsSync(h('.codex/auth.json')) || existsSync(h('.codex/config.toml'))) add('codex', '~/.codex', defaultName('codex', 1))
   return out
 }
 
@@ -131,7 +132,7 @@ export function initProfiles(): void {
       const used = new Set(store.profiles.map((p) => p.name))
       store.profiles.push({
         id: newId('gemini'),
-        name: used.has('Gemini 账号 1') ? suggestName('gemini') : 'Gemini 账号 1',
+        name: used.has(defaultName('gemini', 1)) ? suggestName('gemini') : defaultName('gemini', 1),
         kind: 'gemini',
         configDir: '~',
         imported: true,
@@ -192,11 +193,14 @@ export function resetKindConfig(kind: ProfileKind): KindConfig {
   return getKindConfig(kind)
 }
 
+/** "<Kind> 账号 N" in the UI language. */
+const defaultName = (kind: ProfileKind, n: number): string => t('acct.defaultName', { kind: KIND_LABEL[kind], n })
+
 /** Next free "<Kind> 账号 N" name. */
 function suggestName(kind: ProfileKind): string {
   const used = new Set(store.profiles.map((p) => p.name))
   for (let n = 1; ; n++) {
-    const name = `${KIND_LABEL[kind]} 账号 ${n}`
+    const name = defaultName(kind, n)
     if (!used.has(name)) return name
   }
 }

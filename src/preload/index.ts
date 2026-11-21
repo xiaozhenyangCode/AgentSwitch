@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
   type AppInfo,
   type DeleteThreadRequest,
   type ThemeMode,
+  type MenuCommand,
   type ThemeState,
   type DeleteThreadResult,
   type ChatEvent,
@@ -108,6 +110,14 @@ const api = {
       return () => ipcRenderer.removeListener(IPC.themeChanged, h)
     }
   },
+  i18n: {
+    /** Sync on purpose: the first render already uses the right language. */
+    get: (): I18nState => ipcRenderer.sendSync(IPC.i18nGetSync),
+    set: (pref: LanguagePref): Promise<I18nState> => ipcRenderer.invoke(IPC.i18nSet, pref),
+    onChanged: (cb: (s: I18nState) => void) => subscribe(IPC.i18nChanged, cb)
+  },
+  /** Native menu bar commands (About, Settings…, New Chat, Search). */
+  onMenu: (cb: (cmd: MenuCommand) => void) => subscribe(IPC.menuCommand, cb),
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.openExternal, url),
@@ -118,6 +128,8 @@ const api = {
     /** Picks a thread's project folder (and allow-lists it for image previews). */
     pickProject: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke(IPC.pickProject, defaultPath),
     showInFolder: (p: string): Promise<void> => ipcRenderer.invoke(IPC.showInFolder, p),
+    /** Opens AgentSwitch's userData folder in Finder (outside the file allowlist on purpose). */
+    showDataDir: (): Promise<void> => ipcRenderer.invoke(IPC.showDataDir),
     /** Absolute path of a File picked/dropped in the renderer ('' for in-memory files). */
     pathForFile: (file: File): string => webUtils.getPathForFile(file)
   }

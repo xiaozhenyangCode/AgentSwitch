@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { LEGACY_PROJECT_DIR } from './legacy'
 import { createTwoFilesPatch } from 'diff'
+import { t } from './i18n'
 
 /**
  * Text-content baseline of a project, taken before each step, so file changes reported by
@@ -87,7 +88,7 @@ export class FileBaseline {
     const patch = createTwoFilesPatch(before ? `a/${name}` : '/dev/null', after !== null ? `b/${name}` : '/dev/null', before, now, '', '', { context: 3 })
     // drop the "Index:/====" preamble jsdiff adds
     const body = patch.replace(/^(Index:[^\n]*\n)?=+\n/, '')
-    return body.length > MAX_DIFF ? body.slice(0, MAX_DIFF) + '\n… (diff 过长，已截断)\n' : body
+    return body.length > MAX_DIFF ? body.slice(0, MAX_DIFF) + '\n' + t('main.diffTruncated') + '\n' : body
   }
 
   /** Record the current content without producing a diff (the CLI shipped its own patch). */

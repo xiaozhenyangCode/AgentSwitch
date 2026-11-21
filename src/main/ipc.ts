@@ -37,6 +37,7 @@ import {
   updateKindConfig,
   updateProfile
 } from './profiles'
+import { t } from './i18n'
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, listHistory, openHistory, writeHandoff } from './history'
@@ -104,10 +105,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   const sessionLabel = (id: SessionId): string => {
     const k = kindOfInstallSession(id)
-    if (k) return `安装 ${KIND_LABEL[k]}`
+    if (k) return t('main.installSession', { name: KIND_LABEL[k] })
     if (id.startsWith('run:')) {
       const pid = id.slice(4)
-      return `运行 · ${hasProfile(pid) ? getConfig(pid).name : pid}`
+      return t('main.runSession', { name: hasProfile(pid) ? getConfig(pid).name : pid })
     }
     return hasProfile(id) ? getConfig(id).name : id
   }
@@ -284,7 +285,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.attachStage, (_e, name: unknown, data: unknown) => {
     if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) throw new Error('bad data')
     const buf = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data)
-    if (buf.length > STAGE_MAX) throw new Error('附件太大（上限 50MB）')
+    if (buf.length > STAGE_MAX) throw new Error(t('main.attachTooLarge'))
     mkdirSync(stageDir, { recursive: true })
     const safe = String(name || 'file').replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(-80) || 'file'
     const p = join(stageDir, `${randomBytes(4).toString('hex')}-${safe}`)
@@ -306,7 +307,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const w = getWindow()
     const opts: Electron.OpenDialogOptions = {
       title,
-      buttonLabel: '选择',
+      buttonLabel: t('main.choose'),
       properties: ['openDirectory', 'createDirectory', 'showHiddenFiles'],
       defaultPath: defaultPath ? expandHome(defaultPath) : realHome
     }
@@ -317,8 +318,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.pickProject, async (_e, defaultPath?: string) => {
     const w = getWindow()
     const opts: Electron.OpenDialogOptions = {
-      title: '选择这个对话的项目文件夹',
-      buttonLabel: '选择',
+      title: t('main.pickProjectTitle'),
+      buttonLabel: t('main.choose'),
       properties: ['openDirectory', 'createDirectory'],
       defaultPath: defaultPath ? expandHome(defaultPath) : realHome
     }
@@ -327,6 +328,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     allowRoot(r.filePaths[0])
     return r.filePaths[0]
   })
+  ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
   ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
     if (typeof p === 'string' && isAllowedPath(p)) shell.showItemInFolder(p)
   })
@@ -339,7 +341,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       shellEnvError: s.error,
       path: getBaseEnv().PATH ?? '',
       electron: process.versions.electron,
-      node: process.versions.node
+      node: process.versions.node,
+      chrome: process.versions.chrome,
+      version: app.getVersion(),
+      arch: process.arch,
+      osVersion: process.getSystemVersion()
     }
   })
 

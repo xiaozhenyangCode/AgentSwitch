@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import type { ModelOption, ProfileId, ProfileState } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
-import { DEFAULT_HINT, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
+import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar } from '../components/common'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
@@ -34,13 +34,16 @@ import {
   type Thread,
   type UserMessage
 } from '../state/chat'
+import { fmtDuration, t, tNode } from '../state/i18n'
+import { stripLatest } from '@shared/i18n'
+import { patchDraft, pickDriver, useDraft, type DraftCtx } from '../state/draft'
+import { sendKeys, useSettings } from '../state/settings'
 
-type Ctx = Pick<Thread, 'projectDir' | 'participants' | 'driver'>
-const DRAFT_KEY = 'agentswitch.draft.v1'
+type Ctx = DraftCtx
 
 const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
-const fmtDur = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`)
+const fmtDur = fmtDuration
 const pad2 = (n: number) => String(n).padStart(2, '0')
 /** Message time: today HH:mm · 昨天 HH:mm · MM-DD HH:mm (hover: full). */
 function msgTime(ts: number): string {
@@ -49,7 +52,7 @@ function msgTime(ts: number): string {
   day.setHours(0, 0, 0, 0)
   const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
   if (ts >= day.getTime()) return hm
-  if (ts >= day.getTime() - 86400_000) return `昨天 ${hm}`
+  if (ts >= day.getTime() - 86400_000) return t('time.yesterday', { time: hm })
   return `${d.getFullYear() !== day.getFullYear() ? d.getFullYear() + '-' : ''}${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`
 }
 const fullTime = (ts: number) => {
@@ -105,21 +108,15 @@ export function WorkbenchPage() {
   const sorted = useSortedAccounts()
 
   // settings for a conversation that hasn't been created yet (no thread selected)
-  const [draft, setDraft] = useState<Ctx>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(DRAFT_KEY) ?? '')
-    } catch {
-      return { projectDir: null, participants: [], driver: { profileId: null, model: null } }
-    }
-  })
-  useEffect(() => localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)), [draft])
+  const draft = useDraft()
+  useSettings() // 新对话默认账号 changes the draft's driver
 
   const ctx: Ctx = thread ?? draft
-  const update = (patch: Partial<Ctx>) => (thread ? updateThread(thread.id, patch) : setDraft((d) => ({ ...d, ...patch })))
+  const update = (patch: Partial<Ctx>) => (thread ? updateThread(thread.id, patch) : patchDraft(patch))
 
   // participants default to every ready account when unset
   const participants = ctx.participants.length ? ctx.participants.filter((id) => byId(id)) : sorted.filter(isReady).map((p) => p.id)
-  const driverP = (ctx.driver.profileId && byId(ctx.driver.profileId)) || sorted.find((p) => participants.includes(p.id) && isReady(p)) || sorted[0]
+  const driverP = pickDriver(ctx, sorted, participants)
   const driverModel = ctx.driver.profileId === driverP?.id ? ctx.driver.model : null
   const setDriver = (id: ProfileId, model: string | null) =>
     update({ driver: { profileId: id, model }, participants: participants.includes(id) ? participants : [...participants, id] })
@@ -160,7 +157,7 @@ export function WorkbenchPage() {
     if (!thread || !driverP || !srcP || !speaker) return
     stick.current = true
     send(thread.id, {
-      text: `生成交接文档，交给 ${driverP.name}`,
+      text: t('wb.handoffText', { name: driverP.name }),
       attachments: [],
       driver: { ...ref(srcP, null), model: speaker.model },
       mentions: [],
@@ -207,9 +204,9 @@ export function WorkbenchPage() {
   return (
     <div className="relative flex h-full flex-col">
       <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
-        <button onClick={() => void pickProject()} className={pill + ' no-drag max-w-[340px] min-w-0'} title={ctx.projectDir ? shortPath(ctx.projectDir) : '这个对话里模型读写文件的位置'}>
+        <button onClick={() => void pickProject()} className={pill + ' no-drag max-w-[340px] min-w-0'} title={ctx.projectDir ? shortPath(ctx.projectDir) : t('wb.projectHint')}>
           <IconFolder size={16} className="shrink-0 text-accent" />
-          <span className={`truncate ${ctx.projectDir ? '' : 'text-ink-2'}`}>{ctx.projectDir ? baseName(ctx.projectDir) : '选择项目文件夹…'}</span>
+          <span className={`truncate ${ctx.projectDir ? '' : 'text-ink-2'}`}>{ctx.projectDir ? baseName(ctx.projectDir) : t('wb.pickProject')}</span>
           <IconChevronDown size={14} className="shrink-0 text-ink-3" />
         </button>
         <div className="flex-1" />
@@ -230,10 +227,10 @@ export function WorkbenchPage() {
               <KindAvatar kind={thread.imported.kind} size={16} />
               <span className="min-w-0 flex-1">
                 {thread.preview
-                  ? `本机 CLI 历史（只读查看，不会改动原记录）· 发送消息后才会存为对话，用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 接着原会话继续`
-                  : `从本机 CLI 历史继续（不会改动原记录）· 用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 发送会接着原会话`}
-                {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">· 正在读取…</span>}
-                {thread.historyState === 'error' && <span className="ml-1 text-warn">· 历史读取失败</span>}
+                  ? t('wb.previewBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })
+                  : t('wb.importedBanner', { name: byId(thread.imported.profileId)?.name ?? t('wb.origAccount') })}
+                {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">{t('wb.historyLoading')}</span>}
+                {thread.historyState === 'error' && <span className="ml-1 text-warn">{t('wb.historyError')}</span>}
                 {thread.imported.notice && <span className="block text-warn">{thread.imported.notice}</span>}
               </span>
             </div>
@@ -267,31 +264,31 @@ export function WorkbenchPage() {
             <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-info-soft px-4 py-2.5 text-[13px] text-info shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
               <IconCheck size={15} className="shrink-0" />
               <span className="min-w-0 flex-1 truncate">
-                交接文档已就绪，下一条消息会同步给 <span className="font-semibold">{driverP.name}</span>
+                {tNode('wb.handoffReady', { name: <span className="font-semibold">{driverP.name}</span> })}
               </span>
               <button className="h-7 shrink-0 rounded-full px-3 font-medium hover:bg-black/[0.05]" onClick={() => void window.agentswitch.sys.showInFolder(thread!.handoff!.path)} title={thread!.handoff!.path}>
-                查看文档
+                {t('wb.viewDoc')}
               </button>
             </div>
           ) : (
             <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
               <IconArrowRight size={15} className="shrink-0 text-accent" />
               <span className="min-w-0 flex-1">
-                切换到 <span className="font-semibold">{driverP.name}</span> 需同步前文上下文
-                {handoffFailed && <span className="block text-[12px] text-warn">{srcP?.name ?? '原账号'} 生成交接失败{thread!.handoffFailed!.error === 'rate_limited' ? '（触发用量限制）' : ''}，可改为导出最近对话</span>}
-                {!srcOk && !handoffFailed && <span className="block text-[12px] text-warn">{srcP?.name ?? '原账号'} 当前不可用，可导出最近对话作为交接</span>}
+                {tNode('wb.switchNeedsSync', { name: <span className="font-semibold">{driverP.name}</span> })}
+                {handoffFailed && <span className="block text-[12px] text-warn">{t('wb.handoffFailed', { name: srcP?.name ?? t('wb.origAccount'), suffix: thread!.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}</span>}
+                {!srcOk && !handoffFailed && <span className="block text-[12px] text-warn">{t('wb.srcUnavailable', { name: srcP?.name ?? t('wb.origAccount') })}</span>}
               </span>
               {srcOk && !handoffFailed ? (
                 <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoff}>
-                  让 {srcP!.name} 生成交接并切换
+                  {t('wb.letHandoff', { name: srcP!.name })}
                 </button>
               ) : (
                 <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport()}>
-                  {exporting ? '导出中…' : '导出最近对话作为交接'}
+                  {exporting ? t('wb.exporting') : t('wb.exportHandoff')}
                 </button>
               )}
               <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => skipHandoff(thread!.id, driverP.id)}>
-                直接切换
+                {t('wb.switchDirect')}
               </button>
             </div>
           )}
@@ -302,16 +299,16 @@ export function WorkbenchPage() {
           <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-warn-soft px-4 py-3 text-[13px] text-warn shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
             <IconAlert size={16} className="shrink-0" />
             <span className="min-w-0 flex-1">
-              <span className="font-semibold">需要人工介入</span> · {thread.pause.reason}
+              <span className="font-semibold">{t('wb.needHuman')}</span> · {thread.pause.reason}
             </span>
             <button className="h-7 shrink-0 rounded-full bg-orange px-3 font-medium text-white hover:bg-orange" onClick={() => resolvePause(thread.id, 'retry')}>
-              再试一轮
+              {t('wb.retryRound')}
             </button>
             <button className="h-7 shrink-0 rounded-full bg-surface px-3 font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2" onClick={() => resolvePause(thread.id, 'skip')}>
-              跳过验收继续
+              {t('wb.skipReview')}
             </button>
             <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => resolvePause(thread.id, 'stop')}>
-              结束本轮
+              {t('wb.endTurn')}
             </button>
           </div>
         </div>
@@ -331,7 +328,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
 
   return (
     <div ref={ref} className="no-drag relative">
-      <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-2.5 pr-3 pl-2'} title="这个对话允许调用的模型">
+      <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-2.5 pr-3 pl-2'} title={t('wb.participantsHint')}>
         <span className="flex -space-x-1">
           {active.slice(0, 5).map((p) => (
             <span key={p.id} className="rounded-[8px] ring-2 ring-canvas" title={p.name}>
@@ -340,12 +337,12 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
           ))}
           {active.length === 0 && <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20" />}
         </span>
-        <span className="text-[13px] text-ink-2">{active.length} 个模型</span>
+        <span className="text-[13px] text-ink-2">{t('wb.nModels', { n: active.length })}</span>
         <IconChevronDown size={14} className="text-ink-3" />
       </button>
       {open && (
         <div className={popover + ' absolute top-11 right-0 z-30 w-72'}>
-          <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">这个对话可以调用的模型</div>
+          <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.participantsTitle')}</div>
           {accounts.map((p) => {
             const ready = isReady(p)
             const on = participants.includes(p.id)
@@ -356,20 +353,20 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
                 disabled={!ready || isDriver}
                 onClick={() => onChange(on ? participants.filter((x) => x !== p.id) : [...participants, p.id])}
                 className="flex h-10 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left transition-colors enabled:hover:bg-black/[0.04] disabled:cursor-default"
-                title={isDriver ? '主控账号始终参与' : undefined}
+                title={isDriver ? t('wb.driverAlways') : undefined}
               >
                 <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && ready ? 'bg-accent text-white' : 'bg-surface shadow-[inset_0_0_0_1.5px_var(--ring)]'} ${!ready ? 'opacity-40' : ''}`}>
                   {on && ready && <IconCheck size={12} strokeWidth={3} />}
                 </span>
                 <KindAvatar kind={p.kind} size={22} />
                 <span className={`min-w-0 flex-1 truncate text-[14px] ${ready ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
-                {isDriver ? <span className="text-[11px] text-ink-3">主控</span> : !ready && <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span>}
+                {isDriver ? <span className="text-[11px] text-ink-3">{t('wb.driver')}</span> : !ready && <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span>}
               </button>
             )
           })}
           <div className="mx-2 my-1 h-px bg-hairline" />
           <button className="flex h-9 w-full items-center gap-2 rounded-[10px] px-2.5 text-[13px] text-ink-2 hover:bg-black/[0.04] hover:text-ink" onClick={() => navigate('engines')}>
-            <IconPlus size={15} /> 添加或登录账号…
+            <IconPlus size={15} /> {t('wb.addOrLogin')}
           </button>
         </div>
       )}
@@ -384,23 +381,24 @@ function EmptyState({ projectDir, onPickProject, participants }: { projectDir: s
   const ready = useSortedAccounts().filter((p) => isReady(p) && participants.includes(p.id))
   return (
     <div className="flex flex-1 flex-col items-center justify-center pb-10 text-center">
-      <div className="text-[28px] leading-tight font-semibold tracking-tight text-ink">选择项目，随时调度你的 AI 团队</div>
+      <div className="text-[28px] leading-tight font-semibold tracking-tight text-ink">{t('wb.emptyTitle')}</div>
       <div className="mt-3 text-[14px] text-ink-2">
         {projectDir ? (
           <>
-            项目 <span className="font-medium text-ink">{baseName(projectDir)}</span>
+            {tNode('wb.project', { name: <span className="font-medium text-ink">{baseName(projectDir)}</span> })}
           </>
         ) : (
           <button className="text-accent hover:text-accent-hover" onClick={onPickProject}>
-            选择项目文件夹
+            {t('wb.pickProjectLink')}
           </button>
         )}
-        <span className="mx-1.5 text-ink-3">·</span>输入 <span className="rounded-md bg-black/[0.05] px-1.5 py-0.5 font-mono text-[13px] text-ink">@</span> 让多个模型协同
+        <span className="mx-1.5 text-ink-3">·</span>
+        {tNode('wb.atHint', { at: <span className="rounded-md bg-black/[0.05] px-1.5 py-0.5 font-mono text-[13px] text-ink">@</span> })}
       </div>
       {ready.length ? (
         <div className="mt-8 flex items-center gap-1.5">
           {ready.map((p) => (
-            <span key={p.id} className="flex items-center gap-1.5 rounded-full bg-surface py-1 pr-3 pl-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)]" title={`${p.name} 已就绪`}>
+            <span key={p.id} className="flex items-center gap-1.5 rounded-full bg-surface py-1 pr-3 pl-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)]" title={t('wb.readyHint', { name: p.name })}>
               <KindAvatar kind={p.kind} size={20} />
               {p.name}
             </span>
@@ -408,7 +406,7 @@ function EmptyState({ projectDir, onPickProject, participants }: { projectDir: s
         </div>
       ) : (
         <button className="mt-8 flex items-center gap-1 text-[14px] font-medium text-accent hover:text-accent-hover" onClick={() => navigate('engines')}>
-          还没有就绪的模型，去添加账号 <IconArrowRight size={15} />
+          {t('wb.noReady')} <IconArrowRight size={15} />
         </button>
       )}
     </div>
@@ -479,7 +477,13 @@ function UserBubble({ msg }: { msg: UserMessage }) {
       <div className="flex items-center gap-1 text-[11px] text-ink-3">
         {!msg.mentions.length && (
           <>
-            发给 <KindAvatar kind={msg.driver.kind} size={13} /> {msg.driver.name} ·
+            {tNode('wb.sentTo', {
+              who: (
+                <>
+                  <KindAvatar kind={msg.driver.kind} size={13} /> {msg.driver.name}
+                </>
+              )
+            })}
           </>
         )}
         <span title={fullTime(msg.createdAt)}>{msgTime(msg.createdAt)}</span>
@@ -519,30 +523,30 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
         {msg.agent.name}
         <span className="font-normal text-ink-2">
           {' · '}
-          {msg.agent.model || msg.actualModel ? modelLabel(msg.agent.model || msg.actualModel, msg.agent.profileId) : '默认模型'}
+          {msg.agent.model || msg.actualModel ? modelLabel(msg.agent.model || msg.actualModel, msg.agent.profileId) : t('wb.defaultModel')}
         </span>
       </span>
-      {msg.dispatchedBy && <span className="rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-ink-2">响应 {msg.dispatchedBy.name} 的调度</span>}
-      {msg.retry > 0 && !msg.review && <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">第 {msg.retry} 次重做</span>}
+      {msg.dispatchedBy && <span className="rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-ink-2">{t('wb.dispatchedBy', { name: msg.dispatchedBy.name })}</span>}
+      {msg.retry > 0 && !msg.review && <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">{t('wb.retryN', { n: msg.retry })}</span>}
       {msg.verdict && (
         <span
           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${msg.verdict.status === 'PASS' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn'}`}
           title={msg.verdict.reason}
         >
-          {msg.verdict.status === 'PASS' ? '验收通过' : '验收打回'}
+          {msg.verdict.status === 'PASS' ? t('wb.pass') : t('wb.reject')}
         </span>
       )}
       {streaming ? (
         <span className="flex items-center gap-1.5 text-[12px] text-accent">
-          <Spinner size={11} /> 正在回复 {msg.startedAt ? fmtDur(Date.now() - msg.startedAt) : ''}
+          <Spinner size={11} /> {t('wb.replying', { dur: msg.startedAt ? fmtDur(Date.now() - msg.startedAt) : '' })}
         </span>
       ) : msg.status === 'queued' ? (
-        <span className="text-[12px] text-ink-3">等待中</span>
+        <span className="text-[12px] text-ink-3">{t('wb.queued')}</span>
       ) : (
         msg.startedAt && (
-          <span className="text-[12px] text-ink-3" title={`开始 ${fullTime(msg.startedAt)}${msg.endedAt ? `\n结束 ${fullTime(msg.endedAt)}` : ''}`}>
+          <span className="text-[12px] text-ink-3" title={t('wb.started', { time: fullTime(msg.startedAt) }) + (msg.endedAt ? '\n' + t('wb.ended', { time: fullTime(msg.endedAt) }) : '')}>
             {msgTime(msg.startedAt)} ·{' '}
-            {msg.status === 'stopped' ? '已停止 · ' : ''}
+            {msg.status === 'stopped' ? t('wb.stopped') : ''}
             {fmtDur((msg.endedAt ?? Date.now()) - msg.startedAt)}
           </span>
         )
@@ -590,7 +594,7 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
               </div>
             )
           ) : (
-            !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">没有文字输出</div>
+            !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">{t('wb.noText')}</div>
           )}
           {streaming && msg.content && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-accent" />}
           <Outputs msg={msg} />
@@ -612,7 +616,7 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
             {msg.content && (
               <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink">
                 {copied ? <IconCheck size={14} className="text-ok" /> : <IconCopy size={14} />}
-                {copied ? '已复制' : '复制'}
+                {copied ? t('common.copied') : t('common.copy')}
               </button>
             )}
             <UsageLine usage={msg.usage} ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null} />
@@ -647,13 +651,13 @@ function Outputs({ msg }: { msg: AssistantMessage }) {
               key={p}
               onClick={() => void window.agentswitch.sys.showInFolder(p)}
               className="flex h-7 max-w-[260px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2.5 text-[12px] text-ink-2 hover:bg-black/[0.07] hover:text-ink"
-              title={`${p}\n在 Finder 中显示`}
+              title={`${p}\n${t('common.showInFinder')}`}
             >
               <IconFile size={13} className="shrink-0" />
               <span className="truncate">{fileBase(p)}</span>
             </button>
           ))}
-          {files.length > 12 && <span className="px-1 text-[12px] leading-7 text-ink-3">等 {files.length} 个文件</span>}
+          {files.length > 12 && <span className="px-1 text-[12px] leading-7 text-ink-3">{t('wb.moreFiles', { n: files.length })}</span>}
         </div>
       )}
     </div>
@@ -687,15 +691,15 @@ function DriverPicker({ driver, onPick }: { driver: ProfileState | null; onPick:
       <button
         onClick={() => setOpen((o) => !o)}
         className={`flex h-8 items-center gap-2 rounded-full pr-2 pl-1 text-[13px] font-medium text-ink transition-colors hover:bg-fill ${open ? 'bg-fill' : ''}`}
-        title="主控账号：默认由它回答，需要协同时由它拆解并调度其他模型"
+        title={t('wb.driverHint')}
       >
         {driver ? <KindAvatar kind={driver.kind} size={22} /> : <span className="h-[22px] w-[22px] rounded-[6px] border border-dashed border-black/20" />}
-        <span className="max-w-[150px] truncate">{driver?.name ?? '选择模型'}</span>
+        <span className="max-w-[150px] truncate">{driver?.name ?? t('wb.pickModel')}</span>
         <IconChevronDown size={13} className="text-ink-3" />
       </button>
       {open && (
         <div className={popover + ' absolute bottom-10 left-0 z-30 w-64'}>
-          <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">主控账号</div>
+          <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.driverAccount')}</div>
           {accounts.map((p) => (
             <AccountRow
               key={p.id}
@@ -710,7 +714,7 @@ function DriverPicker({ driver, onPick }: { driver: ProfileState | null; onPick:
           ))}
           <div className="mx-2 my-1 h-px bg-hairline" />
           <button className="flex h-9 w-full items-center gap-2 rounded-[10px] px-2.5 text-[13px] text-ink-2 hover:bg-black/[0.04] hover:text-ink" onClick={() => navigate('engines')}>
-            <IconPlus size={15} /> 管理模型与账号…
+            <IconPlus size={15} /> {t('wb.manageAccounts')}
           </button>
         </div>
       )}
@@ -765,38 +769,38 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
     // switching model keeps the chosen effort when the new model supports it
     <ModelRow key={m.id} m={m} active={picked === m.id} onClick={() => pick(withEffort('efforts' in m ? m : null, m.id, cur.effort))} />
   )
-  const SOURCE = { catalog: 'CLI 模型目录', command: 'CLI 实时查询', cache: '本地缓存', static: '内置列表' }
+  const SOURCE = { catalog: t('wb.srcCatalog'), command: t('wb.srcCommand'), cache: t('wb.srcCache'), static: t('wb.srcStatic') }
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
         className={`flex h-7 max-w-[260px] items-center gap-1 rounded-full bg-black/[0.045] pr-2 pl-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : ''}`}
-        title="子模型与思考强度（--model / effort）"
+        title={t('wb.subModelHint')}
       >
-        <span className="truncate">{eff ? modelLabel(eff, account.id) : '默认'}</span>
+        <span className="truncate">{eff ? modelLabel(eff, account.id) : t('common.default')}</span>
         <IconChevronDown size={12} className="shrink-0 text-ink-3" />
       </button>
       {open && (
         <div className={popover + ' absolute bottom-9 left-0 z-30 flex max-h-[480px] w-80 flex-col'}>
           <div className="flex items-center gap-2 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
-            <span className="min-w-0 flex-1 truncate">子模型 · {account.name}</span>
-            <button onClick={refresh} disabled={loading} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink disabled:opacity-60" title="重新从 CLI 获取模型列表">
-              {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} 刷新
+            <span className="min-w-0 flex-1 truncate">{t('wb.subModelOf', { name: account.name })}</span>
+            <button onClick={refresh} disabled={loading} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink disabled:opacity-60" title={t('wb.refetchModels')}>
+              {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
             </button>
           </div>
           <EffortBar opt={cur.opt} effort={cur.effort} onChange={(e) => cur.model && onPick(withEffort(cur.opt, cur.model, e))} />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <button onClick={() => pick(null)} className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors ${!model ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
               <span className="min-w-0 flex-1">
-                <span className="block text-[14px] leading-5 text-ink">默认</span>
-                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? `账号默认：${modelLabel(account.defaultModel, account.id)}` : DEFAULT_HINT[account.kind]}</span>
+                <span className="block text-[14px] leading-5 text-ink">{t('common.default')}</span>
+                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? t('wb.accountDefault', { model: modelLabel(account.defaultModel, account.id) }) : defaultHint(account.kind)}</span>
               </span>
               {!model && <IconCheck size={15} className="text-accent" />}
             </button>
             {main.map(row)}
             {rest.length > 0 && (
               <button onClick={() => setMore((x) => !x)} className="flex h-8 w-full items-center gap-1 rounded-[10px] px-2.5 text-[12px] text-ink-3 hover:bg-black/[0.04] hover:text-ink-2">
-                {more ? '收起' : `更多模型（${rest.length}）`}
+                {more ? t('common.collapse') : t('wb.moreModels', { n: rest.length })}
                 <IconChevronDown size={12} className={more ? 'rotate-180' : ''} />
               </button>
             )}
@@ -804,8 +808,8 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
           </div>
           {list && (
             <div className="px-2.5 pt-1 text-[11px] text-ink-3" title={list.error}>
-              来源：{SOURCE[list.source]}
-              {list.error ? ' · 刷新失败' : ''}
+              {t('wb.source', { src: SOURCE[list.source] })}
+              {list.error ? t('wb.refreshFailed') : ''}
             </div>
           )}
           <div className="mx-2 my-1 h-px bg-hairline" />
@@ -819,7 +823,7 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
                   pick(custom.trim())
                 }
               }}
-              placeholder="自定义模型名，回车使用（可写 模型:effort）"
+              placeholder={t('wb.customModel')}
               className="h-8 w-full rounded-lg bg-fill px-2.5 font-mono text-[12px] text-ink outline-none placeholder:font-sans placeholder:text-ink-3 focus:ring-2 focus:ring-accent/30"
             />
           </div>
@@ -851,6 +855,7 @@ function Composer({
   onStop: () => void
 }) {
   const { toast, navigate } = useApp()
+  const { sendKey } = useSettings()
   useModelsVersion()
   const accounts = useSortedAccounts()
   const [text, setText] = useState('')
@@ -964,15 +969,15 @@ function Composer({
 
   const canSend = !busy && !!driver && (text.trim().length > 0 || atts.length > 0)
   const doSend = () => {
-    if (busy) return toast({ kind: 'info', title: '模型还在回复', desc: '等它完成，或点击停止后再发送。' })
-    if (!driver) return toast({ kind: 'warn', title: '还没有可用的模型', action: { label: '添加账号', run: () => navigate('engines') } })
+    if (busy) return toast({ kind: 'info', title: t('wb.busyTitle'), desc: t('wb.busyDesc') })
+    if (!driver) return toast({ kind: 'warn', title: t('wb.noModel'), action: { label: t('wb.addAccount'), run: () => navigate('engines') } })
     if (!text.trim() && !atts.length) return
     if (!isReady(driver))
       return toast({
         kind: 'warn',
-        title: `${driver.name} 还不能使用`,
+        title: t('wb.notUsable', { name: driver.name }),
         desc: accountBadge(driver).label,
-        action: { label: driver.status === 'uninstalled' ? '去安装' : '去登录', run: () => navigate('engines', driver.id) }
+        action: { label: driver.status === 'uninstalled' ? t('wb.goInstall') : t('wb.goLogin'), run: () => navigate('engines', driver.id) }
       })
     onSend(text.trim(), atts)
     setText('')
@@ -1009,7 +1014,10 @@ function Composer({
         return setMention(null)
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !composing) {
+    if (e.key !== 'Enter' || composing) return
+    const mod = e.metaKey || e.ctrlKey
+    // enter: Enter sends, Shift+Enter newline. mod-enter: ⌘+Enter sends, Enter newline.
+    if (sendKey === 'enter' ? !e.shiftKey && !mod : mod) {
       e.preventDefault()
       doSend()
     }
@@ -1022,7 +1030,7 @@ function Composer({
           <div className="absolute bottom-full left-0 z-30 mb-2 flex items-end gap-2">
             <div className={popover + ' w-72'}>
               <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
-                <IconAt size={13} /> 邀请模型参与 <span className="ml-auto">→ 选子模型</span>
+                <IconAt size={13} /> {t('wb.inviteModels')} <span className="ml-auto">{t('wb.pickSubHint')}</span>
               </div>
               {matches.length ? (
                 matches.map((p, i) => (
@@ -1033,7 +1041,7 @@ function Composer({
                     onClick={() => insertMention(p, null)}
                     trailing={
                       <>
-                      {p.id === driver?.id && <span className="text-[11px] text-ink-3">当前</span>}
+                      {p.id === driver?.id && <span className="text-[11px] text-ink-3">{t('wb.current')}</span>}
                       <span
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={(e) => {
@@ -1041,16 +1049,16 @@ function Composer({
                           setMention((m) => m && { ...m, index: i, sub: m.sub === i ? null : i, subIndex: 0 })
                         }}
                         className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-ink-2 hover:bg-black/[0.09]"
-                        title="选择子模型"
+                        title={t('wb.pickSub')}
                       >
-                        {p.defaultModel ? modelLabel(p.defaultModel, p.id) : '默认'} ›
+                        {p.defaultModel ? modelLabel(p.defaultModel, p.id) : t('common.default')} ›
                       </span>
                       </>
                     }
                   />
                 ))
               ) : (
-                <div className="px-2.5 py-2 text-[13px] text-ink-3">没有匹配的已就绪账号</div>
+                <div className="px-2.5 py-2 text-[13px] text-ink-3">{t('wb.noMatchReady')}</div>
               )}
             </div>
             {mention.sub !== null && matches[mention.sub] && (() => {
@@ -1060,7 +1068,7 @@ function Composer({
               const hotOpt = hot ? (findModel(hot, p.id)?.opt ?? null) : null
               return (
                 <div className={popover + ' flex max-h-[400px] w-80 flex-col'}>
-                  <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{p.name} 的子模型</div>
+                  <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.subModelsOf', { name: p.name })}</div>
                   <EffortBar opt={hotOpt} effort={subEffort} onChange={setSubEffort} />
                   <div className="min-h-0 flex-1 overflow-y-auto">
                     {opts.map((m, j) => {
@@ -1068,7 +1076,7 @@ function Composer({
                       return (
                         <ModelRow
                           key={m ?? '_'}
-                          m={m ? { id: m, label: o?.label.replace(/（最新）$/, '') ?? m } : { id: '默认', label: '默认' }}
+                          m={m ? { id: m, label: o ? stripLatest(o.label) : m } : { id: t('common.default'), label: t('common.default') }}
                           active={false}
                           hot={j === mention.subIndex}
                           onClick={() => insertMention(p, m)}
@@ -1107,7 +1115,7 @@ function Composer({
                     <button
                       onClick={() => setAtts((x) => x.filter((y) => y.id !== a.id))}
                       className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-canvas opacity-0 shadow transition-opacity group-hover:opacity-100"
-                      title="移除"
+                      title={t('common.remove')}
                     >
                       <IconX size={11} strokeWidth={2.4} />
                     </button>
@@ -1147,7 +1155,7 @@ function Composer({
                 void addFiles(files)
               }
             }}
-            placeholder={driver ? `给 ${driver.name} 发消息，输入 @ 邀请其他模型协同` : '先在「模型引擎」添加一个账号'}
+            placeholder={driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
             className="block max-h-[200px] w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-[22px] text-ink outline-none placeholder:text-ink-3"
           />
 
@@ -1159,7 +1167,7 @@ function Composer({
             <button
               onClick={() => fileInput.current?.click()}
               className="flex h-8 w-8 items-center justify-center rounded-full text-ink-2 transition-colors hover:bg-fill hover:text-ink"
-              title="添加图片或文件（也可以拖入或粘贴）"
+              title={t('wb.attachHint')}
             >
               <IconPlus size={17} />
             </button>
@@ -1175,7 +1183,7 @@ function Composer({
             />
             <div className="flex-1" />
             {busy ? (
-              <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-canvas transition-transform active:scale-95" title="停止">
+              <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-canvas transition-transform active:scale-95" title={t('common.stop')}>
                 <IconStop size={14} />
               </button>
             ) : (
@@ -1183,7 +1191,7 @@ function Composer({
                 onClick={doSend}
                 disabled={!canSend}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgba(0,122,255,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:bg-black/[0.08] disabled:text-ink-3 disabled:shadow-none"
-                title="发送（Enter）"
+                title={t('wb.sendHint', { key: sendKeys(sendKey).send })}
               >
                 <IconArrowUp size={17} strokeWidth={2.2} />
               </button>

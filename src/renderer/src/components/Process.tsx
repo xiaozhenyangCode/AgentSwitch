@@ -3,13 +3,14 @@ import { MarkdownBase } from './Markdown'
 import type { Usage } from '@shared/types'
 import type { Activity, Thinking } from '../state/chat'
 import { IconCheck, IconChevronDown, IconCopy, IconTerminal, IconX, Spinner } from './icons'
+import { fmtDuration, t } from '../state/i18n'
 
 /**
  * Process views for one assistant step: live/folded thinking, the expandable tool-call bar
  * (diff · terminal output · tool input/output), "other events" and the usage footer.
  */
 
-const fmtSec = (ms: number): string => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`)
+const fmtSec = fmtDuration
 const fmtNum = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 
 function useNow(active: boolean): number {
@@ -39,23 +40,23 @@ function useStickBottom<T extends HTMLElement>(dep: unknown) {
 
 // ---- thinking -------------------------------------------------------------------------------
 
-export function ThinkingCard({ t, live }: { t: Thinking; live: boolean }) {
-  const thinkingNow = live && !t.endedAt
+export function ThinkingCard({ t: th, live }: { t: Thinking; live: boolean }) {
+  const thinkingNow = live && !th.endedAt
   const now = useNow(thinkingNow)
   const [open, setOpen] = useState(false)
-  const { ref, onScroll } = useStickBottom<HTMLDivElement>(t.text)
-  const timed = t.timed !== false
-  const secs = timed ? fmtSec((t.endedAt ?? now) - t.startedAt) : ''
-  const tokens = t.tokens ? `${timed ? ' · ' : ''}${fmtNum(t.tokens)} tokens` : ''
+  const { ref, onScroll } = useStickBottom<HTMLDivElement>(th.text)
+  const timed = th.timed !== false
+  const secs = timed ? fmtSec((th.endedAt ?? now) - th.startedAt) : ''
+  const tokens = th.tokens ? `${timed ? ' · ' : ''}${fmtNum(th.tokens)} tokens` : ''
   // reasoning summaries come as markdown headings like **Checking files**: show them plain
-  const text = t.text.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\n{3,}/g, '\n\n').trim()
+  const text = th.text.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\n{3,}/g, '\n\n').trim()
 
   if (thinkingNow)
     return (
       <div className="mb-3 rounded-xl bg-black/[0.035] px-3 py-2.5">
         <div className="flex items-center gap-2 text-[12px] text-ink-2">
           <Spinner size={12} className="text-accent" />
-          <span className="font-medium">正在深度思考…</span>
+          <span className="font-medium">{t('proc.thinkingNow')}</span>
           <span className="text-ink-3 tabular-nums">
             {secs}
             {tokens}
@@ -66,7 +67,7 @@ export function ThinkingCard({ t, live }: { t: Thinking; live: boolean }) {
             {text}
           </div>
         ) : (
-          <div className="mt-1 text-[11.5px] text-ink-3/80">该模型不公开思考内容，仅显示用时与 token 估计</div>
+          <div className="mt-1 text-[11.5px] text-ink-3/80">{t('proc.hiddenThinking')}</div>
         )}
       </div>
     )
@@ -79,17 +80,17 @@ export function ThinkingCard({ t, live }: { t: Thinking; live: boolean }) {
         className="flex h-6 items-center gap-1.5 rounded-md px-1 -ml-1 text-[12px] text-ink-3 transition-colors enabled:hover:bg-black/[0.04] enabled:hover:text-ink-2"
       >
         <span>
-          已思考{secs || tokens ? (timed ? ' ' : ' · ') : ''}
+          {t('proc.thought')}{secs || tokens ? (timed ? ' ' : ' · ') : ''}
           {secs}
           {tokens}
         </span>
         {text ? (
           <>
-            <span>· {open ? '收起思考过程' : '展开思考过程'}</span>
+            <span>· {open ? t('proc.collapseThinking') : t('proc.expandThinking')}</span>
             <IconChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
           </>
         ) : (
-          <span className="text-ink-3/70">（未公开思考内容）</span>
+          <span className="text-ink-3/70">{t('proc.hiddenShort')}</span>
         )}
       </button>
       {open && text && (
@@ -103,13 +104,9 @@ export function ThinkingCard({ t, live }: { t: Thinking; live: boolean }) {
 
 // ---- activity -------------------------------------------------------------------------------
 
-const ACT: Record<Activity['type'], { verb: string; unit: string }> = {
-  read: { verb: '读取', unit: '个文件' },
-  write: { verb: '写入', unit: '个文件' },
-  run: { verb: '执行', unit: '条命令' },
-  search: { verb: '搜索', unit: '次' },
-  tool: { verb: '调用', unit: '个工具' }
-}
+const ACT_TYPES = ['read', 'write', 'run', 'search', 'tool'] as const
+const actDone = (type: Activity['type'], n: number) => t(`proc.done.${type}` as 'proc.done.read', { n })
+const actNow = (type: Activity['type'], target: string) => (ACT_TYPES.includes(type) ? t(`proc.now.${type}` as 'proc.now.read', { target }) : target)
 
 const diffStat = (diff: string): { add: number; del: number } => {
   let add = 0
@@ -133,7 +130,7 @@ function CopyButton({ text, dark }: { text: string; dark?: boolean }) {
         setTimeout(() => setDone(false), 1200)
       }}
       className={`flex h-5 items-center gap-1 rounded px-1.5 text-[11px] ${dark ? 'text-white/50 hover:bg-white/10 hover:text-white/90' : 'text-ink-3 hover:bg-black/[0.06] hover:text-ink'}`}
-      title="复制"
+      title={t('common.copy')}
     >
       {done ? <IconCheck size={11} /> : <IconCopy size={11} />}
     </button>
@@ -182,12 +179,12 @@ function TerminalView({ a }: { a: Activity }) {
         {code !== undefined && code !== null ? (
           <span className={`shrink-0 rounded-full px-1.5 py-px font-mono text-[10.5px] ${code === 0 ? 'bg-[#2E5B36] text-[#B5F0B9]' : 'bg-[#6B2A27] text-[#FFC2BC]'}`}>exit {code}</span>
         ) : a.status === 'running' ? (
-          <span className="shrink-0 text-[10.5px] text-white/50">运行中…</span>
+          <span className="shrink-0 text-[10.5px] text-white/50">{t('proc.running')}</span>
         ) : null}
         <CopyButton text={[d.output, d.stderr].filter(Boolean).join('\n')} dark />
       </div>
       <pre className="max-h-72 overflow-auto px-3 py-2 font-mono text-[11.5px] leading-[17px] whitespace-pre-wrap text-[#E6E6E8] select-text">
-        {d.output || (a.status === 'running' ? '' : <span className="text-white/40">（无输出）</span>)}
+        {d.output || (a.status === 'running' ? '' : <span className="text-white/40">{t('proc.noOutput')}</span>)}
         {d.stderr && <span className="text-[#FF9C93]">{(d.output ? '\n' : '') + d.stderr}</span>}
       </pre>
     </div>
@@ -211,9 +208,9 @@ function ActivityDetailView({ a }: { a: Activity }) {
   if (a.type === 'run') return <TerminalView a={a} />
   const parts: ReactNode[] = []
   if (d.diff) parts.push(<DiffView key="d" diff={d.diff} />)
-  if (d.input && a.type !== 'write') parts.push(<Block key="i" label="入参" text={d.input} />)
-  if (d.output) parts.push(<Block key="o" label={a.status === 'error' ? '错误' : '结果'} text={d.output} />)
-  if (!parts.length) return <div className="px-1 text-[11.5px] text-ink-3">{a.status === 'running' ? '进行中…' : '该 CLI 没有提供更多细节'}</div>
+  if (d.input && a.type !== 'write') parts.push(<Block key="i" label={t('proc.input')} text={d.input} />)
+  if (d.output) parts.push(<Block key="o" label={a.status === 'error' ? t('proc.error') : t('proc.result')} text={d.output} />)
+  if (!parts.length) return <div className="px-1 text-[11.5px] text-ink-3">{a.status === 'running' ? t('proc.inProgress') : t('proc.noDetail')}</div>
   return <div className="space-y-1.5">{parts}</div>
 }
 
@@ -236,7 +233,7 @@ function ActivityRow({ a }: { a: Activity }) {
         <span className="flex w-3.5 shrink-0 justify-center">
           <StatusIcon s={a.status} />
         </span>
-        <span className="w-8 shrink-0 text-ink-3">{ACT[a.type]?.verb ?? a.type}</span>
+        <span className="min-w-8 shrink-0 pr-1 text-ink-3">{ACT_TYPES.includes(a.type) ? t(`proc.verb.${a.type}` as 'proc.verb.read') : a.type}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={a.target}>
           {shown}
         </span>
@@ -266,7 +263,7 @@ function OthersRow({ others }: { others: { kind: string; payload: string }[] }) 
     <div className="mt-1 border-t border-black/[0.05] pt-1">
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 rounded-md px-1.5 py-[3px] text-left text-[12px] text-ink-3 hover:bg-black/[0.035]">
         <span className="w-3.5" />
-        <span className="flex-1">其他事件（{others.length}）· 未专门适配的结构化输出，原样保留</span>
+        <span className="flex-1">{t('proc.others', { n: others.length })}</span>
         <IconChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -275,7 +272,7 @@ function OthersRow({ others }: { others: { kind: string; payload: string }[] }) 
             <div key={i}>
               <button onClick={() => setPick(pick === i ? null : i)} className="flex w-full items-center gap-2 rounded px-1.5 py-px text-left font-mono text-[11.5px] text-ink-2 hover:bg-black/[0.035]">
                 <span className="min-w-0 flex-1 truncate">{o.kind}</span>
-                <span className="shrink-0 text-[10.5px] text-ink-3">{o.payload.length} 字符</span>
+                <span className="shrink-0 text-[10.5px] text-ink-3">{t('proc.chars', { n: o.payload.length })}</span>
               </button>
               {pick === i && (
                 <div className="my-1">
@@ -295,12 +292,12 @@ export function ActivityBar({ items, others, live }: { items: Activity[]; others
   const running = [...items].reverse().find((i) => i.status === 'running')
   const current = live ? (running ?? items[items.length - 1]) : null
   const errors = items.filter((i) => i.status === 'error').length
-  const summary = (['read', 'write', 'run', 'search', 'tool'] as const)
-    .map((t) => {
-      const xs = items.filter((i) => i.type === t)
+  const summary = ACT_TYPES
+    .map((type) => {
+      const xs = items.filter((i) => i.type === type)
       if (!xs.length) return null
       // single write: show the path, it's usually what the user cares about
-      return t === 'write' && xs.length === 1 ? `写入 ${xs[0].target.split('/').pop()}` : `${ACT[t].verb}了 ${xs.length} ${ACT[t].unit}`
+      return type === 'write' && xs.length === 1 ? t('proc.wroteOne', { name: xs[0].target.split('/').pop() ?? '' }) : actDone(type, xs.length)
     })
     .filter(Boolean)
     .join(' · ')
@@ -309,9 +306,9 @@ export function ActivityBar({ items, others, live }: { items: Activity[]; others
     <div className="mb-3 overflow-hidden rounded-xl bg-black/[0.035]">
       <button onClick={() => setOpen((o) => !o)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] text-ink-2 transition-colors hover:bg-black/[0.025]">
         {current ? <Spinner size={12} className="text-accent" /> : <IconTerminal size={13} className="text-ink-3" />}
-        <span className="min-w-0 flex-1 truncate">{current ? `正在${ACT[current.type]?.verb ?? ''} ${current.target}` : summary || `其他事件 ${others.length} 条`}</span>
-        {errors > 0 && <span className="shrink-0 rounded-full bg-danger-soft px-1.5 text-[11px] text-danger">{errors} 个失败</span>}
-        <span className="shrink-0 text-ink-3">{open ? '收起' : '展开过程'}</span>
+        <span className="min-w-0 flex-1 truncate">{current ? actNow(current.type, current.target) : summary || t('proc.othersCount', { n: others.length })}</span>
+        {errors > 0 && <span className="shrink-0 rounded-full bg-danger-soft px-1.5 text-[11px] text-danger">{t('proc.failedN', { n: errors })}</span>}
+        <span className="shrink-0 text-ink-3">{open ? t('common.collapse') : t('proc.expand')}</span>
         <IconChevronDown size={13} className={`shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -333,14 +330,14 @@ export function UsageLine({ usage, ms }: { usage: Usage | null | undefined; ms: 
   const parts: string[] = []
   if (ms) parts.push(fmtSec(ms))
   if (u.input !== undefined || u.output !== undefined) {
-    parts.push(`输入 ${fmtNum(u.input ?? 0)}`)
-    parts.push(`输出 ${fmtNum(u.output ?? 0)}${u.reasoning ? `（思考 ${fmtNum(u.reasoning)}）` : ''}`)
+    parts.push(t('proc.usageIn', { n: fmtNum(u.input ?? 0) }))
+    parts.push(t('proc.usageOut', { n: fmtNum(u.output ?? 0) }) + (u.reasoning ? t('proc.usageReasoning', { n: fmtNum(u.reasoning) }) : ''))
   }
-  if (u.cacheRead || u.cacheWrite) parts.push(`缓存 读 ${fmtNum(u.cacheRead ?? 0)}${u.cacheWrite ? ` / 写 ${fmtNum(u.cacheWrite)}` : ''}`)
+  if (u.cacheRead || u.cacheWrite) parts.push(t('proc.usageCache', { n: fmtNum(u.cacheRead ?? 0) }) + (u.cacheWrite ? t('proc.usageCacheWrite', { n: fmtNum(u.cacheWrite) }) : ''))
   if (typeof u.costUsd === 'number') parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(3)}`)
   if (!parts.length) return null
   return (
-    <span className="text-[11px] text-ink-3/70 tabular-nums" title="tokens：输入不含缓存命中部分">
+    <span className="text-[11px] text-ink-3/70 tabular-nums" title={t('proc.usageTip')}>
       {parts.join(' · ')}
     </span>
   )

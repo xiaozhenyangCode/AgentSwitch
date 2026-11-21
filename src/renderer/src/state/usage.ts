@@ -2,6 +2,8 @@ import { useSyncExternalStore } from 'react'
 import type { AccountUsage, ProfileId, ProfileState, QuotaGroup, QuotaWindow, UsageSnapshot } from '@shared/types'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
+import { getSettings } from './settings'
+import { fmtAgo as fmtAgoI18n, t } from './i18n'
 
 /** Usage & quota snapshot pushed by the main process (src/main/usage.ts). */
 
@@ -24,30 +26,9 @@ export function useUsage(): UsageSnapshot | null {
   )
 }
 
-/** Engines page view (sidebar "今日 …" jumps straight to 'usage'). */
-export type EnginesTab = 'accounts' | 'usage'
-let enginesTab: EnginesTab = 'accounts'
-const tabListeners = new Set<() => void>()
-export const setEnginesTab = (t: EnginesTab) => {
-  enginesTab = t
-  tabListeners.forEach((l) => l())
-}
-export function useEnginesTab(): EnginesTab {
-  return useSyncExternalStore(
-    (cb) => {
-      tabListeners.add(cb)
-      return () => tabListeners.delete(cb)
-    },
-    () => enginesTab
-  )
-}
-
-const PROBE_KEY = 'agentswitch.usage.probe'
-export const probeEnabled = () => localStorage.getItem(PROBE_KEY) === '1'
-export const setProbeEnabled = (v: boolean) => localStorage.setItem(PROBE_KEY, v ? '1' : '0')
-
+/** Refresh now; probes Claude quota only when enabled in 设置 › 用量与刷新. */
 export async function refreshUsage(): Promise<void> {
-  emit(await window.agentswitch.usage.refresh(probeEnabled()))
+  emit(await window.agentswitch.usage.refresh(getSettings().probeClaude))
 }
 
 // ---- interpretation ------------------------------------------------------------------------
@@ -90,13 +71,14 @@ export function quotaLevel(p: ProfileState | undefined, u: AccountUsage | undefi
   const q = u?.quota
   const eff = effectiveQuota(u, model ?? p.defaultModel)
   const limited = p.status === 'rate_limited' || (!!q?.limited && !eff.group && Date.now() - q.fetchedAt < 6 * 3600_000)
-  if (limited) return { level: 'danger', reason: '已触发限流' }
+  if (limited) return { level: 'danger', reason: t('usage.limited') }
   const five = liveWindow(eff.fiveHour)
   const seven = liveWindow(eff.sevenDay)
   const max = Math.max(five?.percent ?? 0, seven?.percent ?? 0)
   const which = (seven?.percent ?? 0) >= (five?.percent ?? 0) ? '7d' : '5h'
-  if (max >= 95) return { level: 'danger', reason: `${which} 额度已用 ${Math.round(max)}%` }
-  if (max >= 80) return { level: 'warn', reason: `${which} 额度已用 ${Math.round(max)}%` }
+  const reason = t('usage.used', { which, pct: Math.round(max) })
+  if (max >= 95) return { level: 'danger', reason }
+  if (max >= getSettings().quotaWarn) return { level: 'warn', reason }
   return { level: 'ok', reason: null }
 }
 
@@ -142,17 +124,36 @@ export function fmtReset(ts: number): string {
   day.setHours(0, 0, 0, 0)
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
   if (ts < day.getTime() + 86400_000) return hm
-  if (ts < day.getTime() + 2 * 86400_000) return `明天 ${hm}`
+  if (ts < day.getTime() + 2 * 86400_000) return t('time.tomorrow', { time: hm })
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
 }
-export function fmtAgo(ts: number): string {
-  const s = (Date.now() - ts) / 1000
-  if (s < 60) return '刚刚'
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
-  return `${Math.floor(s / 86400)} 天前`
-}
+export const fmtAgo = fmtAgoI18n
 /** All tokens that went through the model (uncached + cached + written + output). */
 export const tokenSum = (t: { input: number; output: number; cacheRead: number; cacheWrite: number }) => t.input + t.output + t.cacheRead + t.cacheWrite
 
 export const usageOf = (snap: UsageSnapshot | null, id: ProfileId): AccountUsage | undefined => snap?.accounts[id]
+
+/** Highest quota use across the live 5h / 7d windows (null: account reports no quota). */
+export function quotaUse(u: AccountUsage | undefined, model?: string | null): number | null {
+  if (!u?.quota) return null
+  const eff = effectiveQuota(u, model)
+  return Math.max(liveWindow(eff.fiveHour)?.percent ?? 0, liveWindow(eff.sevenDay)?.percent ?? 0)
+}
+
+/**
+ * Per vendor, the ready account with the most headroom (lowest quota use, not rate limited).
+ * Only marked when the vendor has at least two ready accounts with quota data.
+ */
+export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | null): Set<ProfileId> {
+  const out = new Set<ProfileId>()
+  for (const kind of new Set(profiles.map((p) => p.kind))) {
+    const cands = profiles
+      .filter((p) => p.kind === kind && isReady(p) && p.status !== 'rate_limited')
+      .map((p) => ({ p, use: quotaUse(snap?.accounts[p.id], p.defaultModel) }))
+      .filter((x): x is { p: ProfileState; use: number } => x.use !== null)
+    if (cands.length < 2) continue
+    cands.sort((a, b) => a.use - b.use)
+    out.add(cands[0].p.id)
+  }
+  return out
+}

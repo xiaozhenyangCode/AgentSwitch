@@ -4,10 +4,11 @@ import { useApp } from '../state/AppContext'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal } from './common'
 import { IconX } from './icons'
+import { t } from '../state/i18n'
 
 function suggestName(kind: ProfileKind, used: string[]): string {
   for (let n = 1; ; n++) {
-    const name = `${KIND_META[kind].name} 账号 ${n}`
+    const name = t('acct.defaultName', { kind: KIND_META[kind].name, n })
     if (!used.includes(name)) return name
   }
 }
@@ -33,9 +34,9 @@ export function AddAccountModal() {
       addRequest?.onCreated?.(id)
       closeAddAccount()
       if (andLogin) openLogin(id)
-      else toast({ kind: 'success', title: `已添加「${name.trim() || '新账号'}」` })
+      else toast({ kind: 'success', title: t('add.added', { name: name.trim() || t('add.newAccount') }) })
     } catch (e) {
-      toast({ kind: 'error', title: '添加账号失败', desc: String(e) })
+      toast({ kind: 'error', title: t('add.failed'), desc: String(e) })
       setBusy(false)
     }
   }
@@ -52,8 +53,8 @@ export function AddAccountModal() {
         <div className="flex items-start gap-3.5">
           <KindAvatar kind={kind} size={44} />
           <div className="flex-1 pt-0.5">
-            <div className="text-[20px] leading-6 font-semibold tracking-tight text-ink">添加 {meta.name} 账号</div>
-            <div className="mt-1 text-[14px] leading-relaxed text-ink-2">每个账号使用独立的配置目录，登录信息互不影响。</div>
+            <div className="text-[20px] leading-6 font-semibold tracking-tight text-ink">{t('add.title', { name: meta.name })}</div>
+            <div className="mt-1 text-[14px] leading-relaxed text-ink-2">{t('add.desc')}</div>
           </div>
           <button type="button" className="rounded-full p-1.5 text-ink-3 hover:bg-fill hover:text-ink" onClick={closeAddAccount}>
             <IconX size={16} />
@@ -61,33 +62,33 @@ export function AddAccountModal() {
         </div>
 
         <div className="mt-6">
-          <div className="mb-1.5 text-[13px] font-medium text-ink">账号名称</div>
-          <input ref={inputRef} className={inputCls + ' h-10'} value={name} onChange={(e) => setName(e.target.value)} placeholder={`${meta.name} 账号`} />
-          <div className="mt-1.5 text-[12px] text-ink-3">例如「工作号」「个人号」，之后可以随时重命名。</div>
+          <div className="mb-1.5 text-[13px] font-medium text-ink">{t('add.name')}</div>
+          <input ref={inputRef} className={inputCls + ' h-10'} value={name} onChange={(e) => setName(e.target.value)} placeholder={t('add.namePlaceholder', { name: meta.name })} />
+          <div className="mt-1.5 text-[12px] text-ink-3">{t('add.nameHint')}</div>
         </div>
 
         {!installed && (
           <div className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[13px] leading-relaxed text-warn">
-            {meta.cli} 还没有安装。账号会先创建好，安装完成后再登录即可。
+            {t('add.notInstalled', { cli: meta.cli })}
           </div>
         )}
 
         <div className="mt-7 flex justify-end gap-2.5">
           <button type="button" className={btnSecondary} onClick={closeAddAccount}>
-            取消
+            {t('common.cancel')}
           </button>
           {installed ? (
             <>
               <button type="button" className={btnSecondary} disabled={busy} onClick={() => void create(false)}>
-                仅添加
+                {t('add.onlyAdd')}
               </button>
               <button type="submit" className={btnPrimary} disabled={busy}>
-                添加并登录
+                {t('add.addAndLogin')}
               </button>
             </>
           ) : (
             <button type="submit" className={btnPrimary} disabled={busy}>
-              添加账号
+              {t('add.add')}
             </button>
           )}
         </div>
@@ -131,7 +132,7 @@ export function ConfirmDialog() {
         )}
         <div className="mt-7 flex justify-end gap-2.5">
           <button className={btnSecondary} onClick={() => c.resolve(false)}>
-            取消
+            {t('common.cancel')}
           </button>
           <button
             ref={okRef}
@@ -159,7 +160,7 @@ export function CliConfigModal({ kind }: { kind: ProfileKind }) {
 
   const save = async () => {
     await window.agentswitch.cli.update(kind, { binary, installCommand, updateCommand })
-    toast({ kind: 'success', title: `${meta.cli} 设置已保存` })
+    toast({ kind: 'success', title: t('cli.saved', { cli: meta.cli }) })
     close()
   }
   const reset = async () => {
@@ -173,7 +174,7 @@ export function CliConfigModal({ kind }: { kind: ProfileKind }) {
         <KindAvatar kind={kind} size={36} />
         <div className="flex-1">
           <div className="text-[17px] font-semibold text-ink">{meta.cli}</div>
-          <div className="text-[13px] text-ink-2">命令行工具设置 · 所有 {meta.name} 账号共用</div>
+          <div className="text-[13px] text-ink-2">{t('cli.subtitle', { name: meta.name })}</div>
         </div>
         <button className="rounded-full p-1.5 text-ink-3 hover:bg-fill hover:text-ink" onClick={close}>
           <IconX size={16} />
@@ -181,31 +182,31 @@ export function CliConfigModal({ kind }: { kind: ProfileKind }) {
       </div>
       <div className="space-y-5 px-7 py-6">
         <div>
-          <div className="mb-1.5 text-[13px] font-medium text-ink">可执行文件</div>
+          <div className="mb-1.5 text-[13px] font-medium text-ink">{t('cli.binary')}</div>
           <input className={mono} value={binary} onChange={(e) => setBinary(e.target.value)} />
-          <div className="mt-1.5 text-[12px] text-ink-3">在 PATH 中查找它来判断是否已安装{k.binaryPath ? `，当前：${k.binaryPath}` : ''}</div>
+          <div className="mt-1.5 text-[12px] text-ink-3">{t('cli.binaryHint')}{k.binaryPath ? t('cli.binaryCurrent', { path: k.binaryPath }) : ''}</div>
         </div>
         <div>
-          <div className="mb-1.5 text-[13px] font-medium text-ink">安装命令</div>
+          <div className="mb-1.5 text-[13px] font-medium text-ink">{t('cli.installCmd')}</div>
           <input className={mono} value={installCommand} onChange={(e) => setInstallCommand(e.target.value)} />
-          <div className="mt-1.5 text-[12px] text-ink-3">使用真实 HOME 与登录 Shell 执行，安装到全局 PATH</div>
+          <div className="mt-1.5 text-[12px] text-ink-3">{t('cli.installHint')}</div>
         </div>
         <div>
-          <div className="mb-1.5 text-[13px] font-medium text-ink">更新命令</div>
-          <input className={mono} value={updateCommand} onChange={(e) => setUpdateCommand(e.target.value)} placeholder="留空则重新执行安装命令" />
-          <div className="mt-1.5 text-[12px] text-ink-3">已安装时点击「更新」执行</div>
+          <div className="mb-1.5 text-[13px] font-medium text-ink">{t('cli.updateCmd')}</div>
+          <input className={mono} value={updateCommand} onChange={(e) => setUpdateCommand(e.target.value)} placeholder={t('cli.updatePlaceholder')} />
+          <div className="mt-1.5 text-[12px] text-ink-3">{t('cli.updateHint')}</div>
         </div>
       </div>
       <div className="flex items-center justify-between border-t border-hairline px-7 py-4">
         <button className={btnGhost} onClick={() => void reset()}>
-          恢复默认
+          {t('cli.resetDefault')}
         </button>
         <div className="flex gap-2.5">
           <button className={btnSecondary} onClick={close}>
-            取消
+            {t('common.cancel')}
           </button>
           <button className={btnPrimary} onClick={() => void save()}>
-            保存
+            {t('common.save')}
           </button>
         </div>
       </div>

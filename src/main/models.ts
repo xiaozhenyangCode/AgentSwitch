@@ -6,6 +6,7 @@ import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/t
 import { EFFORT_SUFFIX_RE, effortRank } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, getKindConfig, kindBinaryPath } from './profiles'
 import { realHome } from './shellEnv'
+import { t } from './i18n'
 
 /**
  * Sub-model lists, per account (each account sees its own entitlements).
@@ -39,12 +40,13 @@ function saveCache(): void {
   renameSync(p + '.tmp', p)
 }
 
-const ALIAS_LABEL: Record<string, string> = { opus: 'Opus（最新）', sonnet: 'Sonnet（最新）', fable: 'Fable（最新）', haiku: 'Haiku（最新）' }
+const ALIAS_NAME: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', fable: 'Fable', haiku: 'Haiku' }
+const aliasLabel = (id: string): string | undefined => (ALIAS_NAME[id] ? t('model.latest', { name: ALIAS_NAME[id] }) : undefined)
 
 function staticList(cfg: ProfileConfig): ModelOption[] {
   const ids = getKindConfig(cfg.kind).models
   if (cfg.kind === 'gemini') return collapseEfforts(ids.map((id) => ({ id, label: id, group: 'main' as const })))
-  return ids.map((id) => ({ id, label: ALIAS_LABEL[id] ?? id, group: 'main' as const }))
+  return ids.map((id) => ({ id, label: aliasLabel(id) ?? id, group: 'main' as const }))
 }
 
 /**
@@ -80,7 +82,7 @@ function collapseEfforts(rows: ModelOption[]): ModelOption[] {
 
 function run(cfg: ProfileConfig, args: string[]): Promise<string> {
   const bin = kindBinaryPath(cfg.kind)
-  if (!bin) return Promise.reject(new Error('CLI 未安装'))
+  if (!bin) return Promise.reject(new Error(t('main.cliMissing')))
   const { env } = buildSpawnSpec(cfg.id, 'run')
   return new Promise((resolve, reject) =>
     execFile(bin, args, { env, cwd: realHome, timeout: CMD_TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
@@ -117,7 +119,7 @@ function claudeCatalog(cfg: ProfileConfig): { models: ModelOption[]; fetchedAt: 
   // aliases inherit the efforts of the newest catalog row of the same family
   const aliases: ModelOption[] = ['opus', 'sonnet', 'fable', 'haiku'].map((id) => ({
     id,
-    label: ALIAS_LABEL[id],
+    label: aliasLabel(id)!,
     group: 'main',
     ...efforts(best!.models.find((m) => (m.short_name ?? '').toLowerCase() === id || m.id.includes(`-${id}-`)))
   }))
@@ -194,7 +196,7 @@ async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<Mod
   switch (cfg.kind) {
     case 'claude': {
       const c = claudeCatalog(cfg)
-      if (!c) throw new Error('未找到 Claude 模型目录缓存（登录并运行一次 Claude Code 后生成）')
+      if (!c) throw new Error(t('main.noClaudeCatalog'))
       return { models: c.models, source: 'catalog', fetchedAt: c.fetchedAt || Date.now() }
     }
     case 'codex': {
@@ -203,12 +205,12 @@ async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<Mod
         if (local) return { models: local, source: 'catalog', fetchedAt: Date.now() }
       }
       const models = parseCodex(await run(cfg, ['debug', 'models']))
-      if (!models.length) throw new Error('codex debug models 没有返回模型')
+      if (!models.length) throw new Error(t('main.codexNoModels'))
       return { models, source: 'command', fetchedAt: Date.now() }
     }
     case 'gemini': {
       const models = parseAgy(await run(cfg, ['models']))
-      if (!models.length) throw new Error('agy models 没有返回模型（账号可能未登录）')
+      if (!models.length) throw new Error(t('main.agyNoModels'))
       return { models, source: 'command', fetchedAt: Date.now() }
     }
   }

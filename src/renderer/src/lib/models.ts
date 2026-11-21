@@ -1,13 +1,15 @@
 import type { ModelOption, ProfileKind, ProfileState } from '@shared/types'
 import { EFFORT_LABEL, joinSpec, splitSpec } from '@shared/modelSpec'
 import { findModel } from '../state/models'
+import { t } from '../state/i18n'
+import { stripLatest } from '@shared/i18n'
 
 /** Display name for a model spec (`model` or `model:effort`), e.g. `Gemini 4 Neon · High`. */
 export const modelLabel = (spec: string | null | undefined, profileId?: string): string => {
   const { model, effort } = splitSpec(spec)
-  if (!model) return '默认'
+  if (!model) return t('common.default')
   const f = findModel(model, profileId)
-  const name = f?.opt.label.replace(/（最新）$/, '') ?? model
+  const name = (f ? stripLatest(f.opt.label) : undefined) ?? model
   const e = effort ?? f?.effort
   return e ? `${name} · ${EFFORT_LABEL[e] ?? e}` : name
 }
@@ -32,8 +34,4 @@ export const withEffort = (opt: ModelOption | null, model: string, effort: strin
 export const effectiveModel = (explicit: string | null | undefined, p: ProfileState | undefined): string | null =>
   explicit?.trim() || p?.defaultModel?.trim() || null
 
-export const DEFAULT_HINT: Record<ProfileKind, string> = {
-  claude: '跟随 Claude Code 默认',
-  codex: '跟随 Codex CLI 默认',
-  gemini: '跟随 agy 默认'
-}
+export const defaultHint = (kind: ProfileKind): string => t(kind === 'claude' ? 'model.followClaude' : kind === 'codex' ? 'model.followCodex' : 'model.followAgy')

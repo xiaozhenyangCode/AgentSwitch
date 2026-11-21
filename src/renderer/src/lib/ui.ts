@@ -1,4 +1,5 @@
 import type { ProfileKind, ProfileState } from '@shared/types'
+import { t } from '../state/i18n'
 
 export interface BadgeMeta {
   label: string
@@ -19,18 +20,18 @@ export const TONE = {
 
 /** User-facing status of an account (profile). */
 export function accountBadge(p: ProfileState): BadgeMeta {
-  if (p.sessionMode === 'login') return { label: '登录中', ...TONE.blue }
+  if (p.sessionMode === 'login') return { label: t('status.loggingIn'), ...TONE.blue }
   switch (p.status) {
     case 'uninstalled':
-      return { label: '未安装', ...TONE.gray }
+      return { label: t('status.uninstalled'), ...TONE.gray }
     case 'not_logged_in':
-      return { label: '未登录', ...TONE.amber }
+      return { label: t('status.notLoggedIn'), ...TONE.amber }
     case 'idle':
-      return { label: '已就绪', ...TONE.green }
+      return { label: t('status.ready'), ...TONE.green }
     case 'running':
-      return { label: '运行中', ...TONE.blue }
+      return { label: t('status.running'), ...TONE.blue }
     case 'rate_limited':
-      return { label: '限流', ...TONE.red }
+      return { label: t('status.rateLimited'), ...TONE.red }
   }
 }
 

@@ -377,6 +377,10 @@ export const IPC = {
   themeGetSync: 'theme:getSync',
   themeSet: 'theme:set',
   themeChanged: 'theme:changed',
+  i18nGetSync: 'i18n:getSync',
+  i18nSet: 'i18n:set',
+  i18nChanged: 'i18n:changed',
+  menuCommand: 'menu:command',
   stateGet: 'state:get',
   stateChanged: 'state:changed',
   profilesAdd: 'profiles:add',
@@ -404,6 +408,7 @@ export const IPC = {
   pickDirectory: 'dialog:pickDirectory',
   pickProject: 'dialog:pickProject',
   showInFolder: 'shell:showInFolder',
+  showDataDir: 'shell:showDataDir',
   modelsList: 'models:list',
   attachStage: 'attach:stage',
   chatSend: 'chat:send',
@@ -429,7 +434,16 @@ export interface AppInfo {
   path: string
   electron: string
   node: string
+  chrome: string
+  /** package.json version. */
+  version: string
+  arch: string
+  /** macOS product version, e.g. 15.5. */
+  osVersion: string
 }
+
+/** Native menu items the renderer acts on. */
+export type MenuCommand = 'about' | 'settings' | 'newThread' | 'search'
 
 /** Really delete a chat: AgentSwitch's data always; the CLI's own session files only with purgeCli. */
 export interface DeleteThreadRequest {

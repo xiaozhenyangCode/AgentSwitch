@@ -5,6 +5,7 @@ import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow } from '@share
 import { splitSpec } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profiles'
 import { agyModelId } from './models'
+import { t } from './i18n'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -75,11 +76,11 @@ const MAX_IN = 4 * 1024
 const MAX_OTHER = 4 * 1024
 
 /** Keeps head and tail of long text (command output is most useful at both ends). */
-export function capText(t: unknown, max = MAX_OUT): string {
-  const s = typeof t === 'string' ? t : t === undefined || t === null ? '' : JSON.stringify(t, null, 2)
+export function capText(v: unknown, max = MAX_OUT): string {
+  const s = typeof v === 'string' ? v : v === undefined || v === null ? '' : JSON.stringify(v, null, 2)
   if (s.length <= max) return s
   const half = Math.floor(max / 2)
-  return `${s.slice(0, half)}\n… (省略 ${s.length - max} 个字符) …\n${s.slice(-half)}`
+  return `${s.slice(0, half)}\n${t('main.omitted', { n: s.length - max })}\n${s.slice(-half)}`
 }
 
 export const capJson = (v: unknown, max = MAX_IN): string => capText(typeof v === 'string' ? v : JSON.stringify(v, null, 2), max)
@@ -89,7 +90,7 @@ const other = (kind: string, payload: unknown): AgentEvent => ({ t: 'other_event
 /** Text of an Anthropic tool_result content (string or content blocks). */
 export function resultText(c: unknown): string {
   if (typeof c === 'string') return c
-  if (Array.isArray(c)) return c.map((b: any) => (b?.type === 'text' ? b.text : b?.type === 'image' ? '[图片]' : JSON.stringify(b))).join('\n')
+  if (Array.isArray(c)) return c.map((b: any) => (b?.type === 'text' ? b.text : b?.type === 'image' ? t('main.image') : JSON.stringify(b))).join('\n')
   return c === undefined || c === null ? '' : JSON.stringify(c)
 }
 
@@ -283,12 +284,12 @@ function claudeAdapter(s: RunSpec): Adapter {
 }
 
 function deniedText(tools: string[], level: AutoApprove): string {
-  const names = [...new Set(tools)].join('、')
+  const names = [...new Set(tools)].join(t('common.listSep'))
   return level === 'full'
-    ? `有 ${tools.length} 次工具调用被拒绝（${names}）`
+    ? t('main.deniedTools', { n: tools.length, names })
     : level === 'cli'
-      ? `有 ${tools.length} 次工具调用被 CLI 的权限设置拒绝（${names}）。可在 CLI 的 settings 里放行，或在账号设置里切换为「完全放行」。`
-      : `有 ${tools.length} 次工具调用因「仅项目内编辑」授权被自动拒绝（${names}）。需要执行命令时，可在账号设置里切换为「完全放行」。`
+      ? t('main.deniedByCli', { n: tools.length, names })
+      : t('main.deniedByEdits', { n: tools.length, names })
 }
 
 export function claudeTool(id: string, name: string, input: Record<string, any>): Extract<AgentEvent, { t: 'activity' }> | null {
@@ -313,7 +314,7 @@ export function claudeTool(id: string, name: string, input: Record<string, any>)
     case 'web_fetch':
       return { ...base, type: 'search', target: String(input.query ?? input.url ?? ''), detail: { tool: name, input: capJson(input) } }
     case 'TodoWrite':
-      return { ...base, type: 'tool', target: '更新待办', detail: { tool: name, input: capJson(input) } }
+      return { ...base, type: 'tool', target: t('main.updateTodos'), detail: { tool: name, input: capJson(input) } }
     default:
       return { ...base, type: 'tool', target: name, detail: { tool: name, input: capJson(input) } }
   }
@@ -435,7 +436,7 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
           t: 'activity',
           id: item.id,
           type: 'tool',
-          target: '更新待办',
+          target: t('main.updateTodos'),
           status: 'done',
           detail: { tool: 'todo_list', output: capText((item.items ?? []).map((x: any) => `${x.completed ? '☑' : '☐'} ${x.text}`).join('\n')) }
         })
@@ -663,7 +664,7 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
   const wrapped: Emit = (e) => {
     if (e.t === 'rate_limited') rateLimited = true
     if (e.t === 'other_event' && ++others > 200) {
-      if (others === 201) emit({ t: 'other_event', kind: 'agentswitch', payload: '其他事件超过 200 条，后续只记录在调试日志中' })
+      if (others === 201) emit({ t: 'other_event', kind: 'agentswitch', payload: t('main.othersCapped') })
       return
     }
     emit(e)
@@ -679,9 +680,9 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
       }
       resolve({ ok: ok && !stopped, stopped, text: '', sessionId: adapter.sessionId(), model: adapter.model(), error: stopped ? null : error, rateLimited })
     }
-    if (!bin) return finish(false, `${cfg.kind} CLI 未安装`)
+    if (!bin) return finish(false, t('main.cliNotInstalled', { kind: cfg.kind }))
 
-    onLog(`\n── ${cfg.name} · ${spec.model ?? '默认模型'} · cwd ${spec.cwd}\n$ ${bin} ${adapter.args.map((a) => (a.length > 80 ? JSON.stringify(a.slice(0, 80) + '…') : JSON.stringify(a))).join(' ')}\n`)
+    onLog(`\n── ${cfg.name} · ${spec.model ?? t('wb.defaultModel')} · cwd ${spec.cwd}\n$ ${bin} ${adapter.args.map((a) => (a.length > 80 ? JSON.stringify(a.slice(0, 80) + '…') : JSON.stringify(a))).join(' ')}\n`)
     try {
       // detached: own process group, so stop() can take down the CLI's children too
       child = spawn(bin, adapter.args, { cwd: spec.cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -732,7 +733,7 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
       const r = adapter.result()
       if (r) return finish(r.ok, r.error)
       const lastErr = errTail.trim().split('\n').filter(Boolean).pop() ?? null
-      finish(code === 0, code === 0 ? null : lastErr ?? `进程退出码 ${code}`)
+      finish(code === 0, code === 0 ? null : lastErr ?? t('main.exitCode', { code: String(code) }))
     })
     child.stdin!.on('error', () => {})
     if (adapter.stdin !== null) child.stdin!.end(adapter.stdin)

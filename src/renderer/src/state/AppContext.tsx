@@ -10,8 +10,10 @@ import {
   type Snapshot
 } from '@shared/types'
 import { KIND_META } from '../lib/ui'
+import { t } from './i18n'
 
-export type Page = 'workbench' | 'engines'
+export type Page = 'workbench' | 'engines' | 'usage' | 'settings'
+export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'shortcuts' | 'about'
 
 export interface Toast {
   id: number
@@ -48,6 +50,8 @@ interface AppState {
   page: Page
   navigate: (page: Page, focus?: ProfileId | ProfileKind) => void
   engineFocus: { target: ProfileId | ProfileKind; at: number } | null
+  settingsSection: SettingsSection
+  openSettings: (section?: SettingsSection) => void
 
   drawer: { open: boolean; session: SessionId | null }
   openDrawer: (session?: SessionId) => void
@@ -92,6 +96,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [snap, setSnap] = useState<Snapshot | null>(null)
   const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [drawer, setDrawer] = useState<AppState['drawer']>({ open: false, session: null })
   const [loginId, setLoginId] = useState<ProfileId | null>(null)
   const [configId, setConfigId] = useState<ProfileId | null>(null)
@@ -157,6 +162,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPage(p)
     if (focus) setEngineFocus({ target: focus, at: Date.now() })
   }, [])
+  const openSettings = useCallback((section?: SettingsSection) => {
+    if (section) setSettingsSection(section)
+    setPage('settings')
+  }, [])
   const openDrawer = useCallback(
     (session?: SessionId) => setDrawer((d) => ({ open: true, session: session ?? d.session })),
     []
@@ -172,18 +181,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const p = profiles.find((x) => x.id === id)
       if (!p) return
       const ok = await confirm({
-        title: `删除「${p.name}」？`,
+        title: t('acct.removeTitle', { name: p.name }),
         message: p.imported
-          ? `只会从 AgentSwitch 中移除这个账号，${p.configDir} 里的配置和登录信息会原样保留，命令行中仍可继续使用。`
-          : '只会从 AgentSwitch 中移除这个账号。它的独立配置目录会保留在磁盘上，不会被删除。',
-        confirmLabel: '删除账号',
+          ? t('acct.removeImported', { dir: p.configDir })
+          : t('acct.removeOwn'),
+        confirmLabel: t('acct.removeConfirm'),
         destructive: true
       })
       if (!ok) return
       if (loginId === id) setLoginId(null)
       if (configId === id) setConfigId(null)
       await window.agentswitch.profiles.remove(id)
-      toast({ kind: 'success', title: `已删除「${p.name}」` })
+      toast({ kind: 'success', title: t('acct.removed', { name: p.name }) })
     },
     [profiles, confirm, toast, loginId, configId]
   )
@@ -193,7 +202,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (kind: ProfileKind, update = false) => {
       const sid = installSessionId(kind)
       const name = KIND_META[kind].cli
-      const verb = update ? '更新' : '安装'
+      const verb = update ? t('install.verbUpdate') : t('install.verbInstall')
       const done = new Promise<number>((resolve) => {
         const off = window.agentswitch.pty.onExit((e) => {
           if (e.sessionId === sid) {
@@ -205,20 +214,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         await window.agentswitch.cli.install(kind, update)
       } catch (e) {
-        toast({ kind: 'error', title: `${name} ${verb}启动失败`, desc: String(e) })
+        toast({ kind: 'error', title: t('install.startFailed', { name, verb }), desc: String(e) })
         return
       }
       const code = await done
       const s = await refresh()
       const ok = !!s.kinds.find((k) => k.kind === kind)?.binaryPath
-      if (code === 0 && ok) toast({ kind: 'success', title: `${name} ${verb}完成` })
-      else if (code === -1) toast({ kind: 'info', title: `${name} ${verb}已取消` })
+      if (code === 0 && ok) toast({ kind: 'success', title: t('install.done', { name, verb }) })
+      else if (code === -1) toast({ kind: 'info', title: t('install.cancelled', { name, verb }) })
       else
         toast({
           kind: 'error',
-          title: `${name} ${verb}失败`,
-          desc: ok ? `${verb}命令退出码 ${code}` : `退出码 ${code}，仍未找到可执行文件`,
-          action: { label: '查看日志', run: () => openDrawer(sid) }
+          title: t('install.failed', { name, verb }),
+          desc: ok ? t('install.exitCode', { verb, code }) : t('install.notFound', { code }),
+          action: { label: t('install.viewLog'), run: () => openDrawer(sid) }
         })
     },
     [refresh, toast, openDrawer]
@@ -236,6 +245,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       page,
       navigate,
       engineFocus,
+      settingsSection,
+      openSettings,
       drawer,
       openDrawer,
       closeDrawer,
@@ -258,7 +269,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dismissToast,
       install
     }),
-    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
+    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, settingsSection, openSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

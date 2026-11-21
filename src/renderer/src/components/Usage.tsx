@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AccountUsage, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
-import { KIND_META } from '../lib/ui'
+import { KIND_META, isReady } from '../lib/ui'
 import { useApp } from '../state/AppContext'
+import { t } from '../state/i18n'
+import { getSettings, useSettings } from '../state/settings'
 import {
   effectiveQuota,
   fmtAgo,
   fmtCost,
   fmtReset,
   fmtTokens,
+  idlestAccounts,
   liveWindow,
-  probeEnabled,
   quotaLevel,
   recommendSwitch,
   refreshUsage,
-  setEnginesTab,
-  setProbeEnabled,
   tokenSum,
   useUsage
 } from '../state/usage'
@@ -22,14 +22,16 @@ import { KindAvatar } from './common'
 import { IconChevronDown, IconRefresh, Spinner } from './icons'
 
 const STALE = 6 * 3600_000
+const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
 
 /**
  * Fill in the brand's official colors; the gradient spans the whole track (background-size), so
- * a short bar shows its start and a full one the whole ramp. Amber ≥80% and coral ≥95% still win.
+ * a short bar shows its start and a full one the whole ramp. Amber from the warning threshold
+ * (设置 › 用量与刷新) and coral ≥95% still win.
  */
 const fillStyle = (kind: ProfileKind, pct: number, width: number): CSSProperties => ({
   width: `${width}%`,
-  background: pct >= 95 ? 'var(--red)' : pct >= 80 ? 'var(--orange)' : KIND_META[kind].bar,
+  background: pct >= 95 ? 'var(--red)' : pct >= getSettings().quotaWarn ? 'var(--orange)' : KIND_META[kind].bar,
   backgroundSize: `${10000 / Math.max(width, 1)}% 100%`
 })
 const pctOf = (w: QuotaWindow) => Math.min(100, Math.max(0, w.percent))
@@ -42,43 +44,36 @@ function fmtResetShort(ts: number): string {
   day.setHours(0, 0, 0, 0)
   const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
   if (ts < day.getTime() + 86400_000) return hm
-  if (ts < day.getTime() + 2 * 86400_000) return `明天 ${hm}`
+  if (ts < day.getTime() + 2 * 86400_000) return t('time.tomorrow', { time: hm })
   return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+/** Re-render every `ms` (relative times such as "3 分钟前更新"). */
+function useTick(ms: number) {
+  const [, setN] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setN((n) => n + 1), ms)
+    return () => clearInterval(id)
+  }, [ms])
 }
 
 /** One quota window: label / % on top, h-1.5 bar, reset time below. A rounded 0% draws no fill. */
 export function QuotaMeter({ kind, label, w, stale, title }: { kind: ProfileKind; label: string; w: QuotaWindow | null; stale: boolean; title?: string }) {
+  const { quotaWarn } = useSettings()
   const pct = w ? pctOf(w) : 0
   const shown = Math.round(pct)
   return (
     <div className="min-w-0" title={title}>
       <div className="flex items-baseline justify-between text-[11.5px] leading-4">
         <span className="text-ink-3">{label}</span>
-        <span className={`tabular-nums ${!w ? 'text-ink-3' : pct >= 80 ? 'font-semibold text-ink' : 'font-medium text-ink-2'}`}>{w ? `${shown}%` : '—'}</span>
+        <span className={`tabular-nums ${!w ? 'text-ink-3' : pct >= quotaWarn ? 'font-semibold text-ink' : 'font-medium text-ink-2'}`}>{w ? `${shown}%` : '—'}</span>
       </div>
       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
         {w && shown > 0 && <div className={`h-full rounded-full transition-[width] duration-500 ${stale ? 'opacity-45' : ''}`} style={fillStyle(kind, pct, Math.max(pct, 3))} />}
       </div>
-      <div className="mt-1 text-[11px] leading-4 text-ink-3/80 tabular-nums">{w ? (w.resetsAt ? `${fmtResetShort(w.resetsAt)} 重置` : '滚动窗口') : '无此窗口'}</div>
-    </div>
-  )
-}
-
-/** Two tiny stacked bars for dense tables. */
-function MiniBars({ kind, five, seven }: { kind: ProfileKind; five: QuotaWindow | null; seven: QuotaWindow | null }) {
-  const row = (label: string, w: QuotaWindow | null) => (
-    <div className="flex items-center gap-1.5 text-[11px] leading-[14px]">
-      <span className="w-[18px] text-ink-3">{label}</span>
-      <div className="h-1 w-14 overflow-hidden rounded-full bg-black/[0.06]">
-        {w && Math.round(pctOf(w)) > 0 && <div className="h-full rounded-full" style={fillStyle(kind, pctOf(w), Math.max(pctOf(w), 4))} />}
+      <div className="mt-1 text-[11px] leading-4 text-ink-3/80 tabular-nums">
+        {w ? (w.resetsAt ? t('usage.resets', { time: fmtResetShort(w.resetsAt) }) : t('usage.rolling')) : t('usage.noWindow')}
       </div>
-      <span className="w-8 text-right text-ink-2 tabular-nums">{w ? `${Math.round(pctOf(w))}%` : '—'}</span>
-    </div>
-  )
-  return (
-    <div className="space-y-1">
-      {row('5h', five)}
-      {row('7d', seven)}
     </div>
   )
 }
@@ -128,7 +123,7 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
               <div key={g.key} className={`rounded-lg px-2.5 py-2 ${cur ? 'bg-accent/[0.06]' : ''}`}>
                 <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink">
                   {g.name}
-                  {cur && <span className="rounded bg-accent/10 px-1 text-[10.5px] font-medium text-accent">当前模型</span>}
+                  {cur && <span className="rounded bg-accent/10 px-1 text-[10.5px] font-medium text-accent">{t('usage.currentModel')}</span>}
                 </div>
                 <div className="mt-0.5 truncate text-[11px] text-ink-3" title={g.models.join(', ')}>
                   {g.models.join(' · ')}
@@ -148,18 +143,18 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
 
 /** "今日 61M · $0.186" (cost only when the CLI reported one). */
 export const todayBrief = (u: AccountUsage | undefined) => {
-  const t = u?.today
-  if (!t) return '今日 0'
-  return `今日 ${fmtTokens(tokenSum(t))}${t.costUsd > 0 ? ` · ${fmtCost(t.costUsd)}` : ''}`
+  const tt = u?.today
+  if (!tt) return t('usage.today', { n: 0 })
+  return t('usage.today', { n: fmtTokens(tokenSum(tt)) }) + (tt.costUsd > 0 ? ` · ${fmtCost(tt.costUsd)}` : '')
 }
 
 /** The two fixed-width quota cells of an account row (5h | 7d); one spanning note when there is no data. */
 export function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null }) {
   const q = u?.quota
-  if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">不提供额度数据</div>
+  if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">{t('usage.noQuota')}</div>
   const eff = effectiveQuota(u, model)
   const stale = Date.now() - q.fetchedAt > STALE
-  const tip = `额度数据 ${fmtAgo(q.fetchedAt)}${q.limited && !stale ? ' · 已限流' : ''}`
+  const tip = t('usage.quotaAge', { ago: fmtAgo(q.fetchedAt) }) + (q.limited && !stale ? t('usage.limitedSuffix') : '')
   return (
     <>
       <QuotaMeter kind={kind} label="5h" w={eff.fiveHour ? liveWindow(eff.fiveHour) : null} stale={stale} title={tip} />
@@ -168,14 +163,12 @@ export function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: Ac
   )
 }
 
-/** "刷新用量" split button; the optional Claude probe lives in its menu. */
+/** "3 分钟前更新" + 刷新用量. The Claude probe is a setting (设置 › 用量与刷新). */
 export function RefreshUsage() {
   const [busy, setBusy] = useState(false)
-  const [probe, setProbe] = useState(probeEnabled)
-  const [menu, setMenu] = useState(false)
-  const close = useCallback(() => setMenu(false), [])
-  const ref = useOutsideClose(menu, close)
+  const { probeClaude } = useSettings()
   const snap = useUsage()
+  useTick(30_000)
   const run = async () => {
     setBusy(true)
     try {
@@ -184,47 +177,24 @@ export function RefreshUsage() {
       setBusy(false)
     }
   }
-  const seg = 'flex h-7 items-center text-[12.5px] font-medium text-ink transition-colors hover:bg-black/[0.035] active:bg-black/[0.06] disabled:opacity-60'
-  const at = snap?.updatedAt ? new Date(snap.updatedAt) : null
+  const backfill = snap?.backfill === 'running'
   return (
-    <div ref={ref} className="relative flex items-center gap-3">
-      {at && <span className="text-[11.5px] text-ink-3 tabular-nums">{snap?.backfill === 'running' ? '正在回填历史…' : `更新于 ${pad2(at.getHours())}:${pad2(at.getMinutes())}`}</span>}
-      <div className="flex overflow-hidden rounded-lg border border-black/[0.09] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-        <button onClick={() => void run()} disabled={busy} className={`${seg} gap-1.5 pr-2.5 pl-2.5`} title={probe ? '刷新（含 Claude 额度探测）' : '刷新（不消耗额度）'}>
-          {busy || snap?.backfill === 'running' ? <Spinner size={12} /> : <IconRefresh size={13} />}
-          {busy ? '刷新中…' : '刷新用量'}
-          {probe && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
-        </button>
-        <div className="w-px bg-black/[0.08]" />
-        <button onClick={() => setMenu((m) => !m)} className={`${seg} w-7 justify-center ${menu ? 'bg-black/[0.05]' : ''}`} title="刷新选项">
-          <IconChevronDown size={12} />
-        </button>
-      </div>
-      {menu && (
-        <div className="absolute top-9 right-0 z-30 w-[280px] rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
-          <button
-            onClick={() => {
-              setProbe(!probe)
-              setProbeEnabled(!probe)
-            }}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-black/[0.04]"
-          >
-            <span
-              className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${probe ? 'border-accent bg-accent text-white' : 'border-black/[0.2] bg-surface'}`}
-            >
-              {probe && (
-                <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M2.5 6.2 5 8.5l4.5-5" />
-                </svg>
-              )}
-            </span>
-            <span>
-              <span className="block text-[13px] font-medium text-ink">刷新时探测 Claude 额度</span>
-              <span className="mt-0.5 block text-[11.5px] leading-4 text-ink-3">用 haiku 给每个 Claude 账号发一句极短消息拉取最新额度，会消耗极少额度。关闭时刷新不耗额度。</span>
-            </span>
-          </button>
-        </div>
+    <div className="flex items-center gap-3">
+      {snap?.updatedAt && (
+        <span className="text-[12px] text-ink-3 tabular-nums" title={new Date(snap.updatedAt).toLocaleString()}>
+          {backfill ? t('usage.backfilling') : t('usage.updatedAgo', { ago: fmtAgo(snap.updatedAt) })}
+        </span>
       )}
+      <button
+        onClick={() => void run()}
+        disabled={busy}
+        title={probeClaude ? t('usage.refreshHintProbe') : t('usage.refreshHint')}
+        className="flex h-7 items-center gap-1.5 rounded-lg border border-black/[0.09] bg-surface px-2.5 text-[12.5px] font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.03)] transition-colors hover:bg-black/[0.035] active:bg-black/[0.06] disabled:opacity-60"
+      >
+        {busy || backfill ? <Spinner size={12} /> : <IconRefresh size={13} />}
+        {busy ? t('usage.refreshing') : t('usage.refresh')}
+        {probeClaude && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+      </button>
     </div>
   )
 }
@@ -233,7 +203,7 @@ const sumOf = (accounts: AccountUsage[], pick: (u: AccountUsage) => number) => a
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-xl border border-black/[0.07] bg-surface px-4 py-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+    <div className={`${CARD} px-4 py-3.5`}>
       <div className="text-[12px] text-ink-3">{label}</div>
       <div className="mt-1 text-[24px] leading-8 font-semibold tracking-tight text-ink tabular-nums">{value}</div>
       {sub && <div className="text-[11.5px] text-ink-3 tabular-nums">{sub}</div>}
@@ -241,22 +211,76 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-/** Usage tab: bento strip + per-account table. */
+const SectionTitle = ({ children }: { children: string }) => <h2 className="mt-8 mb-3 px-1 text-[13px] font-semibold text-ink-2">{children}</h2>
+
+/** One account in the quota grid: 5h / 7d bars (or local stats when the CLI reports no quota). */
+function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
+  const snap = useUsage()
+  const u = snap?.accounts[p.id]
+  const limited = p.status === 'rate_limited' || quotaLevel(p, u).level === 'danger'
+  return (
+    <div className={`${CARD} px-4 py-3.5`}>
+      <div className="flex min-w-0 items-center gap-2">
+        <KindAvatar kind={p.kind} size={22} />
+        <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
+        {idlest && (
+          <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
+            {t('usage.idlest')}
+          </span>
+        )}
+        {limited && <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{quotaLevel(p, u).reason ?? t('status.rateLimited')}</span>}
+        <span className="flex-1" />
+        <QuotaGroupChip u={u} model={p.defaultModel} />
+      </div>
+      {u?.quota ? (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-5">
+            <AccountQuotaCells kind={p.kind} u={u} model={p.defaultModel} />
+          </div>
+          <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
+            {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-5 text-[12px] tabular-nums">
+            <div>
+              <div className="text-ink-3">{t('usage.localToday')}</div>
+              <div className="mt-0.5 text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.today) : 0)}</div>
+            </div>
+            <div>
+              <div className="text-ink-3">{t('usage.localWeek')}</div>
+              <div className="mt-0.5 text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.week) : 0)}</div>
+            </div>
+          </div>
+          <div className="mt-2 text-[11px] text-ink-3">{t('usage.noQuotaNote')}</div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** 用量限额 page body: overview strip, per-account quota grid, per-account detail table. */
 export function UsageView() {
   const { profiles } = useApp()
   const snap = useUsage()
   const all = snap ? Object.values(snap.accounts) : []
   const cost = sumOf(all, (u) => u.total.costUsd)
   const runs = sumOf(all, (u) => u.total.runs)
+  const ready = profiles.filter(isReady)
+  const idlest = idlestAccounts(profiles, snap)
   const num = 'px-4 py-3 text-right tabular-nums'
-  const cell = (t: UsageTotals | undefined) =>
-    t ? (
+  const cell = (tt: UsageTotals | undefined) =>
+    tt ? (
       <td
         className={num}
-        title={`输入 ${fmtTokens(t.input)} · 输出 ${fmtTokens(t.output)} · 缓存读 ${fmtTokens(t.cacheRead)} · 缓存写 ${fmtTokens(t.cacheWrite)}${t.reasoning ? ` · 思考 ${fmtTokens(t.reasoning)}` : ''}`}
+        title={
+          t('usage.cellTip', { input: fmtTokens(tt.input), output: fmtTokens(tt.output), cacheRead: fmtTokens(tt.cacheRead), cacheWrite: fmtTokens(tt.cacheWrite) }) +
+          (tt.reasoning ? t('usage.cellTipReasoning', { n: fmtTokens(tt.reasoning) }) : '')
+        }
       >
-        <div className="text-[13px] font-medium text-ink">{fmtTokens(tokenSum(t))}</div>
-        <div className="text-[11px] text-ink-3">{t.costUsd > 0 ? fmtCost(t.costUsd) : '—'}</div>
+        <div className="text-[13px] font-medium text-ink">{fmtTokens(tokenSum(tt))}</div>
+        <div className="text-[11px] text-ink-3">{tt.costUsd > 0 ? fmtCost(tt.costUsd) : '—'}</div>
       </td>
     ) : (
       <td className={`${num} text-ink-3`}>—</td>
@@ -264,38 +288,43 @@ export function UsageView() {
   return (
     <div>
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="今日总 Token" value={fmtTokens(sumOf(all, (u) => tokenSum(u.today)))} sub={`输出 ${fmtTokens(sumOf(all, (u) => u.today.output))}`} />
-        <Stat label="本周总 Token" value={fmtTokens(sumOf(all, (u) => tokenSum(u.week)))} sub="自周一起" />
-        <Stat label="AgentSwitch 累计费用" value={fmtCost(cost)} sub={`${runs} 次运行`} />
+        <Stat label={t('usage.statToday')} value={fmtTokens(sumOf(all, (u) => tokenSum(u.today)))} sub={t('usage.statTodaySub', { n: fmtTokens(sumOf(all, (u) => u.today.output)) })} />
+        <Stat label={t('usage.statWeek')} value={fmtTokens(sumOf(all, (u) => tokenSum(u.week)))} sub={t('usage.statWeekSub')} />
+        <Stat label={t('usage.statCost')} value={fmtCost(cost)} sub={t('usage.statCostSub', { n: runs })} />
       </div>
-      <div className="mt-4 overflow-hidden rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+
+      <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
+      {ready.length ? (
+        <div className="grid grid-cols-2 gap-3">
+          {ready.map((p) => (
+            <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
+          ))}
+        </div>
+      ) : (
+        <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
+      )}
+
+      <SectionTitle>{t('usage.detailSection')}</SectionTitle>
+      <div className={`overflow-hidden ${CARD}`}>
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
-              <th className="px-4 py-2 text-left font-medium">账号</th>
-              <th className="px-4 py-2 text-left font-medium">额度</th>
-              <th className="px-4 py-2 text-right font-medium">今日</th>
-              <th className="px-4 py-2 text-right font-medium">本周</th>
-              <th className="px-4 py-2 text-right font-medium">累计</th>
+              <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
+              <th className="px-4 py-2 text-right font-medium">{t('usage.colToday')}</th>
+              <th className="px-4 py-2 text-right font-medium">{t('usage.colWeek')}</th>
+              <th className="px-4 py-2 text-right font-medium">{t('usage.colTotal')}</th>
             </tr>
           </thead>
           <tbody>
             {profiles.map((p) => {
               const u = snap?.accounts[p.id]
-              const eff = effectiveQuota(u, p.defaultModel)
               return (
                 <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2.5">
                       <KindAvatar kind={p.kind} size={22} />
-                      <div className="min-w-0">
-                        <div className="truncate font-medium text-ink">{p.name}</div>
-                        {eff.group && <div className="truncate text-[11px] text-ink-3">{eff.group.name}</div>}
-                      </div>
+                      <span className="truncate font-medium text-ink">{p.name}</span>
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    {u?.quota ? <MiniBars kind={p.kind} five={liveWindow(eff.fiveHour)} seven={liveWindow(eff.sevenDay)} /> : <span className="text-[12px] text-ink-3">无额度数据</span>}
                   </td>
                   {cell(u?.today)}
                   {cell(u?.week)}
@@ -307,29 +336,10 @@ export function UsageView() {
         </table>
       </div>
       <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">
-        Token 含缓存读写；费用仅统计 AgentSwitch 运行时 CLI 报告的金额，历史回填（Claude 近 {snap?.claudeDays ?? 30} 天、Codex 与 agy 全部）只计 Token。
-        {snap?.backfill === 'running' && ' 正在后台回填历史用量…'}
+        {t('usage.footnote', { days: snap?.claudeDays ?? 30 })}
+        {snap?.backfill === 'running' && t('usage.backfillRunning')}
       </p>
     </div>
-  )
-}
-
-/** Sidebar entry: today's total; click jumps to the engines page usage tab. */
-export function UsageSummaryButton() {
-  const snap = useUsage()
-  const { navigate } = useApp()
-  const today = snap ? Object.values(snap.accounts).reduce((a, u) => a + tokenSum(u.today), 0) : 0
-  return (
-    <button
-      onClick={() => {
-        setEnginesTab('usage')
-        navigate('engines')
-      }}
-      className="no-drag shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-ink-3 tabular-nums hover:bg-black/[0.05] hover:text-ink-2"
-      title="查看用量统计"
-    >
-      今日 {fmtTokens(today)}
-    </button>
   )
 }
 
@@ -337,6 +347,7 @@ export function UsageSummaryButton() {
 export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | null; model?: string | null; onSwitch: (id: ProfileId) => void }) {
   const { profiles } = useApp()
   const snap = useUsage()
+  useSettings() // threshold changes re-evaluate the level
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -353,10 +364,9 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
   const eff = effectiveQuota(u, model ?? driver.defaultModel)
   const five = liveWindow(eff.fiveHour)
   const seven = liveWindow(eff.sevenDay)
-  const detail = [
-    five && `5h 剩余 ${Math.max(0, 100 - Math.round(five.percent))}%${five.resetsAt ? ` · ${fmtReset(five.resetsAt)} 重置` : ''}`,
-    seven && `7d 剩余 ${Math.max(0, 100 - Math.round(seven.percent))}%${seven.resetsAt ? ` · ${fmtReset(seven.resetsAt)} 重置` : ''}`
-  ].filter(Boolean) as string[]
+  const line = (which: string, w: QuotaWindow | null) =>
+    w && t('usage.remaining', { which, pct: Math.max(0, 100 - Math.round(w.percent)) }) + (w.resetsAt ? t('usage.remainingReset', { time: fmtReset(w.resetsAt) }) : '')
+  const detail = [line('5h', five), line('7d', seven)].filter(Boolean) as string[]
   const color = level === 'danger' ? 'bg-red' : 'bg-orange'
   return (
     <div ref={ref} className="relative">
@@ -364,7 +374,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((o) => !o)}
         className="flex h-8 w-6 items-center justify-center rounded-full hover:bg-fill"
-        title={[`${driver.name}：${reason}`, ...detail, alt ? `可切换到 ${alt.name}` : ''].filter(Boolean).join('\n')}
+        title={[`${driver.name}: ${reason}`, ...detail, alt ? t('usage.canSwitch', { name: alt.name }) : ''].filter(Boolean).join('\n')}
       >
         <span className={`h-2 w-2 rounded-full ${color} shadow-[0_0_0_3px_rgba(255,159,10,0.18)]`} />
       </button>
@@ -373,7 +383,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
           <div className={`font-medium ${level === 'danger' ? 'text-danger' : 'text-warn'}`}>
             {driver.name} · {reason}
           </div>
-          {eff.group && <div className="mt-0.5 text-ink-3">额度组：{eff.group.name}</div>}
+          {eff.group && <div className="mt-0.5 text-ink-3">{t('usage.group', { name: eff.group.name })}</div>}
           {detail.map((d) => (
             <div key={d} className="mt-0.5 text-ink-3">
               {d}
@@ -388,10 +398,10 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
               }}
               className="mt-2.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-full bg-accent font-medium text-white hover:bg-accent/90"
             >
-              切换到 <KindAvatar kind={alt.kind} size={14} /> {alt.name}
+              {t('usage.switchTo')} <KindAvatar kind={alt.kind} size={14} /> {alt.name}
             </button>
           ) : (
-            <div className="mt-2 text-ink-3">没有可切换的同类账号</div>
+            <div className="mt-2 text-ink-3">{t('usage.noAlt')}</div>
           )}
         </div>
       )}

@@ -9,6 +9,7 @@ import 'katex/dist/katex.min.css'
 import { fileUrl, localPath, upgradeFileUrl } from '../lib/fileUrl'
 import { IconCheck, IconCopy, IconFolder } from './icons'
 import { useTheme } from '../state/theme'
+import { t } from '../state/i18n'
 
 let mermaidSeq = 0
 let mermaidLib: Promise<typeof import('mermaid')['default']> | null = null
@@ -74,15 +75,15 @@ function MermaidBlock({ source }: { source: string }) {
   return (
     <div className="md-code group">
       <div className="flex h-8 items-center gap-1 px-3.5 text-[12px] text-ink-3">
-        <span className="flex-1 font-mono">mermaid{err && !svg ? ' · 渲染失败' : ''}</span>
+        <span className="flex-1 font-mono">mermaid{err && !svg ? t('md.renderFailed') : ''}</span>
         {svg && (
           <button onClick={() => setShowSrc((x) => !x)} className="rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink">
-            {showSrc ? '查看图表' : '查看源码'}
+            {showSrc ? t('md.viewChart') : t('md.viewSource')}
           </button>
         )}
         <button onClick={() => void copy()} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink">
           {copied ? <IconCheck size={13} className="text-ok" /> : <IconCopy size={13} />}
-          {copied ? '已复制' : '复制'}
+          {copied ? t('common.copied') : t('common.copy')}
         </button>
       </div>
       {raw ? (
@@ -113,7 +114,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
         <span className="font-mono">{lang || 'text'}</span>
         <button onClick={() => void copy()} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.05] hover:text-ink">
           {copied ? <IconCheck size={13} className="text-ok" /> : <IconCopy size={13} />}
-          {copied ? '已复制' : '复制'}
+          {copied ? t('common.copied') : t('common.copy')}
         </button>
       </div>
       <pre>{children}</pre>
@@ -133,8 +134,8 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
   }, [open])
   return (
     <>
-      <span className={`md-figure${broken ? ' md-figure-broken' : ''}`} onClick={() => !broken && setOpen(true)} title={broken ? `无法预览：${path ?? src}` : '点击查看大图'}>
-        {broken ? <span className="md-broken">图片无法预览</span> : <img src={src} alt={alt} loading="lazy" onError={() => setBroken(true)} />}
+      <span className={`md-figure${broken ? ' md-figure-broken' : ''}`} onClick={() => !broken && setOpen(true)} title={broken ? t('md.cannotPreview', { path: path ?? src }) : t('md.clickZoom')}>
+        {broken ? <span className="md-broken">{t('md.imageBroken')}</span> : <img src={src} alt={alt} loading="lazy" onError={() => setBroken(true)} />}
         {(alt || path) && <span className="md-caption">{alt || path!.split('/').pop()}</span>}
       </span>
       {open &&
@@ -151,7 +152,7 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
                     void window.agentswitch.sys.showInFolder(path)
                   }}
                 >
-                  <IconFolder size={14} /> 在 Finder 中显示
+                  <IconFolder size={14} /> {t('common.showInFinder')}
                 </button>
               )}
             </div>
@@ -175,7 +176,7 @@ const components: Components = {
           if (href && /^https?:\/\//.test(href)) void window.agentswitch.sys.openExternal(href)
           else if (local) void window.agentswitch.sys.showInFolder(local)
         }}
-        title={local ? `${local}\n在 Finder 中显示` : href}
+        title={local ? `${local}\n${t('common.showInFinder')}` : href}
       >
         {children}
       </a>

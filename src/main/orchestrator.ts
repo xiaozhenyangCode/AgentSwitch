@@ -9,6 +9,7 @@ import { FileBaseline } from './fileBaseline'
 import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuota } from './usage'
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
+import { t } from './i18n'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -223,11 +224,11 @@ export class Orchestrator {
   isRunning = (id: ProfileId): boolean => (this.busy.get(id) ?? 0) > 0
 
   start(req: RunRequest): void {
-    if (this.turns.has(req.threadId)) throw new Error('这个对话还有任务在运行')
-    if (!hasProfile(req.driver.profileId)) throw new Error('主控账号不存在')
+    if (this.turns.has(req.threadId)) throw new Error(t('main.busy'))
+    if (!hasProfile(req.driver.profileId)) throw new Error(t('main.noDriver'))
 
     if (req.projectDir && !req.allowMissingProject)
-      if (!isAbsolute(req.projectDir) || !existsSync(req.projectDir) || !statSync(req.projectDir).isDirectory()) throw new Error(`项目文件夹不存在：${req.projectDir}`)
+      if (!isAbsolute(req.projectDir) || !existsSync(req.projectDir) || !statSync(req.projectDir).isDirectory()) throw new Error(t('main.noProject', { dir: req.projectDir }))
     const cwd = threadCwd(req.threadId, req.projectDir)
     allowRoot(cwd)
     const base = join(cwd, '.agentswitch')
@@ -568,7 +569,7 @@ export class Orchestrator {
     for (const [p, sig] of after) {
       if (before.get(p) === sig || reported.has(p) || extra >= 30) continue
       extra++
-      if (!written.has(p)) emit({ t: 'activity', type: 'write', target: relative(turn.cwd, p), status: 'done', detail: { tool: '磁盘变更检测' } })
+      if (!written.has(p)) emit({ t: 'activity', type: 'write', target: relative(turn.cwd, p), status: 'done', detail: { tool: t('main.diskDetect') } })
       emit({ t: 'output', path: p })
     }
 
@@ -589,7 +590,7 @@ export class Orchestrator {
       if (r.error) this.emit({ kind: 'agent', ...ids, event: { t: 'error', message: r.error } })
       this.emit({ kind: 'step-end', ...ids, status: 'error' })
       if (turn.req.mode === 'handoff')
-        this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to: turn.req.handoffTo ?? step.profileId, ok: false, error: r.rateLimited ? 'rate_limited' : (r.error ?? '生成失败') })
+        this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to: turn.req.handoffTo ?? step.profileId, ok: false, error: r.rateLimited ? 'rate_limited' : (r.error ?? t('chat.genFailed')) })
       return this.end(turn, 'error')
     }
 
@@ -607,7 +608,7 @@ export class Orchestrator {
       }
     }
     const verdict = step.review ? verdictOf(step.text) : null
-    if (step.review && !verdict) this.emit({ kind: 'agent', ...ids, event: { t: 'notice', message: '验收步骤没有给出 PASS / REJECT 结论，按通过处理。' } })
+    if (step.review && !verdict) this.emit({ kind: 'agent', ...ids, event: { t: 'notice', message: t('main.noVerdict') } })
     this.emit({ kind: 'step-end', ...ids, status: 'done', verdict: verdict ?? undefined })
 
     if (verdict?.status === 'REJECT') {
@@ -617,7 +618,7 @@ export class Orchestrator {
       else {
         turn.paused = { reviewIdx: turn.idx }
         this.writeTask(turn)
-        this.emit({ kind: 'paused', threadId: turn.req.threadId, turnId: turn.req.turnId, reason: `验收连续 ${used + 1} 次未通过：${verdict.reason}` })
+        this.emit({ kind: 'paused', threadId: turn.req.threadId, turnId: turn.req.turnId, reason: t('main.rejectedN', { n: used + 1, reason: verdict.reason }) })
         return
       }
     }
