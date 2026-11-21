@@ -229,7 +229,9 @@ export function WorkbenchPage() {
             <div className="mb-5 flex items-start gap-2 rounded-xl bg-black/[0.035] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
               <KindAvatar kind={thread.imported.kind} size={16} />
               <span className="min-w-0 flex-1">
-                从本机 CLI 历史导入（只读，不会改动原记录）· 用 {byId(thread.imported.profileId)?.name ?? '原账号'} 继续发送会接着原会话
+                {thread.preview
+                  ? `本机 CLI 历史（只读查看，不会改动原记录）· 发送消息后才会存为对话，用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 接着原会话继续`
+                  : `从本机 CLI 历史继续（不会改动原记录）· 用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 发送会接着原会话`}
                 {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">· 正在读取…</span>}
                 {thread.historyState === 'error' && <span className="ml-1 text-[#A05A00]">· 历史读取失败</span>}
                 {thread.imported.notice && <span className="block text-[#A05A00]">{thread.imported.notice}</span>}

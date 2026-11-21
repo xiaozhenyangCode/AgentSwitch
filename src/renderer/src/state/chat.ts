@@ -111,6 +111,8 @@ export interface Thread {
   updatedAt: number
   /** Imported from a local CLI session (read-only source; the same account resumes it). */
   imported?: { key: string; profileId: ProfileId; kind: ProfileKind; nativeId: string; importedAt: number; notice: string | null }
+  /** Just viewing a CLI history entry: not listed or persisted; becomes a real thread on first send. */
+  preview?: boolean
   /** Messages parsed from the CLI history (never persisted: re-read on demand). */
   history?: Message[]
   historyState?: 'loading' | 'error'
@@ -145,6 +147,15 @@ function load(): ChatState {
           m.endedAt = m.endedAt ?? (m.startedAt ? now() : null)
         }
     }
+    // earlier versions turned every viewed history entry into a chat: drop the ones never written to
+    const viewedOnly = v.threads.filter((t) => t.imported && t.messages.length === 0)
+    if (viewedOnly.length) {
+      v.threads = v.threads.filter((t) => !viewedOnly.includes(t))
+      if (v.activeId && viewedOnly.some((t) => t.id === v.activeId)) v.activeId = v.threads[0]?.id ?? null
+      setTimeout(() => {
+        for (const t of viewedOnly) void window.agentmux.chat.deleteThread({ threadId: t.id, projectDir: null, turnIds: [], purgeCli: false }).catch(() => {})
+      })
+    }
     return v
   } catch {
     return { threads: [], activeId: null }
@@ -156,6 +167,8 @@ const listeners = new Set<() => void>()
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 
 function set(next: ChatState) {
+  // a history preview only lives while it is on screen
+  if (next.threads.some((t) => t.preview && t.id !== next.activeId)) next = { ...next, threads: next.threads.filter((t) => !t.preview || t.id === next.activeId) }
   state = next
   listeners.forEach((l) => l())
   if (persistTimer) return // streaming updates are frequent; persist at most every 400ms
@@ -163,7 +176,8 @@ function set(next: ChatState) {
     persistTimer = null
     try {
       // imported history is re-read from the CLI files; keep localStorage small
-      localStorage.setItem(LS_KEY, JSON.stringify({ ...state, threads: state.threads.map(({ history: _h, historyState: _s, ...t }) => t) }))
+      const threads = state.threads.filter((t) => !t.preview).map(({ history: _h, historyState: _s, ...t }) => t)
+      localStorage.setItem(LS_KEY, JSON.stringify({ ...state, threads, activeId: threads.some((t) => t.id === state.activeId) ? state.activeId : (threads[0]?.id ?? null) }))
     } catch {
       /* quota exceeded: keep in memory only */
     }
@@ -303,8 +317,12 @@ export function send(
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
   const transcript = transcriptOf(thread)
+  // first message in a history preview: it becomes a real chat continuing that CLI session
+  const promote = thread.preview && thread.imported
+  const ready = promote ? window.agentmux.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
   patchThread(threadId, (t) => ({
     ...t,
+    ...(promote ? { preview: false, imported: { ...t.imported!, importedAt: now() } } : {}),
     title: firstTurn ? titleFrom(input.text) : t.title,
     messages: [...t.messages, user],
     activeTurn: turnId,
@@ -314,22 +332,24 @@ export function send(
     updatedAt: now()
   }))
   const attachments: RunAttachment[] = input.attachments.filter((a) => a.path).map((a) => ({ name: a.name, path: a.path!, isImage: a.isImage }))
-  window.agentmux.chat
-    .send({
-      threadId,
-      turnId,
-      projectDir: input.projectDir,
-      text: input.text,
-      attachments,
-      driver: { profileId: input.driver.profileId, model: input.driver.model },
-      mentions: input.mentions.map((m) => ({ profileId: m.profileId, model: m.model })),
-      participants: input.participants,
-      transcript,
-      mode,
-      handoffTo: input.handoffTo?.profileId,
-      handoffDoc: doc?.path ?? null,
-      allowMissingProject: !!thread.imported
-    })
+  ready
+    .then(() =>
+      window.agentmux.chat.send({
+        threadId,
+        turnId,
+        projectDir: input.projectDir,
+        text: input.text,
+        attachments,
+        driver: { profileId: input.driver.profileId, model: input.driver.model },
+        mentions: input.mentions.map((m) => ({ profileId: m.profileId, model: m.model })),
+        participants: input.participants,
+        transcript,
+        mode,
+        handoffTo: input.handoffTo?.profileId,
+        handoffDoc: doc?.path ?? null,
+        allowMissingProject: !!thread.imported
+      })
+    )
     .catch((e: unknown) => {
       const msg = String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
       patchThread(threadId, (t) => ({
@@ -437,9 +457,7 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
     case 'handoff':
       return patchThread(e.threadId, (t) =>
-        e.ok
-          ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null }
-          : { ...t, handoffFailed: { to: e.to, error: e.error ?? '生成失败' } }
+        e.ok ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null } : { ...t, handoffFailed: { to: e.to, error: e.error ?? '生成失败' } }
       )
     case 'paused':
       return patchThread(e.threadId, (t) => ({ ...t, pause: { turnId: e.turnId, reason: e.reason } }))
@@ -450,9 +468,7 @@ function onEvent(e: ChatEvent) {
         pause: t.pause?.turnId === e.turnId ? null : t.pause,
         updatedAt: now(),
         messages: t.messages.map((m) =>
-          m.role === 'assistant' && m.turnId === e.turnId && (m.status === 'queued' || m.status === 'streaming')
-            ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null }
-            : m
+          m.role === 'assistant' && m.turnId === e.turnId && (m.status === 'queued' || m.status === 'streaming') ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null } : m
         )
       }))
   }
@@ -523,12 +539,7 @@ export async function toAttachment(file: File): Promise<Attachment> {
 export async function exportHandoff(threadId: string, to: AgentRef): Promise<void> {
   const t = state.threads.find((x) => x.id === threadId)
   if (!t) return
-  const lines: string[] = [
-    `# 交接文档（AgentMux 从最近对话导出）`,
-    '',
-    `> 原模型暂不可用，以下是这个对话最近的记录，交给 ${to.name} 继续。`,
-    ''
-  ]
+  const lines: string[] = [`# 交接文档（AgentMux 从最近对话导出）`, '', `> 原模型暂不可用，以下是这个对话最近的记录，交给 ${to.name} 继续。`, '']
   if (t.workdir || t.projectDir) lines.push(`项目目录：${t.workdir ?? t.projectDir}`, '')
   lines.push('## 最近对话', '')
   for (const m of threadMessages(t).slice(-30)) {
@@ -546,8 +557,7 @@ export async function exportHandoff(threadId: string, to: AgentRef): Promise<voi
   patchThread(threadId, (x) => ({ ...x, handoff: { to: to.profileId, path, from: '最近对话导出' }, handoffFailed: null }))
 }
 
-export const skipHandoff = (threadId: string, to: ProfileId) =>
-  patchThread(threadId, (t) => ({ ...t, handoffSkip: [...new Set([...(t.handoffSkip ?? []), to])], handoffFailed: null }))
+export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(threadId, (t) => ({ ...t, handoffSkip: [...new Set([...(t.handoffSkip ?? []), to])], handoffFailed: null }))
 
 // ---- imported CLI history ----------------------------------------------------------------------
 
@@ -582,7 +592,7 @@ function fromHistory(h: HistoryThread, agent: AgentRef): Message[] {
 
 export const importedThreadOf = (key: string): Thread | null => state.threads.find((t) => t.imported?.key === key) ?? null
 
-/** Opens a CLI history entry as a thread (or selects the one already imported). */
+/** Shows a CLI history entry (a preview; or selects the chat it was already continued in). */
 export async function openHistory(entry: HistoryEntry, agent: AgentRef, participants: ProfileId[]): Promise<string> {
   const existing = importedThreadOf(entry.key)
   if (existing) {
@@ -613,9 +623,9 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
       importedAt: Date.now(),
       notice: [h.notice, entry.cwd && !h.cwdExists ? `原项目目录已不存在（${entry.cwd}），新消息会在 AgentMux 私有工作区运行。` : null].filter(Boolean).join(' ') || null
     },
-    history: fromHistory(h, agent)
+    history: fromHistory(h, agent),
+    preview: true
   }
-  await window.agentmux.history.import(id, entry.profileId, entry.nativeId)
   set({ threads: [t, ...state.threads], activeId: id })
   return id
 }

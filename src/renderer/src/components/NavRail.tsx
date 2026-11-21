@@ -88,6 +88,7 @@ export function NavRail() {
   const groups = useMemo(() => {
     const map = new Map<string, Thread[]>()
     for (const t of [...chat.threads].sort((a, b) => b.updatedAt - a.updatedAt)) {
+      if (t.preview) continue
       if (q && !t.title.toLowerCase().includes(q) && !(t.projectDir ?? '').toLowerCase().includes(q)) continue
       const k = t.projectDir ?? ''
       map.set(k, [...(map.get(k) ?? []), t])
@@ -340,7 +341,7 @@ function HistoryList({ query }: { query: string }) {
                   <span className="flex items-center gap-1 truncate text-[11px] leading-4 text-ink-3">
                     {opening === e.key && <Spinner size={10} className="text-accent" />}
                     {shortTime(e.updatedAt)} · {p.name}
-                    {linked && <span className="text-accent">· 已导入</span>}
+                    {linked && !linked.preview && <span className="text-accent">· 已继续</span>}
                   </span>
                 </span>
               </button>
