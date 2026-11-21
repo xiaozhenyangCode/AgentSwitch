@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryThread, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
+import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 import { t as tr } from './i18n'
 
 /**
@@ -203,8 +203,31 @@ export function useChat(): ChatState {
 
 export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
 export const isThreadBusy = (t: Thread | null) => !!t?.activeTurn
-/** History (imported) + AgentSwitch messages, oldest first. */
-export const threadMessages = (t: Thread | null): Message[] => (t ? (t.history?.length ? [...t.history, ...t.messages] : t.messages) : [])
+const msgAt = (m: Message): number => (m.role === 'user' ? m.createdAt : (m.startedAt ?? 0))
+
+/**
+ * History (imported) + AgentSwitch messages, oldest first. Turns someone continued in the CLI
+ * itself interleave with AgentSwitch's own turns by time; each list keeps its own order.
+ */
+export const threadMessages = (t: Thread | null): Message[] => {
+  if (!t) return []
+  const h = t.history ?? []
+  if (!h.length) return t.messages
+  if (!t.messages.length) return h
+  const out: Message[] = []
+  let i = 0
+  let j = 0
+  while (i < h.length || j < t.messages.length) {
+    if (j >= t.messages.length || (i < h.length && msgAt(h[i]) <= msgAt(t.messages[j]))) {
+      out.push(h[i++])
+      continue
+    }
+    // one AgentSwitch turn at a time (its steps stay together)
+    const turn = t.messages[j].turnId
+    while (j < t.messages.length && t.messages[j].turnId === turn) out.push(t.messages[j++])
+  }
+  return out
+}
 
 /** Accounts that already hold a CLI session in this thread (they need no handoff). */
 export function sessionAccounts(t: Thread): Set<ProfileId> {
@@ -232,7 +255,10 @@ export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'dr
   return t.id
 }
 
-export const selectThread = (id: string) => set({ ...state, activeId: id })
+export const selectThread = (id: string) => {
+  set({ ...state, activeId: id })
+  void syncExternal(id)
+}
 export const patchThreadState = (id: string, patch: Partial<Thread>) => patchThread(id, (t) => ({ ...t, ...patch }))
 export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim() }))
 export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir' | 'participants' | 'driver'>>) =>
@@ -294,10 +320,32 @@ const errorMessage = (turnId: string, agent: AgentRef, error: string): Assistant
   endedAt: now()
 })
 
-export function send(
-  threadId: string,
-  input: { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[]; participants: ProfileId[]; projectDir: string | null; handoffTo?: AgentRef }
-): void {
+type SendInput = { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[]; participants: ProfileId[]; projectDir: string | null; handoffTo?: AgentRef }
+const gating = new Set<string>()
+
+/**
+ * Sends a message. A chat bound to a CLI session first catches up with turns written elsewhere,
+ * so the screen matches what --resume will see; when the session file is being written right
+ * now, `confirmBusy` decides whether to go ahead. Resolves false only when the user declined
+ * there (the composer gives the draft back); a duplicate submit is dropped and resolves true.
+ */
+export async function send(threadId: string, input: SendInput, confirmBusy?: () => Promise<boolean>): Promise<boolean> {
+  const thread = state.threads.find((t) => t.id === threadId)
+  if (!thread || thread.activeTurn || gating.has(threadId)) return true
+  if (thread.imported) {
+    gating.add(threadId)
+    try {
+      const r = await syncExternal(threadId)
+      if (r.writing && confirmBusy && !(await confirmBusy())) return false
+    } finally {
+      gating.delete(threadId)
+    }
+  }
+  sendNow(threadId, input)
+  return true
+}
+
+function sendNow(threadId: string, input: SendInput): void {
   const thread = state.threads.find((t) => t.id === threadId)
   if (!thread || thread.activeTurn) return
   const turnId = uid() + uid()
@@ -562,9 +610,14 @@ export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(thre
 
 // ---- imported CLI history ----------------------------------------------------------------------
 
-function fromHistory(h: HistoryThread, agent: AgentRef): Message[] {
+function fromHistory(h: { messages: HistoryMessage[] }, agent: AgentRef): Message[] {
+  const seen = new Map<string, number>()
   return h.messages.map((m: HistoryMessage, i): Message => {
-    const id = `h${i}`
+    // keyed by time, not position: ids stay put when external turns are merged in
+    const base = `h${m.role[0]}${m.at}`
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    const id = n ? `${base}-${n}` : base
     if (m.role === 'user') return { role: 'user', id, turnId: `hist-${i}`, text: m.text, attachments: [], driver: agent, mentions: [], createdAt: m.at }
     return {
       role: 'assistant',
@@ -601,8 +654,10 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
     if (!existing.history) void loadHistory(existing.id, agent)
     return existing.id
   }
+  const stat = await window.agentswitch.history.stat(entry.key).catch(() => null)
   const h = await window.agentswitch.history.open(entry.key)
   const id = uid()
+  syncBase.set(id, { stat, agent })
   const projectDir = h.cwdExists ? entry.cwd : null
   const t: Thread = {
     id,
@@ -631,18 +686,105 @@ export async function openHistory(entry: HistoryEntry, agent: AgentRef, particip
   return id
 }
 
-/** Re-reads an imported thread's history (after app restart); only turns from before the import. */
+/**
+ * Time windows of AgentSwitch's own runs on the imported session: the CLI records those turns in
+ * the same file, but they are already in t.messages. Anything outside them came from elsewhere.
+ */
+function ownWindows(t: Thread): [number, number][] {
+  const pid = t.imported?.profileId
+  const asked = new Map<string, number>()
+  for (const m of t.messages) if (m.role === 'user') asked.set(m.turnId, m.createdAt)
+  const out: [number, number][] = []
+  for (const m of t.messages) {
+    if (m.role !== 'assistant' || m.agent.profileId !== pid || !m.startedAt) continue
+    const from = Math.min(asked.get(m.turnId) ?? m.startedAt, m.startedAt) - 1500
+    const to = m.endedAt ?? (t.activeTurn === m.turnId ? Infinity : m.startedAt + 10 * 60_000)
+    out.push([from, to + 5000])
+  }
+  return out
+}
+
+/** CLI turns that are not AgentSwitch's own (from before the import, or continued elsewhere). */
+const foreignTurns = (t: Thread, messages: HistoryMessage[]): HistoryMessage[] => {
+  const wins = ownWindows(t)
+  return wins.length ? messages.filter((m) => !wins.some(([a, b]) => m.at >= a && m.at <= b)) : messages
+}
+
+/** What the thread's history was last parsed from (not persisted: a restart re-reads anyway). */
+const syncBase = new Map<string, { stat: HistoryStat | null; agent: AgentRef }>()
+
+/** Re-reads an imported thread's history (after app restart): every CLI turn except AgentSwitch's own. */
 export async function loadHistory(threadId: string, agent: AgentRef): Promise<void> {
   const t = state.threads.find((x) => x.id === threadId)
   if (!t?.imported || t.historyState === 'loading') return
   patchThread(threadId, (x) => ({ ...x, historyState: 'loading' }))
   try {
+    const stat = await window.agentswitch.history.stat(t.imported.key).catch(() => null)
     const h = await window.agentswitch.history.open(t.imported.key)
-    const cut = t.imported.importedAt
-    // turns the CLI recorded after the import are AgentSwitch's own messages (already in t.messages)
-    const kept = { ...h, messages: h.messages.filter((m) => m.at <= cut) }
-    patchThread(threadId, (x) => ({ ...x, history: fromHistory(kept, agent), historyState: undefined }))
+    const cur = state.threads.find((x) => x.id === threadId) ?? t
+    syncBase.set(threadId, { stat, agent })
+    patchThread(threadId, (x) => ({ ...x, history: fromHistory({ messages: foreignTurns(cur, h.messages) }, agent), historyState: undefined }))
   } catch {
     patchThread(threadId, (x) => ({ ...x, history: [], historyState: 'error' }))
   }
 }
+
+// ---- external changes: the same CLI session continued in a terminal or another app -------------
+
+export interface ExternalSync {
+  threadId: string
+  /** New messages merged into the thread. */
+  added: number
+  /** The session file was written moments ago by something other than AgentSwitch. */
+  writing: boolean
+}
+
+/** Writes this recent (and not from our own run) suggest a reply is being generated elsewhere. */
+const BUSY_MS = 2000
+const syncing = new Map<string, Promise<ExternalSync>>()
+const syncSubs = new Set<(e: ExternalSync) => void>()
+/** Merged-in external turns (for the lightweight notice). */
+export const onExternalSync = (cb: (e: ExternalSync) => void) => (syncSubs.add(cb), () => void syncSubs.delete(cb))
+
+/**
+ * Stats the session's files (cheap); when they changed since the last parse, re-reads them and
+ * merges the new turns. AgentSwitch's own state (its turns, handoff cards, usage) is untouched.
+ */
+export function syncExternal(threadId: string): Promise<ExternalSync> {
+  const running = syncing.get(threadId)
+  if (running) return running
+  const none: ExternalSync = { threadId, added: 0, writing: false }
+  const p = (async (): Promise<ExternalSync> => {
+    const t = state.threads.find((x) => x.id === threadId)
+    const base = syncBase.get(threadId)
+    // our own run is writing the file, or the history is not loaded yet (loadHistory reads it fresh)
+    if (!t?.imported || t.activeTurn || !t.history || t.historyState || !base) return none
+    const stat = await window.agentswitch.history.stat(t.imported.key).catch(() => null)
+    if (!stat) return none
+    const lastOwn = Math.max(0, ...t.messages.map((m) => (m.role === 'assistant' && m.agent.profileId === t.imported!.profileId ? (m.endedAt ?? 0) : 0)))
+    const writing = Date.now() - stat.mtimeMs < BUSY_MS && stat.mtimeMs > lastOwn + 1500
+    if (base.stat && base.stat.mtimeMs === stat.mtimeMs && base.stat.size === stat.size) return { ...none, writing }
+    const h = await window.agentswitch.history.open(t.imported.key).catch(() => null)
+    const cur = state.threads.find((x) => x.id === threadId)
+    if (!h || !cur?.history || cur.activeTurn) return { ...none, writing }
+    syncBase.set(threadId, { ...base, stat })
+    const next = fromHistory({ messages: foreignTurns(cur, h.messages) }, base.agent)
+    const prev = cur.history
+    const same = next.length === prev.length && next.every((m, i) => m.id === prev[i].id && (m.role === 'user' ? m.text : m.content) === (prev[i].role === 'user' ? (prev[i] as UserMessage).text : (prev[i] as AssistantMessage).content))
+    if (same) return { ...none, writing }
+    const known = new Set(prev.map((m) => m.id))
+    const added = next.filter((m) => !known.has(m.id)).length
+    const lastAt = Math.max(0, ...next.map(msgAt))
+    patchThread(threadId, (x) => ({ ...x, history: next, updatedAt: Math.max(x.updatedAt, lastAt) }))
+    const e = { threadId, added, writing }
+    if (added) for (const cb of syncSubs) cb(e)
+    return e
+  })().finally(() => syncing.delete(threadId))
+  syncing.set(threadId, p)
+  return p
+}
+
+// the window coming back to the front: someone may have continued the open chat elsewhere
+window.addEventListener('focus', () => {
+  if (state.activeId) void syncExternal(state.activeId)
+})

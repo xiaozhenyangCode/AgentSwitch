@@ -17,6 +17,7 @@ import {
   type EnvPreview,
   type HistoryEntry,
   type UsageSnapshot,
+  type HistoryStat,
   type HistoryThread,
   type KindConfig,
   type LoginSuccessEvent,
@@ -97,7 +98,8 @@ const api = {
     list: (force = false): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.historyList, force),
     open: (key: string): Promise<HistoryThread & { cwdExists: boolean }> => ipcRenderer.invoke(IPC.historyOpen, key),
     /** Links an AgentSwitch thread to the native session so the same account resumes it. */
-    import: (threadId: string, profileId: ProfileId, nativeId: string): Promise<void> => ipcRenderer.invoke(IPC.historyImport, threadId, profileId, nativeId)
+    import: (threadId: string, profileId: ProfileId, nativeId: string): Promise<void> => ipcRenderer.invoke(IPC.historyImport, threadId, profileId, nativeId),
+    stat: (key: string): Promise<HistoryStat | null> => ipcRenderer.invoke(IPC.historyStat, key)
   },
   attach: {
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */

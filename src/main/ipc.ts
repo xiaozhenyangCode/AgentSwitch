@@ -46,7 +46,7 @@ import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
-import { cwdExists, listHistory, openHistory, writeHandoff } from './history'
+import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData } from './threadDelete'
 import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
@@ -271,6 +271,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     if (h.entry.cwd && cwdExists(h.entry.cwd)) allowRoot(h.entry.cwd)
     return { ...h, cwdExists: !!h.entry.cwd && cwdExists(h.entry.cwd) }
   })
+  ipcMain.handle(IPC.historyStat, (_e, key: unknown) => (typeof key === 'string' ? historyStat(key) : null))
   ipcMain.handle(IPC.historyImport, (_e, threadId: unknown, profileId: unknown, nativeId: unknown) => {
     if (typeof threadId === 'string' && typeof nativeId === 'string' && hasProfile(profileId)) importSession(threadId, profileId, nativeId)
   })

@@ -6,7 +6,7 @@ import { LEGACY_USER_DATA } from './legacy'
 import { createInterface } from 'node:readline'
 import { createTwoFilesPatch } from 'diff'
 import { DatabaseSync } from 'node:sqlite'
-import type { AgentEvent, HistoryActivity, HistoryEntry, HistoryMessage, HistoryThread, ProfileConfig, ProfileId } from '@shared/types'
+import type { AgentEvent, HistoryActivity, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, ProfileConfig, ProfileId } from '@shared/types'
 import { agyTool, capJson, capText, claudeResult, claudeTool, createdDiff, unwrapShell } from './agentRunner'
 import { expandHome, listConfigs } from './profiles'
 import { t } from './i18n'
@@ -857,6 +857,38 @@ export async function openHistory(key: string): Promise<HistoryThread> {
 }
 
 export const cwdExists = isDir
+
+// ---- external-change detection (stat only, never parses) -----------------------------------------
+
+const sourceFiles = new Map<string, string[]>() // history key -> files the CLI writes the session to
+
+/** Size + newest mtime of a session's source files (Claude .jsonl, Codex rollout, agy .db and -wal). */
+export function historyStat(key: string): HistoryStat | null {
+  let files = sourceFiles.get(key)
+  if (!files) {
+    const entry = (cache?.entries ?? listHistory()).find((e) => e.key === key) ?? listHistory(true).find((e) => e.key === key)
+    if (!entry) return null
+    const cfg = listConfigs().find((c) => c.id === entry.profileId)
+    const main = entry.kind === 'claude' ? claudePath(entry) : entry.kind === 'codex' ? (rolloutPaths.get(entry.nativeId) ?? null) : cfg ? agyConversationDb(cfg, entry.nativeId) : null
+    if (!main) return null
+    files = entry.kind === 'gemini' ? [main, main + '-wal'] : [main]
+    sourceFiles.set(key, files)
+  }
+  let mtimeMs = 0
+  let size = 0
+  let found = false
+  for (const f of files) {
+    try {
+      const s = statSync(f)
+      mtimeMs = Math.max(mtimeMs, s.mtimeMs)
+      size += s.size
+      found = true
+    } catch {
+      /* -wal comes and goes */
+    }
+  }
+  return found ? { mtimeMs, size } : null
+}
 
 /** Handoff document export (fallback when the source account can't write one). */
 export function writeHandoff(cwd: string, turnId: string, markdown: string): string {

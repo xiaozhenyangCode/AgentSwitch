@@ -276,6 +276,12 @@ export type HistoryMessage =
   | { role: 'user'; text: string; at: number }
   | { role: 'assistant'; text: string; thinking: string; activity: HistoryActivity[]; outputs: string[]; model: string | null; at: number; endAt: number }
 
+/** Fingerprint of a CLI session's files on disk: a change means someone else continued it. */
+export interface HistoryStat {
+  mtimeMs: number
+  size: number
+}
+
 export interface HistoryThread {
   entry: HistoryEntry
   messages: HistoryMessage[]
@@ -427,6 +433,7 @@ export const IPC = {
   usageChanged: 'usage:changed',
   historyOpen: 'history:open',
   historyImport: 'history:import',
+  historyStat: 'history:stat',
   appInfo: 'app:info'
 } as const
 

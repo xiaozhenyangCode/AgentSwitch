@@ -24,6 +24,7 @@ import {
   sessionAccounts,
   skipHandoff,
   threadMessages,
+  onExternalSync,
   resolvePause,
   send,
   stop,
@@ -105,7 +106,7 @@ function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileStat
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, info } = useApp()
+  const { byId, profiles, info, confirm } = useApp()
   const chat = useChat()
   const thread = activeThread(chat)
   const sorted = useSortedAccounts()
@@ -159,7 +160,7 @@ export function WorkbenchPage() {
   const startHandoff = () => {
     if (!thread || !driverP || !srcP || !speaker) return
     stick.current = true
-    send(thread.id, {
+    void send(thread.id, {
       text: t('wb.handoffText', { name: driverP.name }),
       attachments: [],
       driver: { ...ref(srcP, null), model: speaker.model },
@@ -201,8 +202,28 @@ export function WorkbenchPage() {
     if (!id) id = newThread({ ...ctx, participants: joined, driver: { profileId: driverP.id, model: driverModel } })
     else if (joined.length !== participants.length) updateThread(id, { participants: joined })
     stick.current = true
-    send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir })
+    const busy = () => confirm({ title: t('wb.extBusyTitle'), message: t('wb.extBusyDesc'), confirmLabel: t('wb.extBusySend') })
+    return send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir }, busy)
   }
+
+  // turns continued elsewhere (terminal, another app) merged into the open chat: a short notice
+  const [synced, setSynced] = useState<{ n: number; seq: number } | null>(null)
+  const threadId = thread?.id
+  useEffect(
+    () =>
+      onExternalSync((e) => {
+        if (e.threadId !== threadId) return
+        stick.current = true
+        setSynced((s) => ({ n: e.added, seq: (s?.seq ?? 0) + 1 }))
+      }),
+    [threadId]
+  )
+  useEffect(() => {
+    if (!synced) return
+    const h = setTimeout(() => setSynced(null), 3800)
+    return () => clearTimeout(h)
+  }, [synced])
+  useEffect(() => setSynced(null), [threadId])
 
   return (
     <div className="relative flex h-full flex-col">
@@ -213,6 +234,14 @@ export function WorkbenchPage() {
           <IconChevronDown size={14} className="shrink-0 text-ink-3" />
         </button>
         <div className="flex-1" />
+        {synced && (
+          <div key={synced.seq} className="no-drag pointer-events-none absolute top-3.5 left-1/2 z-20 -translate-x-1/2">
+            <div className="flex items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
+              <IconRefresh size={12} className="text-accent" />
+              {t('wb.extSynced', { n: synced.n })}
+            </div>
+          </div>
+        )}
         <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
       </div>
 
@@ -865,7 +894,8 @@ function Composer({
   /** Project folder: decides which project-level skills / MCP servers apply. */
   projectDir: string | null
   onHeight: (h: number) => void
-  onSend: (text: string, attachments: Attachment[]) => void
+  /** Resolves false when the user declined to send (the draft comes back). */
+  onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | void
   onStop: () => void
 }) {
   const { toast, navigate } = useApp()
@@ -1024,9 +1054,17 @@ function Composer({
         desc: accountBadge(driver).label,
         action: { label: driver.status === 'uninstalled' ? t('wb.goInstall') : t('wb.goLogin'), run: () => navigate('engines', driver.id) }
       })
-    onSend(text.trim(), atts)
+    const sentText = text
+    const sentAtts = atts
+    const r = onSend(text.trim(), atts)
     setText('')
     setAtts([])
+    // cancelled (e.g. the session is being written elsewhere): give the draft back if still empty
+    void r?.then((ok) => {
+      if (ok) return
+      setText((cur) => cur || sentText)
+      setAtts((cur) => (cur.length ? cur : sentAtts))
+    })
   }
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
