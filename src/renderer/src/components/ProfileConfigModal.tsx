@@ -3,8 +3,9 @@ import type { EnvPreview, ProfileConfig, ProfileState, PtyMode } from '@shared/t
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal, Segmented } from './common'
 import { IconFolder, IconX } from './icons'
-import { useApp } from '../state/AppContext'
-import { modelLabel } from '../lib/models'
+import { modelLabel, resolveSpec, withEffort } from '../lib/models'
+import { EffortBar } from './EffortBar'
+import { useModels } from '../state/models'
 
 interface Props {
   profile: ProfileState
@@ -46,7 +47,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Props) {
-  const { kindState } = useApp()
+  const { list: models, loading: modelsLoading, refresh: refreshModels } = useModels(profile.id)
   const [form, setForm] = useState<ProfileConfig>(profile)
   const [envText, setEnvText] = useState(envToText(profile.extraEnv))
   const [preview, setPreview] = useState<EnvPreview | null>(null)
@@ -71,6 +72,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         : [{ label: '真实 HOME（~）', value: '~' }])
   ]
 
+  const defSpec = resolveSpec(form.defaultModel, profile.id)
   const set = <K extends keyof ProfileConfig>(k: K, v: ProfileConfig[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const save = async () => {
@@ -81,6 +83,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         loginCommand: form.loginCommand,
         runCommand: form.runCommand,
         defaultModel: form.defaultModel ?? '',
+        autoApprove: form.autoApprove === 'full' ? 'full' : 'edits',
         extraEnv: textToEnv(envText)
       })
       setPreview(await window.agentmux.profiles.envPreview(profile.id, previewMode))
@@ -151,21 +154,54 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         </Field>
 
-        <Field label="默认子模型" hint={`留空则跟随 CLI 自身默认。正式运行时以 --model <模型名> 传给 ${KIND_META[profile.kind].cli}；对话中仍可临时切换。`}>
+        <Field
+          label="默认子模型"
+          hint={`留空则跟随 CLI 自身默认。正式运行时以 --model <模型名> 传给 ${KIND_META[profile.kind].cli}，思考强度写作「模型:档位」；对话中仍可临时切换。`}
+        >
           <input className={mono} value={form.defaultModel ?? ''} onChange={(e) => set('defaultModel', e.target.value)} placeholder="默认（跟随 CLI）" />
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {['', ...(kindState(profile.kind)?.models ?? [])].map((m) => (
+            {['', ...(models?.models ?? []).filter((m) => m.group === 'main').map((m) => m.id)].map((m) => (
               <button
                 key={m || '_'}
                 className={`h-7 rounded-full px-3 text-[12px] font-medium transition-colors ${
-                  (form.defaultModel ?? '') === m ? 'bg-accent text-white' : 'bg-fill text-ink-2 hover:bg-fill-hover hover:text-ink'
+                  (defSpec.model ?? '') === m ? 'bg-accent text-white' : 'bg-fill text-ink-2 hover:bg-fill-hover hover:text-ink'
                 }`}
-                onClick={() => set('defaultModel', m)}
+                onClick={() => {
+                  const opt = models?.models.find((x) => x.id === m) ?? null
+                  set('defaultModel', m ? (withEffort(opt, m, defSpec.effort) ?? '') : '')
+                }}
               >
-                {m ? modelLabel(m) : '默认'}
+                {m ? modelLabel(m, profile.id) : '默认'}
               </button>
             ))}
+            <button className="h-7 rounded-full px-2.5 text-[12px] text-ink-3 hover:bg-fill hover:text-ink" onClick={refreshModels} disabled={modelsLoading} title="重新从 CLI 获取模型列表">
+              {modelsLoading ? '获取中…' : '刷新列表'}
+            </button>
           </div>
+          {defSpec.opt?.efforts && defSpec.opt.efforts.length > 1 && (
+            <div className="-mx-2 mt-3 w-[340px]">
+              <EffortBar opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
+            </div>
+          )}
+          {models?.error && <div className="mt-1.5 text-[12px] text-[#A05A00]">模型列表获取失败，使用{models.source === 'cache' ? '上次缓存' : '内置列表'}：{models.error}</div>}
+        </Field>
+
+        <Field
+          label="对话中的自动授权"
+          hint={
+            form.autoApprove === 'full'
+              ? '⚠️ 完全放行：模型可以不经确认执行任意命令、读写项目以外的文件（Claude bypassPermissions / Codex danger-full-access / agy --dangerously-skip-permissions）。只在你信任当前任务时开启。'
+              : '仅项目目录内编辑：允许直接修改项目里的文件，执行命令受 CLI 自身的限制（Claude acceptEdits / Codex workspace-write 沙箱 / agy accept-edits）。'
+          }
+        >
+          <Segmented
+            value={form.autoApprove === 'full' ? 'full' : 'edits'}
+            onChange={(v) => set('autoApprove', v)}
+            options={[
+              { value: 'edits', label: '仅项目内编辑（推荐）' },
+              { value: 'full', label: '完全放行' }
+            ]}
+          />
         </Field>
 
         <div className="grid grid-cols-2 gap-4">

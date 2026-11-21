@@ -38,6 +38,13 @@ import {
   updateProfile
 } from './profiles'
 import { PtyManager } from './ptyManager'
+import { Orchestrator } from './orchestrator'
+import { forgetModels, listModels } from './models'
+import { allowRoot, isAllowedPath } from './fileProtocol'
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import type { RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
 
 const assertId = (x: unknown): ProfileId => {
@@ -55,8 +62,11 @@ const LOGIN_POLL_MS = 1200
 /** After success, give the CLI a moment to finish writing before killing its TUI. */
 const LOGIN_KILL_DELAY_MS = 1500
 
+const STAGE_MAX = 50 * 1024 * 1024
+
 export function registerIpc(getWindow: () => BrowserWindow | null): {
   ptys: PtyManager
+  orchestrator: Orchestrator
   broadcastAll: () => void
 } {
   const send = (channel: string, payload: unknown): void => {
@@ -74,7 +84,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const byKind = new Map(kinds.map((k) => [k.kind, k]))
     const profiles = listConfigs().map((cfg) => {
       const k = byKind.get(cfg.kind)!
-      return getState(cfg, k.binaryPath, ptys.sessionMode(cfg.id), ptys.isRateLimited(cfg.id), k.installing)
+      const mode = ptys.sessionMode(cfg.id) ?? (orchestrator.isRunning(cfg.id) ? 'run' : null)
+      return getState(cfg, k.binaryPath, mode, ptys.isRateLimited(cfg.id) || orchestrator.rateLimited.has(cfg.id), k.installing)
     })
     return { kinds, profiles }
   }
@@ -91,6 +102,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   const sessionLabel = (id: SessionId): string => {
     const k = kindOfInstallSession(id)
     if (k) return `安装 ${KIND_LABEL[k]}`
+    if (id.startsWith('run:')) {
+      const pid = id.slice(4)
+      return `运行 · ${hasProfile(pid) ? getConfig(pid).name : pid}`
+    }
     return hasProfile(id) ? getConfig(id).name : id
   }
 
@@ -100,6 +115,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     onUrl: (e) => send(IPC.ptyUrl, e),
     onStateChange: () => broadcast()
   })
+
+  const orchestrator = new Orchestrator(
+    (e) => send(IPC.chatEvent, e),
+    (pid, text) => ptys.log(`run:${pid}`, text),
+    () => broadcast()
+  )
 
   // ---- login success watcher ----------------------------------------------------
   const loginWatchers = new Map<ProfileId, NodeJS.Timeout>()
@@ -144,6 +165,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const pid = assertId(id)
     stopWatch(pid)
     ptys.forget(pid)
+    ptys.forget(`run:${pid}`)
+    forgetModels(pid)
     removeProfile(pid) // config only; never deletes files on disk
     broadcast()
   })
@@ -184,6 +207,49 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.ptyBuffer, (_e, id: unknown) => ptys.getBuffer(typeof id === 'string' ? id : ''))
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
 
+  // ---- models / chat ------------------------------------------------------------------
+  ipcMain.handle(IPC.modelsList, (_e, id: unknown, refresh?: boolean) => listModels(assertId(id), refresh === true))
+  ipcMain.handle(IPC.chatSend, (_e, req: RunRequest) => {
+    if (!req || typeof req.threadId !== 'string' || typeof req.turnId !== 'string' || typeof req.text !== 'string') throw new Error('bad request')
+    orchestrator.start({
+      threadId: req.threadId,
+      turnId: req.turnId,
+      projectDir: typeof req.projectDir === 'string' ? req.projectDir : null,
+      text: req.text,
+      attachments: Array.isArray(req.attachments) ? req.attachments.filter((a) => a && typeof a.path === 'string') : [],
+      driver: { profileId: assertId(req.driver?.profileId), model: req.driver?.model || null },
+      mentions: (Array.isArray(req.mentions) ? req.mentions : []).filter((m) => hasProfile(m?.profileId)).map((m) => ({ profileId: m.profileId, model: m.model || null })),
+      participants: (Array.isArray(req.participants) ? req.participants : []).filter((p) => hasProfile(p)),
+      transcript: typeof req.transcript === 'string' ? req.transcript.slice(-12000) : ''
+    })
+  })
+  ipcMain.handle(IPC.chatStop, (_e, threadId: unknown) => typeof threadId === 'string' && orchestrator.stop(threadId))
+  ipcMain.handle(IPC.chatResume, (_e, threadId: unknown, turnId: unknown, action: unknown) => {
+    if (typeof threadId === 'string' && typeof turnId === 'string' && (action === 'retry' || action === 'skip' || action === 'stop'))
+      orchestrator.resume(threadId, turnId, action)
+  })
+  /** Pasted (in-memory) attachments get a real file so CLIs can read them. */
+  const stageDir = join(app.getPath('userData'), 'staging')
+  try {
+    // housekeeping: drop staged files older than 3 days
+    for (const f of readdirSync(stageDir)) {
+      const p = join(stageDir, f)
+      if (Date.now() - statSync(p).mtimeMs > 3 * 86400_000) rmSync(p, { force: true })
+    }
+  } catch {
+    /* no staging dir yet */
+  }
+  ipcMain.handle(IPC.attachStage, (_e, name: unknown, data: unknown) => {
+    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) throw new Error('bad data')
+    const buf = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data)
+    if (buf.length > STAGE_MAX) throw new Error('附件太大（上限 50MB）')
+    mkdirSync(stageDir, { recursive: true })
+    const safe = String(name || 'file').replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(-80) || 'file'
+    const p = join(stageDir, `${randomBytes(4).toString('hex')}-${safe}`)
+    writeFileSync(p, buf)
+    return p
+  })
+
   // ---- system -----------------------------------------------------------------------
   ipcMain.handle(IPC.clipboardWrite, (_e, text: string) => clipboard.writeText(String(text)))
   ipcMain.handle(IPC.openExternal, (_e, url: string) => {
@@ -205,6 +271,23 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
     return r.canceled ? null : r.filePaths[0]
   })
+  /** Project folder for a thread: also allow-listed for agentmux-file:// image previews. */
+  ipcMain.handle(IPC.pickProject, async (_e, defaultPath?: string) => {
+    const w = getWindow()
+    const opts: Electron.OpenDialogOptions = {
+      title: '选择这个对话的项目文件夹',
+      buttonLabel: '选择',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultPath ? expandHome(defaultPath) : realHome
+    }
+    const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled) return null
+    allowRoot(r.filePaths[0])
+    return r.filePaths[0]
+  })
+  ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
+    if (typeof p === 'string' && isAllowedPath(p)) shell.showItemInFolder(p)
+  })
   ipcMain.handle(IPC.appInfo, (): AppInfo => {
     const s = shellEnvStatus()
     return {
@@ -218,5 +301,5 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }
   })
 
-  return { ptys, broadcastAll: broadcast }
+  return { ptys, orchestrator, broadcastAll: broadcast }
 }

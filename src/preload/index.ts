@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import {
   IPC,
   type AppInfo,
+  type ChatEvent,
+  type ModelList,
+  type RunRequest,
   type EnvPreview,
   type KindConfig,
   type LoginSuccessEvent,
@@ -58,6 +61,20 @@ const api = {
     onExit: (cb: (e: PtyExitEvent) => void) => subscribe(IPC.ptyExit, cb),
     onUrl: (cb: (e: PtyUrlEvent) => void) => subscribe(IPC.ptyUrl, cb)
   },
+  models: {
+    list: (id: ProfileId, refresh = false): Promise<ModelList> => ipcRenderer.invoke(IPC.modelsList, id, refresh)
+  },
+  chat: {
+    send: (req: RunRequest): Promise<void> => ipcRenderer.invoke(IPC.chatSend, req),
+    stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
+    resume: (threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): Promise<void> =>
+      ipcRenderer.invoke(IPC.chatResume, threadId, turnId, action),
+    onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb)
+  },
+  attach: {
+    /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */
+    stage: (name: string, data: ArrayBuffer): Promise<string> => ipcRenderer.invoke(IPC.attachStage, name, data)
+  },
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.openExternal, url),
@@ -65,6 +82,9 @@ const api = {
     pickDirectory: (defaultPath?: string, title?: string): Promise<string | null> =>
       ipcRenderer.invoke(IPC.pickDirectory, defaultPath, title),
     info: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appInfo),
+    /** Picks a thread's project folder (and allow-lists it for image previews). */
+    pickProject: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke(IPC.pickProject, defaultPath),
+    showInFolder: (p: string): Promise<void> => ipcRenderer.invoke(IPC.showInFolder, p),
     /** Absolute path of a File picked/dropped in the renderer ('' for in-memory files). */
     pathForFile: (file: File): string => webUtils.getPathForFile(file)
   }

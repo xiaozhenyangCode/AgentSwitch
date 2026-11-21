@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import { initProfiles } from './profiles'
 import { registerIpc } from './ipc'
 import { initShellEnv } from './shellEnv'
+import { handleFileProtocol, registerFileScheme } from './fileProtocol'
+
+registerFileScheme()
 
 let mainWindow: BrowserWindow | null = null
 
@@ -51,10 +54,14 @@ app.whenReady().then(async () => {
   let broadcastAll = (): void => {}
   await initShellEnv(join(app.getPath('userData'), 'shell-env.json'), () => broadcastAll())
   initProfiles()
+  handleFileProtocol()
   const ipc = registerIpc(() => mainWindow)
   const ptys = ipc.ptys
   broadcastAll = ipc.broadcastAll
-  app.on('before-quit', () => ptys.killAll())
+  app.on('before-quit', () => {
+    ipc.orchestrator.stopAll()
+    ptys.killAll()
+  })
 
   createWindow()
   app.on('activate', () => {

@@ -42,19 +42,25 @@ export function KindAvatar({ kind, size = 32 }: { kind: ProfileKind; size?: numb
 export function Segmented<T extends string>({
   value,
   options,
-  onChange
+  onChange,
+  size = 'md'
 }: {
   value: T
-  options: { value: T; label: string }[]
+  options: { value: T; label: string; title?: string }[]
   onChange: (v: T) => void
+  /** sm: compact, stretches to the container width (for popovers). */
+  size?: 'sm' | 'md'
 }) {
+  const sm = size === 'sm'
   return (
-    <div className="inline-flex rounded-[9px] bg-black/[0.05] p-[2px]">
+    <div className={`${sm ? 'flex w-full' : 'inline-flex'} rounded-[9px] bg-black/[0.05] p-[2px]`}>
       {options.map((o) => (
         <button
           key={o.value}
+          title={o.title}
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => onChange(o.value)}
-          className={`h-7 rounded-[7px] px-3.5 text-[13px] font-medium transition-all duration-150 ${
+          className={`${sm ? 'h-6 flex-auto px-1.5 text-[12px]' : 'h-7 px-3.5 text-[13px]'} rounded-[7px] font-medium whitespace-nowrap transition-all duration-150 ${
             value === o.value ? 'bg-white text-ink shadow-[0_1px_3px_rgba(0,0,0,0.12),0_0_0_0.5px_rgba(0,0,0,0.06)]' : 'text-ink-2 hover:text-ink'
           }`}
         >

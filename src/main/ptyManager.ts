@@ -80,6 +80,13 @@ export class PtyManager {
     this.buffers.delete(id)
   }
 
+  /** Appends text to a log-only session (e.g. `run:<account>` for chat runs). */
+  log(id: SessionId, text: string): void {
+    const b = this.buf(id)
+    if (!b.lastMode) b.lastMode = 'run'
+    this.emitData(id, text.replace(/\r?\n/g, '\r\n'), false)
+  }
+
   isRateLimited(id: SessionId): boolean {
     return this.buffers.get(id)?.rateLimited ?? false
   }

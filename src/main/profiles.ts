@@ -30,21 +30,23 @@ export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
     binary: 'claude',
     installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
     updateCommand: 'claude update',
-    models: ['fable', 'opus', 'sonnet', 'haiku']
+    models: ['opus', 'sonnet', 'fable', 'haiku']
   },
-  // Gemini = Google Antigravity CLI (`agy`). Presets are editable; `agy models` lists what the account can use.
+  // Gemini = Google Antigravity CLI (`agy`). Static fallback measured with `agy models` (2026-11-21);
+  // the live list is fetched per account (src/main/models.ts).
   gemini: {
     binary: 'agy',
     installCommand: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
     updateCommand: 'agy update',
-    models: ['gemini-3-pro', 'gemini-3-flash']
+    // agy bakes reasoning effort into the id; the UI folds these into one row per base model
+    models: ['gemini-4-neon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.8-flash'].flatMap((b) => ['low', 'medium', 'high'].map((e) => `${b}-${e}`))
   },
-  // codex -m/--model; presets are editable defaults.
+  // codex -m/--model. Static fallback measured from `codex debug models` (2026-11-21).
   codex: {
     binary: 'codex',
     installCommand: 'npm install -g @openai/codex',
     updateCommand: 'npm install -g @openai/codex@latest',
-    models: ['gpt-5-codex', 'gpt-5']
+    models: ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6-luna']
   }
 }
 
@@ -89,6 +91,7 @@ function detectExisting(): ProfileConfig[] {
       ...COMMAND_DEFAULTS[kind],
       extraEnv: {},
       defaultModel: '',
+      autoApprove: 'edits',
       createdAt: now + out.length
     })
 
@@ -135,6 +138,7 @@ export function initProfiles(): void {
         ...COMMAND_DEFAULTS.gemini,
         extraEnv: {},
         defaultModel: '',
+        autoApprove: 'edits',
         createdAt: Date.now()
       })
     }
@@ -144,7 +148,12 @@ export function initProfiles(): void {
   persist()
 }
 
-const withDefaults = (p: ProfileConfig): ProfileConfig => ({ ...p, defaultModel: p.defaultModel ?? '', extraEnv: { ...p.extraEnv } })
+const withDefaults = (p: ProfileConfig): ProfileConfig => ({
+  ...p,
+  defaultModel: p.defaultModel ?? '',
+  autoApprove: p.autoApprove === 'full' ? 'full' : 'edits',
+  extraEnv: { ...p.extraEnv }
+})
 
 export const listConfigs = (): ProfileConfig[] => store.profiles.map(withDefaults)
 
@@ -204,6 +213,7 @@ export function addProfile(kind: ProfileKind, name?: string): ProfileConfig {
     ...COMMAND_DEFAULTS[kind],
     extraEnv: {},
     defaultModel: '',
+    autoApprove: 'edits',
     createdAt: Date.now()
   }
   store.profiles.push(p)
@@ -217,6 +227,7 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   const { id: _i, kind: _k, imported: _m, createdAt: _c, ...rest } = patch
   if (rest.name !== undefined) rest.name = rest.name.trim() || store.profiles[i].name
   if (rest.defaultModel !== undefined) rest.defaultModel = rest.defaultModel.trim()
+  if (rest.autoApprove !== undefined && rest.autoApprove !== 'full') rest.autoApprove = 'edits'
   store.profiles[i] = { ...store.profiles[i], ...rest }
   persist()
   return getConfig(id)

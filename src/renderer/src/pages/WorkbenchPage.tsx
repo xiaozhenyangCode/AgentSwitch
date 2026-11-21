@@ -1,15 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { ProfileId, ProfileState } from '@shared/types'
+import type { ModelOption, ProfileId, ProfileState } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
-import { DEFAULT_HINT, effectiveModel, modelLabel } from '../lib/models'
+import { DEFAULT_HINT, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar } from '../components/common'
-import { Markdown } from '../components/Markdown'
-import { IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { EffortBar } from '../components/EffortBar'
+import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
+import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
+import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
   isThreadBusy,
   newThread,
+  resolvePause,
   send,
   stop,
   toAttachment,
@@ -72,7 +76,7 @@ function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileStat
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, kindState } = useApp()
+  const { byId, profiles, info } = useApp()
   const chat = useChat()
   const thread = activeThread(chat)
   const sorted = useSortedAccounts()
@@ -98,7 +102,7 @@ export function WorkbenchPage() {
     update({ driver: { profileId: id, model }, participants: participants.includes(id) ? participants : [...participants, id] })
 
   const pickProject = async () => {
-    const dir = await window.agentmux.sys.pickDirectory(ctx.projectDir ?? undefined, '选择这个对话的项目文件夹')
+    const dir = await window.agentmux.sys.pickProject(ctx.projectDir ?? undefined)
     if (dir) update({ projectDir: dir })
   }
 
@@ -128,7 +132,7 @@ export function WorkbenchPage() {
     if (!id) id = newThread({ ...ctx, participants: joined, driver: { profileId: driverP.id, model: driverModel } })
     else if (joined.length !== participants.length) updateThread(id, { participants: joined })
     stick.current = true
-    send(id, { text, attachments, driver: ref(driverP, driverModel), mentions })
+    send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir })
   }
 
   return (
@@ -156,7 +160,9 @@ export function WorkbenchPage() {
             <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
           ) : (
             <div className="space-y-6">
-              {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} />))}
+              <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
+                {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} />))}
+              </MarkdownBase.Provider>
             </div>
           )}
         </div>
@@ -165,7 +171,6 @@ export function WorkbenchPage() {
       <Composer
         driver={driverP ?? null}
         driverModel={driverModel}
-        presets={driverP ? (kindState(driverP.kind)?.models ?? []) : []}
         onDriver={setDriver}
         participants={participants}
         busy={isThreadBusy(thread)}
@@ -174,6 +179,25 @@ export function WorkbenchPage() {
         onSend={onSend}
         onStop={() => thread && stop(thread.id)}
       />
+      {thread?.pause && (
+        <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+          <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-[#FFF6E5] px-4 py-3 text-[13px] text-[#8A5300] shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
+            <IconAlert size={16} className="shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold">需要人工介入</span> · {thread.pause.reason}
+            </span>
+            <button className="h-7 shrink-0 rounded-full bg-[#FF9F0A] px-3 font-medium text-white hover:bg-[#F29100]" onClick={() => resolvePause(thread.id, 'retry')}>
+              再试一轮
+            </button>
+            <button className="h-7 shrink-0 rounded-full bg-white px-3 font-medium text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.08)] hover:bg-[#FAFAFB]" onClick={() => resolvePause(thread.id, 'skip')}>
+              跳过验收继续
+            </button>
+            <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => resolvePause(thread.id, 'stop')}>
+              结束本轮
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -279,7 +303,7 @@ function MentionChip({ a }: { a: AgentRef }) {
   return (
     <span className="mx-0.5 inline-flex items-center gap-1 rounded-md bg-white/25 px-1.5 align-baseline font-medium">
       @{a.name}
-      {a.model && <span className="opacity-75">· {modelLabel(a.model)}</span>}
+      {a.model && <span className="opacity-75">· {modelLabel(a.model, a.profileId)}</span>}
     </span>
   )
 }
@@ -360,9 +384,21 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-[14px] font-semibold text-ink">
         {msg.agent.name}
-        <span className="font-normal text-ink-2"> · {msg.agent.model ? modelLabel(msg.agent.model) : '默认模型'}</span>
+        <span className="font-normal text-ink-2">
+          {' · '}
+          {msg.agent.model || msg.actualModel ? modelLabel(msg.agent.model || msg.actualModel, msg.agent.profileId) : '默认模型'}
+        </span>
       </span>
       {msg.dispatchedBy && <span className="rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-ink-2">响应 {msg.dispatchedBy.name} 的调度</span>}
+      {msg.retry > 0 && !msg.review && <span className="rounded-full bg-[#FFF1DB] px-2 py-0.5 text-[11px] text-[#A05A00]">第 {msg.retry} 次重做</span>}
+      {msg.verdict && (
+        <span
+          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${msg.verdict.status === 'PASS' ? 'bg-[#E3F6E8] text-[#1A7F45]' : 'bg-[#FFF1DB] text-[#A05A00]'}`}
+          title={msg.verdict.reason}
+        >
+          {msg.verdict.status === 'PASS' ? '验收通过' : '验收打回'}
+        </span>
+      )}
       {streaming ? (
         <span className="flex items-center gap-1.5 text-[12px] text-accent">
           <Spinner size={11} /> 正在回复 {msg.startedAt ? fmtDur(Date.now() - msg.startedAt) : ''}
@@ -419,9 +455,22 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
               </div>
             )
           ) : (
-            <div className="text-[14px] text-ink-3">没有输出</div>
+            !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">没有文字输出</div>
           )}
           {streaming && msg.content && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-accent" />}
+          <Outputs msg={msg} />
+          {(msg.notices ?? []).map((n, i) => (
+            <div key={i} className="mt-2 flex items-start gap-2 rounded-xl bg-[#FFF6E5] px-3 py-2 text-[12px] leading-relaxed text-[#8A5300]">
+              <IconAlert size={14} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{n}</span>
+            </div>
+          ))}
+          {msg.error && (
+            <div className="mt-2 flex items-start gap-2 rounded-xl bg-[#FDECEC] px-3 py-2 text-[13px] leading-relaxed text-[#B42318]">
+              <IconAlert size={15} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 break-words whitespace-pre-wrap select-text">{msg.error}</span>
+            </div>
+          )}
         </div>
         {!streaming && msg.content && (
           <div className="mt-1 -ml-2 flex items-center">
@@ -432,6 +481,43 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Files the step produced that its text doesn't already show: images as previews, others as chips. */
+function Outputs({ msg }: { msg: AssistantMessage }) {
+  if (!msg.outputs.length) return null
+  // only skip images the text already embeds with ![..](..); plain links still get a preview
+  const shown = (p: string) => new RegExp('!\\[[^\\]]*\\]\\([^)]*' + fileBase(p).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)').test(msg.content)
+  const images = msg.outputs.filter((p) => IMAGE_RE.test(p) && !shown(p))
+  const files = msg.outputs.filter((p) => !IMAGE_RE.test(p))
+  if (!images.length && !files.length) return null
+  return (
+    <div className="mt-3">
+      {images.length > 0 && (
+        <div className="md">
+          {images.map((p) => (
+            <ZoomImage key={p} src={fileUrl(p)} alt={fileBase(p)} path={p} />
+          ))}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {files.slice(0, 12).map((p) => (
+            <button
+              key={p}
+              onClick={() => void window.agentmux.sys.showInFolder(p)}
+              className="flex h-7 max-w-[260px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2.5 text-[12px] text-ink-2 hover:bg-black/[0.07] hover:text-ink"
+              title={`${p}\n在 Finder 中显示`}
+            >
+              <IconFile size={13} className="shrink-0" />
+              <span className="truncate">{fileBase(p)}</span>
+            </button>
+          ))}
+          {files.length > 12 && <span className="px-1 text-[12px] leading-7 text-ink-3">等 {files.length} 个文件</span>}
+        </div>
+      )}
     </div>
   )
 }
@@ -535,45 +621,96 @@ function DriverPicker({ driver, onPick }: { driver: ProfileState | null; onPick:
   )
 }
 
-/** Sub-model capsule: 默认 / presets / custom name. */
-function ModelCapsule({ account, model, presets, onPick }: { account: ProfileState; model: string | null; presets: string[]; onPick: (m: string | null) => void }) {
+/** Two-line model row: full display name, raw id underneath in faint mono. */
+function ModelRow({ m, active, hot, onClick, onHover }: { m: { id: string; label: string }; active: boolean; hot?: boolean; onClick: () => void; onHover?: () => void }) {
+  return (
+    <button
+      onMouseEnter={onHover}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      title={m.id}
+      className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors ${active || hot ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] leading-5 break-words text-ink">{m.label}</span>
+        {m.label !== m.id && <span className="block truncate font-mono text-[10.5px] leading-4 text-ink-3/70">{m.id}</span>}
+      </span>
+      {active && <IconCheck size={15} className="shrink-0 text-accent" />}
+    </button>
+  )
+}
+
+/** Sub-model capsule: 默认 / account's live model list (+ effort) / custom name. */
+function ModelCapsule({ account, model, onPick }: { account: ProfileState; model: string | null; onPick: (m: string | null) => void }) {
   const [open, setOpen] = useState(false)
   const [custom, setCustom] = useState('')
+  const [more, setMore] = useState(false)
   const ref = useOutside<HTMLDivElement>(open, () => setOpen(false))
+  const { list, loading, refresh } = useModels(account.id)
   const eff = effectiveModel(model, account)
-  const options = [...new Set([...presets, ...(account.defaultModel ? [account.defaultModel] : []), ...(model ? [model] : [])])]
+  const cur = resolveSpec(eff, account.id)
+  const picked = resolveSpec(model, account.id).model
+  const all = list?.models ?? []
+  const known = new Set(all.map((m) => m.id))
+  const extra = [...new Set([account.defaultModel, model].map((m) => resolveSpec(m, account.id).model).filter((m): m is string => !!m && !known.has(m)))].map((id) => ({
+    id,
+    label: id,
+    group: 'main' as const
+  }))
+  const main = [...all.filter((m) => m.group === 'main'), ...extra]
+  const rest = all.filter((m) => m.group === 'more')
   const pick = (m: string | null) => {
     onPick(m)
     setOpen(false)
     setCustom('')
   }
+  const row = (m: ModelOption | { id: string; label: string }) => (
+    // switching model keeps the chosen effort when the new model supports it
+    <ModelRow key={m.id} m={m} active={picked === m.id} onClick={() => pick(withEffort('efforts' in m ? m : null, m.id, cur.effort))} />
+  )
+  const SOURCE = { catalog: 'CLI 模型目录', command: 'CLI 实时查询', cache: '本地缓存', static: '内置列表' }
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`flex h-7 items-center gap-1 rounded-full bg-black/[0.045] pr-2 pl-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : ''}`}
-        title="子模型（对应 CLI 的 --model 参数）"
+        className={`flex h-7 max-w-[260px] items-center gap-1 rounded-full bg-black/[0.045] pr-2 pl-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : ''}`}
+        title="子模型与思考强度（--model / effort）"
       >
-        {eff ? modelLabel(eff) : '默认'}
-        <IconChevronDown size={12} className="text-ink-3" />
+        <span className="truncate">{eff ? modelLabel(eff, account.id) : '默认'}</span>
+        <IconChevronDown size={12} className="shrink-0 text-ink-3" />
       </button>
       {open && (
-        <div className={popover + ' absolute bottom-9 left-0 z-30 w-60'}>
-          <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">子模型 · {account.name}</div>
-          <button onClick={() => pick(null)} className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors ${!model ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[14px] text-ink">默认</span>
-              <span className="block truncate text-[11px] text-ink-3">{account.defaultModel ? `账号默认：${modelLabel(account.defaultModel)}` : DEFAULT_HINT[account.kind]}</span>
-            </span>
-            {!model && <IconCheck size={15} className="text-accent" />}
-          </button>
-          {options.map((m) => (
-            <button key={m} onClick={() => pick(m)} className={`flex h-9 w-full items-center gap-2 rounded-[10px] px-2.5 text-left transition-colors ${model === m ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
-              <span className="flex-1 text-[14px] text-ink">{modelLabel(m)}</span>
-              {modelLabel(m) !== m && <span className="font-mono text-[11px] text-ink-3">{m}</span>}
-              {model === m && <IconCheck size={15} className="text-accent" />}
+        <div className={popover + ' absolute bottom-9 left-0 z-30 flex max-h-[480px] w-80 flex-col'}>
+          <div className="flex items-center gap-2 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
+            <span className="min-w-0 flex-1 truncate">子模型 · {account.name}</span>
+            <button onClick={refresh} disabled={loading} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink disabled:opacity-60" title="重新从 CLI 获取模型列表">
+              {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} 刷新
             </button>
-          ))}
+          </div>
+          <EffortBar opt={cur.opt} effort={cur.effort} onChange={(e) => cur.model && onPick(withEffort(cur.opt, cur.model, e))} />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <button onClick={() => pick(null)} className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors ${!model ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] leading-5 text-ink">默认</span>
+                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? `账号默认：${modelLabel(account.defaultModel, account.id)}` : DEFAULT_HINT[account.kind]}</span>
+              </span>
+              {!model && <IconCheck size={15} className="text-accent" />}
+            </button>
+            {main.map(row)}
+            {rest.length > 0 && (
+              <button onClick={() => setMore((x) => !x)} className="flex h-8 w-full items-center gap-1 rounded-[10px] px-2.5 text-[12px] text-ink-3 hover:bg-black/[0.04] hover:text-ink-2">
+                {more ? '收起' : `更多模型（${rest.length}）`}
+                <IconChevronDown size={12} className={more ? 'rotate-180' : ''} />
+              </button>
+            )}
+            {more && rest.map(row)}
+          </div>
+          {list && (
+            <div className="px-2.5 pt-1 text-[11px] text-ink-3" title={list.error}>
+              来源：{SOURCE[list.source]}
+              {list.error ? ' · 刷新失败' : ''}
+            </div>
+          )}
           <div className="mx-2 my-1 h-px bg-hairline" />
           <div className="px-1 pb-0.5">
             <input
@@ -585,7 +722,7 @@ function ModelCapsule({ account, model, presets, onPick }: { account: ProfileSta
                   pick(custom.trim())
                 }
               }}
-              placeholder="自定义模型名，回车使用"
+              placeholder="自定义模型名，回车使用（可写 模型:effort）"
               className="h-8 w-full rounded-lg bg-fill px-2.5 font-mono text-[12px] text-ink outline-none placeholder:font-sans placeholder:text-ink-3 focus:ring-2 focus:ring-accent/30"
             />
           </div>
@@ -598,7 +735,6 @@ function ModelCapsule({ account, model, presets, onPick }: { account: ProfileSta
 function Composer({
   driver,
   driverModel,
-  presets,
   onDriver,
   participants,
   busy,
@@ -609,7 +745,6 @@ function Composer({
 }: {
   driver: ProfileState | null
   driverModel: string | null
-  presets: string[]
   onDriver: (id: ProfileId, model: string | null) => void
   participants: ProfileId[]
   busy: boolean
@@ -618,7 +753,8 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void
   onStop: () => void
 }) {
-  const { toast, navigate, kindState } = useApp()
+  const { toast, navigate } = useApp()
+  useModelsVersion()
   const accounts = useSortedAccounts()
   const [text, setText] = useState('')
   const [atts, setAtts] = useState<Attachment[]>([])
@@ -670,7 +806,17 @@ function Composer({
     return (byName.length ? byName : scored).sort((a, b) => a.s - b.s || a.i - b.i).map((x) => x.p)
   }, [mention, accounts, participants])
 
-  const subOptions = (p: ProfileState): (string | null)[] => [null, ...new Set([...(kindState(p.kind)?.models ?? []), ...(p.defaultModel ? [p.defaultModel] : [])])]
+  // preload model lists for the @ menu's sub-model column
+  useEffect(() => {
+    for (const p of accounts) if (isReady(p) && !getModelList(p.id)) void loadModels(p.id)
+  }, [accounts])
+  const subOptions = (p: ProfileState): (string | null)[] => {
+    const main = (getModelList(p.id)?.models ?? []).filter((m) => m.group === 'main').map((m) => m.id)
+    const def = resolveSpec(p.defaultModel, p.id).model
+    return [null, ...new Set([...(def ? [def] : []), ...main])].slice(0, 12)
+  }
+  // effort chosen in the @ sub-model column (applies to the inserted model if it supports it)
+  const [subEffort, setSubEffort] = useState<string | null>(null)
 
   const syncMention = (value: string, caret: number) => {
     const m = /(^|\s)@([^\s@]{0,24})$/.exec(value.slice(0, caret))
@@ -678,8 +824,11 @@ function Composer({
   }
 
   /** Replaces `@query` with `@Name` or `@Name(model)` followed by a space. */
-  const insertMention = (p: ProfileState, model: string | null) => {
+  const insertMention = (p: ProfileState, picked: string | null) => {
     if (!mention) return
+    const r = resolveSpec(picked, p.id)
+    const model = r.model ? withEffort(r.opt, r.model, subEffort) : null
+    setSubEffort(null)
     const caret = ta.current?.selectionStart ?? text.length
     const token = `@${p.name}${model ? `(${model})` : ''} `
     const next = text.slice(0, mention.start) + token + text.slice(caret)
@@ -778,7 +927,7 @@ function Composer({
                         className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-ink-2 hover:bg-black/[0.09]"
                         title="选择子模型"
                       >
-                        {p.defaultModel ? modelLabel(p.defaultModel) : '默认'} ›
+                        {p.defaultModel ? modelLabel(p.defaultModel, p.id) : '默认'} ›
                       </span>
                     }
                   />
@@ -787,22 +936,33 @@ function Composer({
                 <div className="px-2.5 py-2 text-[13px] text-ink-3">没有匹配的已就绪账号</div>
               )}
             </div>
-            {mention.sub !== null && matches[mention.sub] && (
-              <div className={popover + ' w-52'}>
-                <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{matches[mention.sub].name} 的子模型</div>
-                {subOptions(matches[mention.sub]).map((m, j) => (
-                  <div
-                    key={m ?? '_'}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => insertMention(matches[mention.sub!], m)}
-                    className={`flex h-9 cursor-default items-center gap-2 rounded-[10px] px-2.5 ${j === mention.subIndex ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}
-                  >
-                    <span className="flex-1 text-[14px] text-ink">{m ? modelLabel(m) : '默认'}</span>
-                    {m && modelLabel(m) !== m && <span className="font-mono text-[11px] text-ink-3">{m}</span>}
+            {mention.sub !== null && matches[mention.sub] && (() => {
+              const p = matches[mention.sub]
+              const opts = subOptions(p)
+              const hot = opts[mention.subIndex]
+              const hotOpt = hot ? (findModel(hot, p.id)?.opt ?? null) : null
+              return (
+                <div className={popover + ' flex max-h-[400px] w-80 flex-col'}>
+                  <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{p.name} 的子模型</div>
+                  <EffortBar opt={hotOpt} effort={subEffort} onChange={setSubEffort} />
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    {opts.map((m, j) => {
+                      const o = m ? findModel(m, p.id)?.opt : null
+                      return (
+                        <ModelRow
+                          key={m ?? '_'}
+                          m={m ? { id: m, label: o?.label.replace(/（最新）$/, '') ?? m } : { id: '默认', label: '默认' }}
+                          active={false}
+                          hot={j === mention.subIndex}
+                          onClick={() => insertMention(p, m)}
+                          onHover={() => setMention((x) => x && { ...x, subIndex: j })}
+                        />
+                      )
+                    })}
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              )
+            })()}
           </div>
         )}
 
@@ -865,7 +1025,7 @@ function Composer({
 
           <div className="flex items-center gap-1 px-3 pt-1 pb-3">
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
-            {driver && <ModelCapsule account={driver} model={driverModel} presets={presets} onPick={(m) => onDriver(driver.id, m)} />}
+            {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
             <button
               onClick={() => fileInput.current?.click()}

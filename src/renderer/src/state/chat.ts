@@ -1,17 +1,16 @@
 import { useSyncExternalStore } from 'react'
-import type { ProfileId, ProfileKind } from '@shared/types'
-import { mockConversation } from '../lib/mockReply'
+import type { ChatEvent, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
 
 /**
- * Threads of one unified multi-model conversation each. Module-level store so it
- * survives page switches; persisted to localStorage. Replies are SIMULATED (streamed
- * mock markdown) until the real CLI engine lands in Phase 2.
+ * Threads: one unified multi-model conversation each. Module-level store (survives page
+ * switches), persisted to localStorage. Replies come from real CLI runs in the main process
+ * (src/main/orchestrator.ts) as ChatEvents.
  */
 
 export interface Attachment {
   id: string
   name: string
-  /** Absolute path on disk (via webUtils), null for pasted images. */
+  /** Absolute path on disk (dropped files, or staged copies of pasted images). */
   path: string | null
   size: number
   isImage: boolean
@@ -30,6 +29,7 @@ export interface AgentRef {
 export interface UserMessage {
   role: 'user'
   id: string
+  turnId: string
   text: string
   attachments: Attachment[]
   /** Driver account chosen in the composer. */
@@ -47,13 +47,24 @@ export interface Activity {
 export interface AssistantMessage {
   role: 'assistant'
   id: string
+  turnId: string
   agent: AgentRef
+  /** Model the CLI reported it actually used. */
+  actualModel: string | null
   /** Set when this reply was dispatched by the driver rather than asked directly. */
   dispatchedBy: AgentRef | null
   status: 'queued' | 'streaming' | 'done' | 'stopped' | 'error'
   /** Markdown. */
   content: string
   activity: Activity[]
+  /** Absolute paths of files this step produced. */
+  outputs: string[]
+  error: string | null
+  /** Non-fatal warnings (e.g. auto-denied tool calls). */
+  notices: string[]
+  review: boolean
+  retry: number
+  verdict: { status: 'PASS' | 'REJECT'; reason: string } | null
   startedAt: number | null
   endedAt: number | null
 }
@@ -64,10 +75,16 @@ export interface Thread {
   id: string
   title: string
   projectDir: string | null
+  /** Folder runs actually use (projectDir, or AgentMux's private workspace). */
+  workdir: string | null
   /** Accounts allowed to take part in this thread. */
   participants: ProfileId[]
   driver: { profileId: ProfileId | null; model: string | null }
   messages: Message[]
+  /** Running turn, if any. */
+  activeTurn: string | null
+  /** Review gave up after max retries; waiting for the user. */
+  pause: { turnId: string; reason: string } | null
   createdAt: number
   updatedAt: number
 }
@@ -77,19 +94,23 @@ interface ChatState {
   activeId: string | null
 }
 
-const LS_KEY = 'agentmux.threads.v1'
+const LS_KEY = 'agentmux.threads.v2'
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
 
 function load(): ChatState {
   try {
     const v = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as ChatState
-    for (const t of v.threads)
+    // a reload loses the live event stream: settle anything that was in flight
+    for (const t of v.threads) {
+      t.activeTurn = null
+      t.pause = null
       for (const m of t.messages)
         if (m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')) {
           m.status = 'stopped'
-          m.endedAt = m.endedAt ?? now()
+          m.endedAt = m.endedAt ?? (m.startedAt ? now() : null)
         }
+    }
     return v
   } catch {
     return { threads: [], activeId: null }
@@ -131,13 +152,12 @@ export function useChat(): ChatState {
 }
 
 export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
-export const isThreadBusy = (t: Thread | null) =>
-  !!t && t.messages.some((m) => m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued'))
+export const isThreadBusy = (t: Thread | null) => !!t?.activeTurn
 
 // ---- thread management -----------------------------------------------------------------
 
 export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'>): string {
-  const t: Thread = { id: uid(), title: '新对话', messages: [], createdAt: now(), updatedAt: now(), ...init }
+  const t: Thread = { id: uid(), title: '新对话', workdir: init.projectDir, messages: [], activeTurn: null, pause: null, createdAt: now(), updatedAt: now(), ...init }
   set({ threads: [t, ...state.threads], activeId: t.id })
   return t.id
 }
@@ -145,94 +165,191 @@ export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'dr
 export const selectThread = (id: string) => set({ ...state, activeId: id })
 export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim() }))
 export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir' | 'participants' | 'driver'>>) =>
-  patchThread(id, (t) => ({ ...t, ...patch }))
+  patchThread(id, (t) => ({ ...t, ...patch, workdir: patch.projectDir !== undefined ? patch.projectDir : t.workdir }))
 
 export function deleteThread(id: string) {
-  if (runs.get(id)) stop(id)
-  const threads = state.threads.filter((t) => t.id !== id)
+  const t = state.threads.find((x) => x.id === id)
+  if (t?.activeTurn) void window.agentmux.chat.stop(id)
+  const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
 }
 
-// ---- sending (simulated orchestration) ------------------------------------------------------
+// ---- sending ---------------------------------------------------------------------------------
 
-/** Pending timers per thread so a thread's run can be stopped independently. */
-const runs = new Map<string, { timer: ReturnType<typeof setTimeout> | null; cancelled: boolean }>()
+const TRANSCRIPT_MSGS = 10
+const TRANSCRIPT_EACH = 800
 
-export function send(threadId: string, input: { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[] }) {
+function transcriptOf(t: Thread): string {
+  return t.messages
+    .slice(-TRANSCRIPT_MSGS)
+    .map((m) => {
+      if (m.role === 'user') return `用户：${m.text}${m.attachments.length ? `（附件 ${m.attachments.map((a) => a.name).join('、')}）` : ''}`
+      if (!m.content.trim()) return null
+      const body = plainExcerpt(m.content)
+      return `${m.agent.name}：${body.length > TRANSCRIPT_EACH ? body.slice(0, TRANSCRIPT_EACH) + '…' : body}`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+const errorMessage = (turnId: string, agent: AgentRef, error: string): AssistantMessage => ({
+  role: 'assistant',
+  id: uid(),
+  turnId,
+  agent,
+  actualModel: null,
+  dispatchedBy: null,
+  status: 'error',
+  content: '',
+  activity: [],
+  outputs: [],
+  error,
+  notices: [],
+  review: false,
+  retry: 0,
+  verdict: null,
+  startedAt: now(),
+  endedAt: now()
+})
+
+export function send(
+  threadId: string,
+  input: { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[]; participants: ProfileId[]; projectDir: string | null }
+): void {
   const thread = state.threads.find((t) => t.id === threadId)
-  if (!thread) return
-  const user: UserMessage = { role: 'user', id: uid(), createdAt: now(), ...input }
-  const plan = mockConversation(user, thread.messages)
-  const replies: AssistantMessage[] = plan.map((p) => ({
-    role: 'assistant',
+  if (!thread || thread.activeTurn) return
+  const turnId = uid() + uid()
+  const user: UserMessage = {
+    role: 'user',
     id: uid(),
-    agent: p.agent,
-    dispatchedBy: p.dispatchedBy,
-    status: 'queued',
-    content: '',
-    activity: [],
-    startedAt: null,
-    endedAt: null
-  }))
+    turnId,
+    text: input.text,
+    attachments: input.attachments,
+    driver: input.driver,
+    mentions: input.mentions,
+    createdAt: now()
+  }
   const firstTurn = !thread.messages.some((m) => m.role === 'user')
+  const transcript = transcriptOf(thread)
   patchThread(threadId, (t) => ({
     ...t,
     title: firstTurn ? titleFrom(input.text) : t.title,
-    messages: [...t.messages, user, ...replies],
+    messages: [...t.messages, user],
+    activeTurn: turnId,
+    pause: null,
     updatedAt: now()
   }))
-
-  // stream replies one after another, like speakers in a group chat
-  const run = { timer: null as ReturnType<typeof setTimeout> | null, cancelled: false }
-  runs.set(threadId, run)
-  let r = 0
-  let a = 0
-  let pos = 0
-  const tick = () => {
-    if (run.cancelled) return
-    if (r >= replies.length) {
-      runs.delete(threadId)
-      patchThread(threadId, (t) => ({ ...t, updatedAt: now() }))
-      return
-    }
-    const id = replies[r].id
-    const { activity, markdown } = plan[r]
-    if (a === 0 && pos === 0) patchMsg(threadId, id, (m) => ({ ...m, status: 'streaming', startedAt: now() }))
-    if (a < activity.length) {
-      const item = activity[a++]
-      patchMsg(threadId, id, (m) => ({ ...m, activity: [...m.activity, item] }))
-      run.timer = setTimeout(tick, 320 + Math.random() * 280)
-      return
-    }
-    if (pos < markdown.length) {
-      const chunk = markdown.slice(pos, pos + 6 + Math.floor(Math.random() * 18))
-      pos += chunk.length
-      patchMsg(threadId, id, (m) => ({ ...m, content: m.content + chunk }))
-      run.timer = setTimeout(tick, 18 + Math.random() * 26)
-      return
-    }
-    patchMsg(threadId, id, (m) => ({ ...m, status: 'done', endedAt: now() }))
-    r++
-    a = pos = 0
-    run.timer = setTimeout(tick, 500)
-  }
-  run.timer = setTimeout(tick, 400)
+  const attachments: RunAttachment[] = input.attachments.filter((a) => a.path).map((a) => ({ name: a.name, path: a.path!, isImage: a.isImage }))
+  window.agentmux.chat
+    .send({
+      threadId,
+      turnId,
+      projectDir: input.projectDir,
+      text: input.text,
+      attachments,
+      driver: { profileId: input.driver.profileId, model: input.driver.model },
+      mentions: input.mentions.map((m) => ({ profileId: m.profileId, model: m.model })),
+      participants: input.participants,
+      transcript
+    })
+    .catch((e: unknown) => {
+      const msg = String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+      patchThread(threadId, (t) => ({
+        ...t,
+        messages: [...t.messages, errorMessage(turnId, input.driver, msg)],
+        activeTurn: t.activeTurn === turnId ? null : t.activeTurn
+      }))
+    })
 }
 
 export function stop(threadId: string) {
-  const run = runs.get(threadId)
-  if (run) {
-    run.cancelled = true
-    if (run.timer) clearTimeout(run.timer)
-    runs.delete(threadId)
-  }
-  patchThread(threadId, (t) => ({
-    ...t,
-    messages: t.messages.map((m) =>
-      m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued') ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null } : m
-    )
-  }))
+  void window.agentmux.chat.stop(threadId)
 }
+
+export function resolvePause(threadId: string, action: 'retry' | 'skip' | 'stop') {
+  const t = state.threads.find((x) => x.id === threadId)
+  if (!t?.pause) return
+  const turnId = t.pause.turnId
+  patchThread(threadId, (x) => ({ ...x, pause: null }))
+  void window.agentmux.chat.resume(threadId, turnId, action)
+}
+
+// ---- events from the main process ------------------------------------------------------------
+
+function onEvent(e: ChatEvent) {
+  if (!state.threads.some((t) => t.id === e.threadId)) return
+  switch (e.kind) {
+    case 'turn-start':
+      return patchThread(e.threadId, (t) => ({ ...t, workdir: e.cwd }))
+    case 'step-add': {
+      const msg: AssistantMessage = {
+        role: 'assistant',
+        id: e.stepId,
+        turnId: e.turnId,
+        agent: { profileId: e.profileId, name: e.name, kind: e.profileKind, model: e.model },
+        actualModel: null,
+        dispatchedBy: e.dispatchedBy ? { profileId: e.dispatchedBy.profileId, name: e.dispatchedBy.name, kind: e.dispatchedBy.profileKind, model: null } : null,
+        status: 'queued',
+        content: '',
+        activity: [],
+        outputs: [],
+        error: null,
+        notices: [],
+        review: e.review,
+        retry: e.retry,
+        verdict: null,
+        startedAt: null,
+        endedAt: null
+      }
+      return patchThread(e.threadId, (t) => {
+        const at = e.after ? t.messages.findIndex((m) => m.id === e.after) : -1
+        const messages = at < 0 ? [...t.messages, msg] : [...t.messages.slice(0, at + 1), msg, ...t.messages.slice(at + 1)]
+        return { ...t, messages }
+      })
+    }
+    case 'step-start':
+      return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: 'streaming', startedAt: now() }))
+    case 'agent': {
+      const ev = e.event
+      return patchMsg(e.threadId, e.stepId, (m) => {
+        switch (ev.t) {
+          case 'text':
+            return { ...m, content: m.content + ev.delta }
+          case 'activity':
+            return { ...m, activity: [...m.activity, { type: ev.type, target: ev.target }] }
+          case 'output':
+            return m.outputs.includes(ev.path) ? m : { ...m, outputs: [...m.outputs, ev.path] }
+          case 'session':
+            return { ...m, actualModel: ev.model }
+          case 'error':
+            return { ...m, error: ev.message }
+          case 'notice':
+            return { ...m, notices: [...(m.notices ?? []), ev.message] }
+          case 'rate_limited':
+            return { ...m, error: m.error ?? '账号触发了用量限制（rate limit）' }
+        }
+      })
+    }
+    case 'step-end':
+      return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null }))
+    case 'paused':
+      return patchThread(e.threadId, (t) => ({ ...t, pause: { turnId: e.turnId, reason: e.reason } }))
+    case 'turn-end':
+      return patchThread(e.threadId, (t) => ({
+        ...t,
+        activeTurn: t.activeTurn === e.turnId ? null : t.activeTurn,
+        pause: t.pause?.turnId === e.turnId ? null : t.pause,
+        updatedAt: now(),
+        messages: t.messages.map((m) =>
+          m.role === 'assistant' && m.turnId === e.turnId && (m.status === 'queued' || m.status === 'streaming')
+            ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null }
+            : m
+        )
+      }))
+  }
+}
+
+window.agentmux.chat.onEvent(onEvent)
 
 const titleFrom = (text: string) => {
   const t = text
@@ -248,6 +365,7 @@ const titleFrom = (text: string) => {
 /** One-line plain-text preview of markdown. */
 export const plainExcerpt = (md: string): string =>
   md
+    .replace(/```agentmux:dispatch[\s\S]*?(```|$)/g, ' ')
     .replace(/```[\s\S]*?(```|$)/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -282,12 +400,10 @@ function thumbnail(file: File): Promise<string | null> {
 
 export async function toAttachment(file: File): Promise<Attachment> {
   const isImage = file.type.startsWith('image/') || IMAGE_RE.test(file.name)
-  return {
-    id: uid(),
-    name: file.name || 'image.png',
-    path: window.agentmux.sys.pathForFile(file) || null,
-    size: file.size,
-    isImage,
-    thumb: isImage ? await thumbnail(file) : null
-  }
+  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+  const name = file.name || `pasted-${Date.now()}.${ext}`
+  let path = window.agentmux.sys.pathForFile(file) || null
+  // pasted images live only in memory: stage a real file so the CLIs can read it
+  if (!path) path = await window.agentmux.attach.stage(name, await file.arrayBuffer()).catch(() => null)
+  return { id: uid(), name, path, size: file.size, isImage, thumb: isImage ? await thumbnail(file) : null }
 }

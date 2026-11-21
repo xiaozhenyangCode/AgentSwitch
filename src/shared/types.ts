@@ -57,8 +57,92 @@ export interface ProfileConfig {
   extraEnv: Record<string, string>
   /** Default sub-model id passed as `--model <id>`; '' = CLI's own default. */
   defaultModel: string
+  /**
+   * Auto-approval for chat runs.
+   * edits: edits confined to the project (claude acceptEdits / codex workspace-write / agy accept-edits)
+   * full:  bypass all permission prompts and sandboxing
+   */
+  autoApprove: AutoApprove
   createdAt: number
 }
+
+export type AutoApprove = 'edits' | 'full'
+
+// ---- sub-models ------------------------------------------------------------------
+
+export interface ModelOption {
+  id: string
+  label: string
+  /** 'main' = recommended, 'more' = older / niche. */
+  group: 'main' | 'more'
+  /** Reasoning-effort levels the model accepts (low → high order); absent = no effort control. */
+  efforts?: string[]
+  /** Level used when the spec carries no effort (agy needs one to build the real id). */
+  defaultEffort?: string
+}
+
+export interface ModelList {
+  profileId: ProfileId
+  models: ModelOption[]
+  /** catalog: CLI's own local cache file; command: live CLI query; cache: AgentMux cache; static: built-in list. */
+  source: 'catalog' | 'command' | 'cache' | 'static'
+  fetchedAt: number
+  /** Last refresh error, if the list came from a fallback. */
+  error?: string
+}
+
+// ---- chat runs ---------------------------------------------------------------------
+
+export interface RunAgentRef {
+  profileId: ProfileId
+  /** null -> account default -> CLI default. */
+  model: string | null
+}
+
+export interface RunAttachment {
+  name: string
+  /** Absolute path on disk (dropped files, or staged copies of pasted images). */
+  path: string
+  isImage: boolean
+}
+
+export interface RunRequest {
+  threadId: string
+  turnId: string
+  /** null -> AgentMux creates a private workspace for the thread. */
+  projectDir: string | null
+  text: string
+  attachments: RunAttachment[]
+  driver: RunAgentRef
+  /** @-mentions in text order (may include the driver). */
+  mentions: RunAgentRef[]
+  /** Accounts allowed to take part (driver may dispatch to these). */
+  participants: ProfileId[]
+  /** Plain-text recap of the recent conversation, oldest first. */
+  transcript: string
+}
+
+/** Normalised event from any CLI adapter. */
+export type AgentEvent =
+  | { t: 'session'; id: string; model: string | null }
+  | { t: 'text'; delta: string }
+  | { t: 'activity'; type: 'read' | 'write' | 'run' | 'search'; target: string }
+  | { t: 'output'; path: string }
+  | { t: 'rate_limited' }
+  /** Non-fatal: e.g. tool calls auto-denied by the permission level. */
+  | { t: 'notice'; message: string }
+  | { t: 'error'; message: string }
+
+export type StepStatus = 'done' | 'error' | 'stopped'
+
+export type ChatEvent =
+  | { kind: 'turn-start'; threadId: string; turnId: string; cwd: string }
+  | { kind: 'step-add'; threadId: string; turnId: string; stepId: string; profileId: ProfileId; name: string; profileKind: ProfileKind; model: string | null; dispatchedBy: { profileId: ProfileId; name: string; profileKind: ProfileKind } | null; retry: number; review: boolean; after: string | null }
+  | { kind: 'step-start'; threadId: string; turnId: string; stepId: string }
+  | { kind: 'agent'; threadId: string; turnId: string; stepId: string; event: AgentEvent }
+  | { kind: 'step-end'; threadId: string; turnId: string; stepId: string; status: StepStatus; verdict?: { status: 'PASS' | 'REJECT'; reason: string } }
+  | { kind: 'paused'; threadId: string; turnId: string; reason: string }
+  | { kind: 'turn-end'; threadId: string; turnId: string; status: 'done' | 'stopped' | 'error' }
 
 export interface ProfileState extends ProfileConfig {
   status: ProfileStatus
@@ -163,6 +247,14 @@ export const IPC = {
   openExternal: 'shell:openExternal',
   openPath: 'shell:openPath',
   pickDirectory: 'dialog:pickDirectory',
+  pickProject: 'dialog:pickProject',
+  showInFolder: 'shell:showInFolder',
+  modelsList: 'models:list',
+  attachStage: 'attach:stage',
+  chatSend: 'chat:send',
+  chatStop: 'chat:stop',
+  chatResume: 'chat:resume',
+  chatEvent: 'chat:event',
   appInfo: 'app:info'
 } as const
 

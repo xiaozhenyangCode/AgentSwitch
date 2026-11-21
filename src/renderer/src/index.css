@@ -184,6 +184,12 @@ label {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 10px 24px rgba(0, 0, 0, 0.12);
 }
 .md-code pre code.language-text { white-space: pre-wrap; word-break: break-word; }
+.md-figure-broken { cursor: default; }
+.md-broken {
+  display: flex; align-items: center; justify-content: center;
+  width: 200px; height: 120px; border-radius: 18px;
+  background: rgba(0, 0, 0, 0.04); color: var(--ink-3); font-size: 12px;
+}
 .md-caption { font-size: 12px; color: var(--ink-2); }
 .md-code {
   margin: 0 0 14px;
