@@ -648,25 +648,26 @@ function Composer({
     ta.current?.focus()
   }, [threadId])
 
-  // @ candidates: ready accounts (participants first); name / kind prefix beats CLI-name match
+  // @ candidates: ready accounts (participants first). Display name wins; the underlying CLI
+  // name ("Claude Code") is only a fallback when nothing matches by name, so `@cod` → Codex only.
   const matches = useMemo(() => {
     if (!mention) return []
     const q = mention.query.toLowerCase()
     const score = (p: ProfileState) => {
       const name = p.name.toLowerCase()
       const kind = KIND_META[p.kind].name.toLowerCase()
-      if (!q) return 0
-      if (name.startsWith(q) || kind.startsWith(q)) return 0
-      if (name.includes(q) || kind.includes(q)) return 1
-      if (KIND_META[p.kind].cli.toLowerCase().includes(q)) return 2
+      if (!q || name.startsWith(q)) return 0
+      if (kind.startsWith(q)) return 1
+      if (name.includes(q) || kind.includes(q)) return 2
+      if (KIND_META[p.kind].cli.toLowerCase().includes(q)) return 9
       return -1
     }
-    return accounts
+    const scored = accounts
       .filter(isReady)
       .map((p, i) => ({ p, s: score(p), i: i - (participants.includes(p.id) ? 1000 : 0) }))
       .filter((x) => x.s >= 0)
-      .sort((a, b) => a.s - b.s || a.i - b.i)
-      .map((x) => x.p)
+    const byName = scored.filter((x) => x.s < 9)
+    return (byName.length ? byName : scored).sort((a, b) => a.s - b.s || a.i - b.i).map((x) => x.p)
   }, [mention, accounts, participants])
 
   const subOptions = (p: ProfileState): (string | null)[] => [null, ...new Set([...(kindState(p.kind)?.models ?? []), ...(p.defaultModel ? [p.defaultModel] : [])])]
