@@ -146,6 +146,72 @@ export interface ActivityDetail {
   diff?: string
 }
 
+// ---- usage & quota ---------------------------------------------------------------------------
+
+export interface QuotaWindow {
+  /** 0–100 */
+  percent: number
+  /** ms epoch; null if unknown */
+  resetsAt: number | null
+  minutes: number
+}
+
+export interface QuotaReport {
+  fiveHour: QuotaWindow | null
+  sevenDay: QuotaWindow | null
+  /** The CLI says requests are currently rejected. */
+  limited: boolean
+  plan: string | null
+}
+
+/** agy: models are grouped; each group has its own 5h / weekly buckets. */
+export interface QuotaGroup {
+  /** Bucket id prefix: 'gemini' | '3p' | 'gemini-argon-wtu' … */
+  key: string
+  name: string
+  /** Model display names in this group (from the group description). */
+  models: string[]
+  fiveHour: QuotaWindow | null
+  sevenDay: QuotaWindow | null
+}
+
+export interface AccountQuota extends QuotaReport {
+  /** When the data was produced (event time), ms. */
+  fetchedAt: number
+  source: 'claude-stream' | 'codex-rollout' | 'agy-usage'
+  /** agy only; fiveHour/sevenDay above mirror the default (Gemini) group. */
+  groups?: QuotaGroup[]
+}
+
+export interface UsageTotals {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  reasoning: number
+  /** Only from AgentMux's own runs (CLI-reported total_cost_usd). */
+  costUsd: number
+  /** AgentMux runs counted. */
+  runs: number
+}
+
+export interface AccountUsage {
+  today: UsageTotals
+  week: UsageTotals
+  total: UsageTotals
+  quota: AccountQuota | null
+  /** Last time a run hit a rate limit (ms). */
+  limitedAt: number | null
+}
+
+export interface UsageSnapshot {
+  accounts: Record<ProfileId, AccountUsage>
+  backfill: 'idle' | 'running' | 'done'
+  /** Days covered by the Claude history backfill. */
+  claudeDays: number
+  updatedAt: number
+}
+
 export interface Usage {
   /** Uncached input tokens. */
   input?: number
@@ -169,6 +235,8 @@ export type AgentEvent =
    */
   | { t: 'activity'; id?: string; type: ActivityType; target: string; status?: 'running' | 'done' | 'error'; detail?: ActivityDetail }
   | { t: 'usage'; usage: Usage }
+  /** Account quota windows reported by the CLI (claude rate_limit_event). Consumed by the main process. */
+  | { t: 'quota'; quota: QuotaReport }
   /** Structured CLI event no adapter rule handles yet: forwarded instead of dropped. */
   | { t: 'other_event'; kind: string; payload: string }
   | { t: 'output'; path: string }
@@ -339,6 +407,9 @@ export const IPC = {
   chatEvent: 'chat:event',
   chatExportHandoff: 'chat:exportHandoff',
   historyList: 'history:list',
+  usageGet: 'usage:get',
+  usageRefresh: 'usage:refresh',
+  usageChanged: 'usage:changed',
   historyOpen: 'history:open',
   historyImport: 'history:import',
   appInfo: 'app:info'

@@ -5,6 +5,7 @@ import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { DEFAULT_HINT, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar } from '../components/common'
 import { EffortBar } from '../components/EffortBar'
+import { QuotaDot } from '../components/Usage'
 import { ActivityBar, ThinkingCard, UsageLine } from '../components/Process'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
@@ -1119,6 +1120,7 @@ function Composer({
 
           <div className="flex items-center gap-1 px-3 pt-1 pb-3">
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
+            <QuotaDot driver={driver} model={driverModel} onSwitch={(id) => onDriver(id, null)} />
             {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
             <button

@@ -5,6 +5,7 @@ import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { KindAvatar, Segmented } from './common'
+import { UsageSummaryButton } from './Usage'
 import { IconEngine, IconFolder, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
 
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -148,6 +149,7 @@ export function NavRail() {
       )}
 
       <div className="border-t border-black/[0.05] px-3 pt-2 pb-4">
+        <div className="relative">
         <button
           onClick={() => navigate('engines')}
           className={`no-drag flex h-9 w-full items-center gap-3 rounded-lg px-3 text-[14px] font-medium transition-colors ${
@@ -161,7 +163,12 @@ export function NavRail() {
               {attention}
             </span>
           )}
+          <span className="w-14" />
         </button>
+        <div className="absolute top-1/2 right-2 -translate-y-1/2">
+          <UsageSummaryButton />
+        </div>
+        </div>
         <button
           onClick={() => (drawer.open ? closeDrawer() : openDrawer())}
           className={`no-drag mt-0.5 flex h-8 w-full items-center gap-2 rounded-lg px-3 text-[13px] transition-colors ${

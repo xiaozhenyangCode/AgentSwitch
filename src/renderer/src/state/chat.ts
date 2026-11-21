@@ -421,6 +421,8 @@ function onEvent(e: ChatEvent) {
             return { ...m, notices: [...(m.notices ?? []), ev.message] }
           case 'rate_limited':
             return { ...m, error: m.error ?? '账号触发了用量限制（rate limit）' }
+          default:
+            return m // e.g. quota: consumed by the main process
         }
       })
     }

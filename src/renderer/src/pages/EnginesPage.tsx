@@ -4,6 +4,8 @@ import { useApp } from '../state/AppContext'
 import { KIND_META, TONE, btnGhost, btnRow, btnRowPrimary } from '../lib/ui'
 import { KindAvatar, Pill, StatusBadge } from '../components/common'
 import { IconDownload, IconGear, IconRefresh, Spinner } from '../components/icons'
+import { AccountUsageBlock, RefreshUsage, UsageTable } from '../components/Usage'
+import { useUsage } from '../state/usage'
 
 export function EnginesPage() {
   const { profiles, loaded } = useApp()
@@ -11,7 +13,12 @@ export function EnginesPage() {
     <div className="h-full overflow-y-auto">
       <div className="drag h-14" />
       <div className="mx-auto max-w-[760px] px-10 pb-16">
-        <h1 className="text-[26px] leading-tight font-semibold tracking-tight text-ink">模型引擎</h1>
+        <div className="flex items-end gap-3">
+          <h1 className="flex-1 text-[26px] leading-tight font-semibold tracking-tight text-ink">模型引擎</h1>
+          <div className="no-drag">
+            <RefreshUsage />
+          </div>
+        </div>
         <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
           安装命令行工具并添加账号。每个账号的登录信息相互独立，可以同时使用多个账号。
         </p>
@@ -20,6 +27,10 @@ export function EnginesPage() {
             {KINDS.map((k) => (
               <EngineGroup key={k} kind={k} accounts={profiles.filter((p) => p.kind === k)} />
             ))}
+            <section>
+              <h2 className="mb-3 text-[15px] font-semibold text-ink">用量汇总</h2>
+              <UsageTable />
+            </section>
           </div>
         )}
       </div>
@@ -157,6 +168,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(a.name)
   const needsLogin = a.status === 'not_logged_in'
+  const usage = useUsage()?.accounts[a.id]
   useEffect(() => setName(a.name), [a.name])
 
   const commitRename = async () => {
@@ -202,6 +214,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
         <div className="truncate text-[13px] leading-5 text-ink-3" title={a.resolvedConfigDir}>
           {a.imported ? `本机已有配置 · ${a.configDir}` : '独立配置目录'}
         </div>
+        {a.loggedIn && <AccountUsageBlock u={usage} model={a.defaultModel} />}
       </div>
       <StatusBadge profile={a} />
       <button

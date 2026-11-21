@@ -40,6 +40,7 @@ import {
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, listHistory, openHistory, writeHandoff } from './history'
+import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { allowRoot, isAllowedPath } from './fileProtocol'
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -234,6 +235,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     allowRoot(cwd)
     return writeHandoff(cwd, turnId, markdown)
   })
+
+  // ---- usage & quota ------------------------------------------------------------------------
+  onUsageChange((s) => send(IPC.usageChanged, s))
+  startUsage()
+  ipcMain.handle(IPC.usageGet, () => usageSnapshot())
+  ipcMain.handle(IPC.usageRefresh, (_e, probe?: boolean) => refreshUsage(probe === true))
 
   // ---- local CLI history (read-only) ------------------------------------------------------
   ipcMain.handle(IPC.historyList, (_e, force?: boolean) => listHistory(force === true))

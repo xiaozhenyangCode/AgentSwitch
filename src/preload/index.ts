@@ -7,6 +7,7 @@ import {
   type RunRequest,
   type EnvPreview,
   type HistoryEntry,
+  type UsageSnapshot,
   type HistoryThread,
   type KindConfig,
   type LoginSuccessEvent,
@@ -75,6 +76,12 @@ const api = {
     /** Writes a handoff document (exported transcript); returns its absolute path. */
     exportHandoff: (threadId: string, turnId: string, projectDir: string | null, markdown: string): Promise<string> =>
       ipcRenderer.invoke(IPC.chatExportHandoff, threadId, turnId, projectDir, markdown)
+  },
+  usage: {
+    get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),
+    /** probe=true sends one tiny haiku message per claude account to pull fresh quota (uses quota). */
+    refresh: (probe = false): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageRefresh, probe),
+    onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb)
   },
   history: {
     list: (force = false): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.historyList, force),

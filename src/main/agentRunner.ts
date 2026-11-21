@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AgentEvent, AutoApprove, ProfileConfig } from '@shared/types'
+import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profiles'
 import { agyModelId } from './models'
@@ -210,9 +210,15 @@ function claudeAdapter(s: RunSpec): Adapter {
             if (t.activity.type === 'write' && IMAGE_RE.test(t.activity.target) && !c.is_error) emit({ t: 'output', path: t.activity.target })
           }
           break
-        case 'rate_limit_event':
-          if (d.rate_limit_info?.status && d.rate_limit_info.status !== 'allowed') emit({ t: 'rate_limited' })
+        case 'rate_limit_event': {
+          const info = d.rate_limit_info ?? {}
+          const win = (w: any, minutes: number): QuotaWindow | null =>
+            w && typeof w.utilization === 'number' ? { percent: Math.round(w.utilization * 1000) / 10, resetsAt: typeof w.resetsAt === 'number' ? w.resetsAt * 1000 : null, minutes } : null
+          const limited = typeof info.status === 'string' && !info.status.startsWith('allowed')
+          emit({ t: 'quota', quota: { fiveHour: win(info.unifiedWindows?.five_hour, 300), sevenDay: win(info.unifiedWindows?.seven_day, 10080), limited, plan: null } })
+          if (limited) emit({ t: 'rate_limited' })
           break
+        }
         case 'result': {
           if (Array.isArray(d.permission_denials) && d.permission_denials.length)
             emit({ t: 'notice', message: deniedText(d.permission_denials.map((x: any) => x?.tool_name ?? 'tool'), s.cfg.autoApprove) })

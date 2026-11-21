@@ -24,7 +24,7 @@ const MAX_MESSAGES = 400
 /** Prompts AgentMux itself sends to the CLIs (its own runs are not "history"). */
 const OWN_PROMPT_RE = /^\s*(你在 AgentMux 中工作|## (之前的对话|用户消息|用户原始消息|用户附件|本轮前序步骤|你的任务))/
 
-const toMs = (v: unknown): number => {
+export const toMs = (v: unknown): number => {
   if (typeof v === 'number' && isFinite(v)) return v > 1e12 ? v : v > 1e9 ? v * 1000 : 0
   if (typeof v === 'string' && v) {
     if (/^\d+$/.test(v)) return toMs(Number(v))
@@ -48,7 +48,7 @@ const isDir = (p: string | null): boolean => {
 
 // ---- AgentMux's own sessions (hidden) / imported (kept) -----------------------------------------
 
-function ownSessions(): Set<string> {
+export function ownSessions(): Set<string> {
   const out = new Set<string>()
   const dir = join(app.getPath('userData'), 'threads')
   let files: string[] = []
@@ -69,9 +69,30 @@ function ownSessions(): Set<string> {
   return out
 }
 
+/** Imported native sessions -> import time: later turns are AgentMux's own (counted as runs). */
+export function importedCutoffs(): Map<string, number> {
+  const out = new Map<string, number>()
+  const dir = join(app.getPath('userData'), 'threads')
+  let files: string[] = []
+  try {
+    files = readdirSync(dir)
+  } catch {
+    return out
+  }
+  for (const f of files) {
+    try {
+      const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { imported?: string[]; importedAt?: Record<string, number> }
+      for (const sid of j.imported ?? []) out.set(sid, Math.min(out.get(sid) ?? Infinity, j.importedAt?.[sid] ?? 0))
+    } catch {
+      /* skip */
+    }
+  }
+  return out
+}
+
 // ---- sqlite (read-only) ---------------------------------------------------------------------------
 
-function withDb<T>(path: string, fn: (db: DatabaseSync) => T): T | null {
+export function withDb<T>(path: string, fn: (db: DatabaseSync) => T): T | null {
   if (!existsSync(path)) return null
   try {
     const db = new DatabaseSync(path, { readOnly: true })
@@ -413,7 +434,7 @@ function codexDb(home: string): string | null {
   }
 }
 
-const rolloutPaths = new Map<string, string>() // codex thread id -> rollout file
+export const rolloutPaths = new Map<string, string>() // codex thread id -> rollout file
 
 function listCodex(p: ProfileConfig, own: Set<string>, userData: string): HistoryEntry[] {
   const home = expandHome(p.configDir)
@@ -623,7 +644,7 @@ function pb(b: Buffer): Pb | null {
 }
 
 /** All values at a field path (e.g. [20, 7]); intermediate fields are decoded as messages. */
-function pbAll(b: Buffer | null, path: number[]): (number | Buffer)[] {
+export function pbAll(b: Buffer | null, path: number[]): (number | Buffer)[] {
   if (!b) return []
   let cur: (number | Buffer)[] = [b]
   for (const f of path) {
@@ -647,6 +668,7 @@ const AGY_AGENT = 15
 const AGY_TOOL = 132
 
 const agyDir = (p: ProfileConfig): string => join(expandHome(p.configDir), '.gemini', 'antigravity-cli')
+export const agyConversationDb = (p: ProfileConfig, id: string): string => join(agyDir(p), 'conversations', `${id}.db`)
 const agyPreview = new Map<string, string>()
 
 function listAgy(p: ProfileConfig, own: Set<string>, userData: string): HistoryEntry[] {
@@ -785,7 +807,7 @@ export function listHistory(force = false): HistoryEntry[] {
   return entries
 }
 
-function claudePath(entry: HistoryEntry): string | null {
+export function claudePath(entry: HistoryEntry): string | null {
   const meta = Object.entries(loadIndex()).find(([, m]) => m.sessionId === entry.nativeId)
   return meta ? meta[0] : null
 }

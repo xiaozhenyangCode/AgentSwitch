@@ -2,9 +2,10 @@ import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
-import type { AgentEvent, ChatEvent, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
+import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
+import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuota } from './usage'
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 
@@ -80,7 +81,7 @@ function loadSessions(threadId: string): Record<string, string> {
 function saveSession(threadId: string, profileId: ProfileId, sid: string, imported = false): void {
   const f = sessionsFile(threadId)
   mkdirSync(join(f, '..'), { recursive: true })
-  let prev: { sessions?: Record<string, string>; imported?: string[] } = {}
+  let prev: { sessions?: Record<string, string>; imported?: string[]; importedAt?: Record<string, number> } = {}
   try {
     prev = JSON.parse(readFileSync(f, 'utf8'))
   } catch {
@@ -89,7 +90,9 @@ function saveSession(threadId: string, profileId: ProfileId, sid: string, import
   const sessions = { ...(prev.sessions ?? {}), [profileId]: sid }
   const imp = new Set(prev.imported ?? [])
   if (imported) imp.add(sid)
-  writeFileSync(f, JSON.stringify({ sessions, imported: [...imp] }, null, 2))
+  const importedAt = { ...(prev.importedAt ?? {}) }
+  if (imported && !importedAt[sid]) importedAt[sid] = Date.now()
+  writeFileSync(f, JSON.stringify({ sessions, imported: [...imp], importedAt }, null, 2))
 }
 
 /** Imported CLI history: the thread continues that native session (--resume / exec resume / --conversation). */
@@ -488,7 +491,10 @@ export class Orchestrator {
     const written = new Set<string>()
     const { prompt, system } = this.prompt(turn, step)
     const sessions = loadSessions(turn.req.threadId)
+    let stepUsage: Usage | null = null
     const emit = (event: AgentEvent): void => {
+      if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
+      if (event.t === 'usage') stepUsage = { ...(stepUsage ?? {}), ...event.usage }
       if (event.t === 'text') step.text += event.delta
       if (event.t === 'output' || (event.t === 'activity' && event.type === 'write')) {
         const p = event.t === 'output' ? event.path : event.target
@@ -512,6 +518,7 @@ export class Orchestrator {
         }
       }
       if (event.t === 'rate_limited') {
+        recordLimited(cfg.id)
         this.rateLimited.add(cfg.id)
         this.onState()
       }
@@ -538,6 +545,14 @@ export class Orchestrator {
     this.busy.set(cfg.id, Math.max(0, (this.busy.get(cfg.id) ?? 1) - 1))
     if (r.ok) this.rateLimited.delete(cfg.id)
     this.onState()
+    // usage & quota bookkeeping never blocks the turn
+    try {
+      if (stepUsage || r.ok) recordRun(cfg.id, stepUsage)
+      if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
+      if (cfg.kind === 'gemini') void refreshAgyQuota(cfg.id)
+    } catch (e) {
+      this.log(cfg.id, `[usage] ${String(e)}\n`)
+    }
     if (r.sessionId) saveSession(turn.req.threadId, cfg.id, r.sessionId)
 
     // files changed on disk but not reported by the CLI's own events
