@@ -9,6 +9,7 @@ import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from
 import { KindAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
 import { stripMarks } from '@shared/markers'
+import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
 import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
@@ -95,13 +96,14 @@ function useSortedAccounts(): ProfileState[] {
   }, [profiles])
 }
 
-/** `@Name` or `@Name(model)` tokens for the given accounts, in text order. */
+/** `@Name` or `@Name(model)` tokens for the given accounts, in text order (code blocks / inline code skipped). */
 function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileState; model: string | null; index: number; length: number }[] {
   const out: { p: ProfileState; model: string | null; index: number; length: number }[] = []
   const taken: [number, number][] = []
+  const plain = maskCode(text)
   for (const p of [...accounts].sort((a, b) => b.name.length - a.name.length)) {
     const re = new RegExp('@' + escapeRe(p.name) + '(?:\\(([^)\\s]+)\\))?', 'g')
-    for (const m of text.matchAll(re)) {
+    for (const m of plain.matchAll(re)) {
       const s = m.index!
       if (taken.some(([a, b]) => s >= a && s < b)) continue
       taken.push([s, s + m[0].length])

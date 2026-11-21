@@ -11,6 +11,7 @@ import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
 import { stripMarks } from '@shared/markers'
+import { maskCode } from '@shared/mentions'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -19,9 +20,11 @@ import { stripMarks } from '@shared/markers'
  * never by scraping terminal text.
  *
  * Step sources:
- *  - explicit @mentions, in text order (each gets the text segment after its mention)
- *  - otherwise the driver answers; it may append an ```agentswitch:dispatch``` block to
- *    delegate to other participants, which are then run in order
+ *  - a message that starts with an @mention: the mentioned accounts in text order (each gets
+ *    the text segment after its mention) — the user named them directly
+ *  - otherwise the driver answers first; it may append an ```agentswitch:dispatch``` block to
+ *    delegate to other participants (and anyone @-named mid-sentence), run in order, after
+ *    which the driver comes back to finish the remaining work (review, edit, import)
  *  - a short driver summary after any multi-model chain
  * Review steps must end with {"status":"PASS"|"REJECT","reason"}; REJECT re-runs the
  * previous step with the reason, at most MAX_RETRIES times, then the turn pauses.
@@ -67,6 +70,8 @@ interface Turn {
   paused: { reviewIdx: number } | null
   retryBudget: number
   counter: number
+  /** Accounts the user @-named mid-sentence: the driver plans and dispatches to them (with these models). */
+  named: RunAgentRef[]
 }
 
 const uid = (): string => randomBytes(6).toString('hex')
@@ -192,17 +197,32 @@ function dispatchOf(text: string): { account: string; model?: string; task: stri
   }
 }
 
-/** Splits "@A 写提示词，然后让 @B 出图" into per-mention tasks, in text order. */
-function mentionTasks(req: RunRequest): { ref: RunAgentRef; task: string }[] {
-  const marks = req.mentions
+/** @mentions with their position in the text (outside code), in text order. */
+function mentionMarks(req: RunRequest): { ref: RunAgentRef; i: number; end: number }[] {
+  const plain = maskCode(req.text)
+  return req.mentions
     .filter((r) => hasProfile(r.profileId))
     .map((ref) => {
       const name = getConfig(ref.profileId).name
-      const i = req.text.indexOf('@' + name)
+      const i = plain.indexOf('@' + name)
       return { ref, i, end: i < 0 ? -1 : i + name.length + 1 }
     })
     .filter((m) => m.i >= 0)
     .sort((a, b) => a.i - b.i)
+}
+
+/**
+ * The message opens with an @mention ("@B 做…", "@A 做步骤 1 @B 做步骤 2"): the user is naming
+ * who does what. A mention after real instructions ("写好提示词让 @B 出图，再审核导入") is not.
+ */
+function startsWithMention(req: RunRequest): boolean {
+  const marks = mentionMarks(req)
+  return marks.length > 0 && marks[0].i === maskCode(req.text).search(/\S/)
+}
+
+/** Splits "@A 写提示词，然后让 @B 出图" into per-mention tasks, in text order. */
+function mentionTasks(req: RunRequest): { ref: RunAgentRef; task: string }[] {
+  const marks = mentionMarks(req)
   const PUNCT = /^[\s，,。、；;]+|[\s，,。、；;]+$/g
   return marks.map((m, k) => {
     let seg = req.text.slice(m.end, k + 1 < marks.length ? marks[k + 1].i : undefined).replace(/^\([^)]*\)/, '')
@@ -256,7 +276,7 @@ export class Orchestrator {
       }
     }
 
-    const turn: Turn = { req, cwd, runDir, outDir, attachments, steps: [], idx: 0, current: null, stopped: false, paused: null, retryBudget: MAX_RETRIES, counter: 0 }
+    const turn: Turn = { req, cwd, runDir, outDir, attachments, steps: [], idx: 0, current: null, stopped: false, paused: null, retryBudget: MAX_RETRIES, counter: 0, named: [] }
     this.turns.set(req.threadId, turn)
     this.emit({ kind: 'turn-start', threadId: req.threadId, turnId: req.turnId, cwd })
 
@@ -269,17 +289,20 @@ export class Orchestrator {
     }
     const tasks = mentionTasks(req)
     const others = tasks.filter((t) => t.ref.profileId !== driver.profileId)
-    if (!others.length) {
-      const multi = req.participants.filter((p) => p !== driver.profileId && hasProfile(p)).length > 0
+    if (!others.length || !startsWithMention(req)) {
+      // the driver goes first; accounts named mid-sentence are its collaborators for this turn
+      turn.named = others.map((t) => t.ref).filter((r, i, a) => a.findIndex((x) => x.profileId === r.profileId) === i)
+      const multi = turn.named.length > 0 || req.participants.filter((p) => p !== driver.profileId && hasProfile(p)).length > 0
       this.add(turn, { profileId: driver.profileId, model: driver.model, task: req.text, kind: 'own', dispatchedBy: null, allowDispatch: multi })
     } else {
+      // the user named who does what, in order: nobody "dispatched" these steps
       for (const t of tasks)
         this.add(turn, {
           profileId: t.ref.profileId,
           model: t.ref.model ?? (t.ref.profileId === driver.profileId ? driver.model : null),
           task: t.task,
           kind: 'mention',
-          dispatchedBy: t.ref.profileId === driver.profileId ? null : driver.profileId,
+          dispatchedBy: null,
           allowDispatch: false
         })
       this.add(turn, { profileId: driver.profileId, model: driver.model, task: '', kind: 'summary', dispatchedBy: null, allowDispatch: false })
@@ -411,11 +434,13 @@ export class Orchestrator {
           : '当前授权：只能读写项目内的文件，执行 shell 命令会被自动拒绝。请直接用文件读取 / 查看 / 编辑工具完成任务（图片可以直接用读取工具查看）；确实需要执行命令时，说明需要执行什么，让用户决定。'
     ]
     if (step.allowDispatch) {
-      const others = turn.req.participants.filter((p) => p !== step.profileId && hasProfile(p)).map((p) => getConfig(p))
+      const named = new Map(turn.named.map((r) => [r.profileId, r.model]))
+      const others = this.dispatchable(turn, step.profileId).map((p) => getConfig(p))
+      const modelOf = (o: ProfileConfig) => named.get(o.id) || o.defaultModel || 'CLI 默认'
       sys.push(
         '',
         '## 可调度的其他参与模型',
-        ...others.map((o) => `- account: "${o.id}" · ${o.name}（${KIND_LABEL[o.kind]}，默认子模型 ${o.defaultModel || 'CLI 默认'}）`),
+        ...others.map((o) => `- account: "${o.id}" · ${o.name}（${KIND_LABEL[o.kind]}，${named.get(o.id) ? '用户指定子模型' : '默认子模型'} ${modelOf(o)}）`),
         '仅当用户明确要求多模型协作、或任务明显需要其他参与模型配合时才调度；普通单轮问答直接回复即可。',
         '调度方法：先简要说明你的安排，然后在回复最后输出一个代码块（系统会按顺序执行，再把结果交回给你汇总）：',
         '```agentswitch:dispatch',
@@ -455,14 +480,25 @@ export class Orchestrator {
         parts.push('')
       }
     }
-    if (step.kind === 'own') parts.push('## 用户消息', turn.req.text)
-    else if (step.kind === 'summary')
+    if (step.kind === 'own') {
+      parts.push('## 用户消息', turn.req.text)
+      if (step.allowDispatch && turn.named.length)
+        parts.push(
+          '',
+          '## 用户点名的协作者',
+          ...turn.named.map((r) => {
+            const c = getConfig(r.profileId)
+            return `- account: "${c.id}" · ${c.name}${r.model ? `（指定子模型：${r.model}，调度时请在 model 字段填写它）` : ''}`
+          }),
+          '用户在消息中指定了上述协作者。请按用户描述的顺序推进：先完成由你负责的前置部分（例如写提示词、拆解需求、准备材料），再在回复最后用 agentswitch:dispatch 把需要对方完成的具体任务派发出去（任务要写清楚、可直接执行，带上你准备好的内容或文件路径）；用户要求的后续步骤（例如审核、修改、导入项目）不要派给对方——对方完成后，系统会把结果交回给你，由你继续完成。'
+        )
+    } else if (step.kind === 'summary')
       parts.push(
         '## 用户原始消息',
         turn.req.text,
         '',
         '## 你的任务',
-        '以上是本轮各模型的结果。请用简短几行向用户汇总结论和产出文件位置；不要重复全文，不要再调度。'
+        '以上是本轮其他模型的结果，现在轮到你收尾。如果用户的要求里还有由你负责的后续步骤（例如审核产出、修改文件、导入或落盘到项目中），请先实际完成这些操作（可以读写文件、按授权执行命令）；产出不合格时可以自己修正。完成后用简短几行向用户汇总结论和最终文件位置；不要重复全文，不要再调度。'
       )
     else parts.push('## 用户原始消息', turn.req.text, '', '## 你的任务', step.task)
     if (step.feedback) parts.push('', `## 验收打回意见（第 ${step.retry} 次重做）`, step.feedback, '请据此修改你的产出。')
@@ -637,8 +673,9 @@ export class Orchestrator {
     if (step.allowDispatch) {
       const items = dispatchOf(step.text)
         .map((d) => {
-          const id = turn.req.participants.find((p) => hasProfile(p) && p !== step.profileId && (p === d.account || getConfig(p).name === d.account))
-          return id ? { id, model: d.model?.trim() || null, task: d.task.trim() } : null
+          const id = this.dispatchable(turn, step.profileId).find((p) => p === d.account || getConfig(p).name === d.account)
+          // the sub-model the user asked for (@B(model)) unless the driver chose one
+          return id ? { id, model: d.model?.trim() || turn.named.find((r) => r.profileId === id)?.model || null, task: d.task.trim() } : null
         })
         .filter((x): x is { id: string; model: string | null; task: string } => !!x)
         .slice(0, MAX_DISPATCH)
@@ -653,6 +690,11 @@ export class Orchestrator {
     this.writeTask(turn)
     turn.idx++
     void this.next(turn)
+  }
+
+  /** Who a step may dispatch to: this turn's participants plus anyone the user @-named. */
+  private dispatchable(turn: Turn, self: ProfileId): ProfileId[] {
+    return [...new Set([...turn.req.participants, ...turn.named.map((r) => r.profileId)])].filter((p) => p !== self && hasProfile(p))
   }
 
   stopAll(): void {
