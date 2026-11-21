@@ -7,6 +7,8 @@ import {
   type ThemeMode,
   type MenuCommand,
   type McpList,
+  type ExtOverview,
+  type ExtFileText,
   type OnboardingState,
   type SkillList,
   type ThemeState,
@@ -126,7 +128,13 @@ const api = {
   /** Skills / MCP servers an account would load in a project (read from local config files). */
   ext: {
     skills: (id: ProfileId, cwd: string | null, refresh = false): Promise<SkillList> => ipcRenderer.invoke(IPC.extSkills, id, cwd, refresh),
-    mcp: (id: ProfileId, cwd: string | null, refresh = false): Promise<McpList> => ipcRenderer.invoke(IPC.extMcp, id, cwd, refresh)
+    mcp: (id: ProfileId, cwd: string | null, refresh = false): Promise<McpList> => ipcRenderer.invoke(IPC.extMcp, id, cwd, refresh),
+    overview: (id: ProfileId, cwd: string | null, refresh = false): Promise<ExtOverview> => ipcRenderer.invoke(IPC.extOverview, id, cwd, refresh),
+    /** Only files listed by a scan (64 KB max). */
+    read: (path: string): Promise<ExtFileText> => ipcRenderer.invoke(IPC.extRead, path),
+    reveal: (path: string): Promise<void> => ipcRenderer.invoke(IPC.extReveal, path),
+    pins: (): Promise<Partial<Record<ProfileKind, string[]>>> => ipcRenderer.invoke(IPC.extPinsGet),
+    setPins: (kind: ProfileKind, names: string[]): Promise<void> => ipcRenderer.invoke(IPC.extPinsSet, kind, names)
   },
   onboarding: {
     get: (): Promise<OnboardingState> => ipcRenderer.invoke(IPC.onboardingGet),

@@ -41,7 +41,7 @@ import {
   updateKindConfig,
   updateProfile
 } from './profiles'
-import { listMcp, listSkills } from './extensions'
+import { canRevealExtFile, extOverview, listMcp, listSkills, readExtFile } from './extensions'
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { PtyManager } from './ptyManager'
@@ -341,6 +341,30 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   const cwdArg = (cwd: unknown): string | null => (typeof cwd === 'string' && cwd.trim() ? cwd : null)
   ipcMain.handle(IPC.extSkills, (_e, id: unknown, cwd: unknown, refresh: unknown) => listSkills(assertId(id), cwdArg(cwd), refresh === true))
   ipcMain.handle(IPC.extMcp, (_e, id: unknown, cwd: unknown, refresh: unknown) => listMcp(assertId(id), cwdArg(cwd), refresh === true))
+  ipcMain.handle(IPC.extOverview, (_e, id: unknown, cwd: unknown, refresh: unknown) => extOverview(assertId(id), cwdArg(cwd), refresh === true))
+  // preview / reveal: only files an extensions scan listed (64 KB cap), never an arbitrary path
+  ipcMain.handle(IPC.extRead, (_e, p: unknown) => {
+    if (typeof p !== 'string') throw new Error('bad path')
+    return readExtFile(p)
+  })
+  ipcMain.handle(IPC.extReveal, (_e, p: unknown) => {
+    if (typeof p === 'string' && canRevealExtFile(p)) shell.showItemInFolder(p)
+  })
+  // pinned skills per CLI kind (names), shared by the panel and the / menu
+  const pinKind = (k: unknown): ProfileKind => {
+    if (k === 'claude' || k === 'codex' || k === 'gemini') return k
+    throw new Error('bad kind')
+  }
+  ipcMain.handle(IPC.extPinsGet, (): Record<string, string[]> => {
+    const v = readSettings().skillPins
+    return v && typeof v === 'object' ? (v as Record<string, string[]>) : {}
+  })
+  ipcMain.handle(IPC.extPinsSet, (_e, kind: unknown, names: unknown) => {
+    const k = pinKind(kind)
+    const list = Array.isArray(names) ? [...new Set(names.filter((n): n is string => typeof n === 'string' && n.length < 200))].slice(0, 200) : []
+    const cur = readSettings().skillPins
+    writeSettings({ skillPins: { ...(cur && typeof cur === 'object' ? cur : {}), [k]: list } })
+  })
 
   // ---- onboarding ------------------------------------------------------------------------
   ipcMain.handle(IPC.onboardingGet, (): OnboardingState => ({ completed: readSettings().onboardingCompleted === true, firstRun }))

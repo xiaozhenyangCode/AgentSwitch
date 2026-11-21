@@ -417,6 +417,11 @@ export const IPC = {
   showDataDir: 'shell:showDataDir',
   extSkills: 'ext:skills',
   extMcp: 'ext:mcp',
+  extOverview: 'ext:overview',
+  extRead: 'ext:read',
+  extReveal: 'ext:reveal',
+  extPinsGet: 'ext:pins-get',
+  extPinsSet: 'ext:pins-set',
   onboardingGet: 'onboarding:get',
   onboardingSet: 'onboarding:set',
   modelsList: 'models:list',
@@ -496,6 +501,8 @@ export interface SkillItem {
   kind: 'skill' | 'command'
   /** Token put into the prompt: `/name` (claude, agy) or `$name` (codex). */
   insert: string
+  /** SKILL.md / command file (previewable through ext:read). */
+  path?: string
 }
 
 export interface SkillList {
@@ -528,6 +535,94 @@ export interface McpList {
   errors: number
   /** Claude: claude.ai connectors may add servers that exist only remotely. */
   remoteNote: boolean
+}
+
+/** A custom subagent definition (Claude agents/*.md, Codex agent roles). */
+export interface AgentItem {
+  name: string
+  description: string
+  source: ExtSource
+  plugin?: string
+  model: string | null
+  tools: string | null
+  /** Definition file (previewable through ext:read). */
+  path: string
+}
+
+export type RuleScope = 'managed' | 'global' | 'project' | 'plugin'
+
+/** An instruction file the CLI loads for this account + project (CLAUDE.md, AGENTS.md, rules/*.md...). */
+export interface RuleFile {
+  /** Absolute path (previewable through ext:read). */
+  path: string
+  /** ~-relative path for display. */
+  display: string
+  scope: RuleScope
+  plugin?: string
+  bytes: number
+  lines: number
+  /** Pulled in by an `@path` line in this file (Claude). */
+  importedBy?: string
+  /** Past the CLI's size budget: only part of it is loaded (Codex project_doc_max_bytes). */
+  truncated?: boolean
+}
+
+/** One lifecycle hook handler that is in effect. */
+export interface HookItem {
+  event: string
+  matcher?: string
+  source: ExtSource
+  plugin?: string
+  /** agy: the named hook it belongs to. */
+  name?: string
+  /** command, mcp_tool, prompt, http, notify... */
+  type: string
+  /** What it runs, redacted (no env values or tokens). */
+  summary: string
+  /** Config file it comes from (~-relative). */
+  file: string
+  /** Turned off (disableAllHooks, enabled: false). */
+  off?: boolean
+}
+
+export interface PluginItem {
+  name: string
+  /** e.g. `figma@claude-plugins-official`, `browser@openai-bundled`. */
+  key: string
+  version: string | null
+  description: string
+  enabled: boolean
+  source: ExtSource
+  marketplace: string | null
+  skills: string[]
+  agents: string[]
+  mcp: string[]
+  /** `Event` (or `Event · matcher`) per handler. */
+  hooks: string[]
+  rules: string[]
+  path: string
+}
+
+/** Everything the extensions panel shows, for one account + project. */
+export interface ExtOverview {
+  skills: SkillItem[]
+  agents: AgentItem[]
+  plugins: PluginItem[]
+  mcp: McpServer[]
+  rules: RuleFile[]
+  hooks: HookItem[]
+  configDir: string
+  project: string | null
+  errors: number
+  remoteNote: boolean
+  /** agy defines subagents at run time: there are no definition files to list. */
+  agentsDynamic: boolean
+}
+
+export interface ExtFileText {
+  text: string
+  bytes: number
+  truncated: boolean
 }
 
 export interface OnboardingState {

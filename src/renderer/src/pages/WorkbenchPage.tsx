@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
-import { McpButton, SlashMenu, filterSkills } from '../components/Extensions'
-import { useSkills } from '../state/extensions'
+import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
+import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
 import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
@@ -911,7 +911,22 @@ function Composer({
   const [slash, setSlash] = useState<{ start: number; query: string; index: number } | null>(null)
   const skills = useSkills(driver?.id ?? null, projectDir, !!slash)
   const skillItems = skills.data?.items ?? []
-  const slashMatches = useMemo(() => (slash ? filterSkills(skillItems, slash.query) : []), [slash, skillItems])
+  const pins = usePins(driver?.kind)
+  // pinned skills lead the / menu while nothing is typed; with a query they win ties only
+  const slashMatches = useMemo(() => {
+    if (!slash) return []
+    const found = filterSkills(skillItems, slash.query)
+    return slash.query ? found : pinnedFirst(found, pins)
+  }, [slash, skillItems, pins])
+  /** Extensions panel (skills, agents, plugins, MCP, rules & hooks), read-only. */
+  const [extOpen, setExtOpen] = useState(false)
+  const overview = useOverview(driver?.id ?? null, projectDir, true)
+  const closeExt = useCallback(() => setExtOpen(false), [])
+  const reloadOverview = overview.reload
+  useEffect(() => {
+    if (extOpen) void reloadOverview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
@@ -1036,6 +1051,25 @@ function Composer({
     })
   }
 
+  /** Inserts a token at the caret (space-separated from what is around it) and focuses the box. */
+  const insertAtCaret = (token: string) => {
+    const el = ta.current
+    const start = el?.selectionStart ?? text.length
+    const end = el?.selectionEnd ?? start
+    const before = text.slice(0, start)
+    const lead = before && !/\s$/.test(before) ? ' ' : ''
+    const piece = lead + token + (/[\s：:]$/.test(token) ? '' : ' ')
+    setText(before + piece + text.slice(end))
+    setExtOpen(false)
+    requestAnimationFrame(() => {
+      const box = ta.current
+      if (!box) return
+      const pos = start + piece.length
+      box.focus()
+      box.setSelectionRange(pos, pos)
+    })
+  }
+
   const addFiles = async (files: File[]) => {
     if (!files.length) return
     const next = await Promise.all(files.map(toAttachment))
@@ -1126,7 +1160,12 @@ function Composer({
   return (
     <div ref={wrap} className="pointer-events-none absolute inset-x-0 bottom-0 bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)] px-8 pt-8 pb-6">
       <div className="pointer-events-auto relative mx-auto max-w-[820px]">
-        {!mention && slash && (
+        {extOpen && (
+          <div className="absolute bottom-full left-0 z-30 mb-2">
+            <ExtensionsPanel account={driver} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
+          </div>
+        )}
+        {!extOpen && !mention && slash && (
           <div className="absolute bottom-full left-0 z-30 mb-2">
             <SlashMenu
               account={driver}
@@ -1134,6 +1173,7 @@ function Composer({
               total={skillItems.length}
               loading={skills.loading}
               active={Math.min(slash.index, Math.max(0, slashMatches.length - 1))}
+              pinned={pins}
               onPick={insertSkill}
               onHover={(i) => setSlash((x) => x && { ...x, index: i })}
             />
@@ -1279,7 +1319,7 @@ function Composer({
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
             <QuotaDot driver={driver} model={driverModel} onSwitch={(id) => onDriver(id, null)} />
             {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
-            <McpButton account={driver} cwd={projectDir} />
+            {driver && <ExtensionsButton data={overview.data} open={extOpen} onToggle={() => setExtOpen((o) => !o)} />}
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
             <button
               onClick={() => fileInput.current?.click()}

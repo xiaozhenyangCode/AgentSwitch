@@ -231,3 +231,13 @@ export const IconSlash = (p: P) => (
     <path d="m14.5 7.5-5 9" />
   </svg>
 )
+export const IconPuzzle = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M10 4.5a2 2 0 1 1 4 0V6h3a1 1 0 0 1 1 1v3h-1.5a2 2 0 1 0 0 4H18v3a1 1 0 0 1-1 1h-3v-1.5a2 2 0 1 0-4 0V18H7a1 1 0 0 1-1-1v-3h1.5a2 2 0 1 0 0-4H6V7a1 1 0 0 1 1-1h3V4.5Z" />
+  </svg>
+)
+export const IconStar = ({ filled, ...p }: P & { filled?: boolean }) => (
+  <svg {...base(p)} fill={filled ? 'currentColor' : 'none'}>
+    <path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.9l-4.9 2.7 1.1-5.3-4-3.7 5.4-.6L12 4Z" />
+  </svg>
+)
