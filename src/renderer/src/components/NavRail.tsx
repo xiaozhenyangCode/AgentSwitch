@@ -74,7 +74,7 @@ const fullTime = (ts: number) => {
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail() {
-  const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm, toast, openSettings } = useApp()
+  const { page, navigate, profiles, drawer, openDrawer, closeDrawer, info, confirm, toast, openSettings, settingsOpen } = useApp()
   const chat = useChat()
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
@@ -236,7 +236,7 @@ export function NavRail() {
         />
         <div className="flex items-center gap-1">
           <div className="min-w-0 flex-1">
-            <NavItem active={page === 'settings'} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
+            <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
           </div>
           <button
             onClick={() => (drawer.open ? closeDrawer() : openDrawer())}

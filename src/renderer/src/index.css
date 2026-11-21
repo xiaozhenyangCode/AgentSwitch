@@ -25,6 +25,8 @@
   --sidebar: #f3f3f5;
   --tile: #ffffff;
   --scrim: rgba(0, 0, 0, 0.2);
+  /* lighter scrim for sheets the page should still show through (settings) */
+  --scrim-soft: rgba(0, 0, 0, 0.16);
   --accent: #007aff;
   --accent-hover: #0066d6;
   /* status: text on canvas, soft background, solid dot / bar */
@@ -59,6 +61,7 @@
   --sidebar: #161618;
   --tile: #2c2c2e;
   --scrim: rgba(0, 0, 0, 0.45);
+  --scrim-soft: rgba(0, 0, 0, 0.28);
   --accent: #0a84ff;
   --accent-hover: #409cff;
   --ok: #30d158;
@@ -321,3 +324,22 @@ label {
 .md .katex-display { margin: 10px 0 14px; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
 .md-mermaid { display: flex; justify-content: center; padding: 8px 14px 14px; overflow-x: auto; }
 .md-mermaid svg { max-width: 100%; max-height: 480px; height: auto; }
+
+/* sheet dialogs (settings): scale + fade in on mount, out before unmount. CSS animations run
+   even when the window is in the background, unlike requestAnimationFrame-driven transitions. */
+@keyframes sheet-in {
+  from { opacity: 0; transform: scale(0.97); }
+}
+@keyframes sheet-out {
+  to { opacity: 0; transform: scale(0.97); }
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+}
+@keyframes scrim-out {
+  to { opacity: 0; }
+}
+.sheet-in { animation: sheet-in 150ms ease-out; }
+.sheet-out { animation: sheet-out 150ms ease-in forwards; }
+.scrim-in { animation: scrim-in 150ms ease-out; }
+.scrim-out { animation: scrim-out 150ms ease-in forwards; pointer-events: none; }

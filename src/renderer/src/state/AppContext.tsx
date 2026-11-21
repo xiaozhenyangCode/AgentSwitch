@@ -12,7 +12,7 @@ import {
 import { KIND_META } from '../lib/ui'
 import { t } from './i18n'
 
-export type Page = 'workbench' | 'engines' | 'usage' | 'settings'
+export type Page = 'workbench' | 'engines' | 'usage'
 export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'shortcuts' | 'about'
 
 export interface Toast {
@@ -51,7 +51,12 @@ interface AppState {
   navigate: (page: Page, focus?: ProfileId | ProfileKind) => void
   engineFocus: { target: ProfileId | ProfileKind; at: number } | null
   settingsSection: SettingsSection
+  /** Settings is a dialog over the current page (which keeps its state). */
+  settingsOpen: boolean
   openSettings: (section?: SettingsSection) => void
+  closeSettings: () => void
+  /** ⌘, : opens, or closes when already open. */
+  toggleSettings: () => void
 
   drawer: { open: boolean; session: SessionId | null }
   openDrawer: (session?: SessionId) => void
@@ -107,6 +112,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawer, setDrawer] = useState<AppState['drawer']>({ open: false, session: null })
   const [loginId, setLoginId] = useState<ProfileId | null>(null)
   const [configId, setConfigId] = useState<ProfileId | null>(null)
@@ -174,8 +180,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
   const openSettings = useCallback((section?: SettingsSection) => {
     if (section) setSettingsSection(section)
-    setPage('settings')
+    setSettingsOpen(true)
   }, [])
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const toggleSettings = useCallback(() => setSettingsOpen((o) => !o), [])
   const openDrawer = useCallback(
     (session?: SessionId) => setDrawer((d) => ({ open: true, session: session ?? d.session })),
     []
@@ -259,7 +267,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       navigate,
       engineFocus,
       settingsSection,
+      settingsOpen,
       openSettings,
+      closeSettings,
+      toggleSettings,
       drawer,
       openDrawer,
       closeDrawer,
@@ -282,7 +293,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dismissToast,
       install
     }),
-    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, settingsSection, openSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
+    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
