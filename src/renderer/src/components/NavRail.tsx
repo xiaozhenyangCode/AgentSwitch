@@ -8,6 +8,44 @@ import { KindAvatar, Segmented } from './common'
 import { UsageSummaryButton } from './Usage'
 import { IconEngine, IconFolder, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
 
+const SIDEBAR_KEY = 'agentmux.sidebar.width'
+const SIDEBAR_DEFAULT = 248
+const SIDEBAR_MIN = 220
+const SIDEBAR_MAX = 420
+const clampWidth = (w: number) => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w)))
+
+/** Drag-to-resize sidebar width, clamped to [220, 420] and remembered across launches. */
+function useSidebarWidth(): [number, (e: React.PointerEvent<HTMLDivElement>) => void, () => void] {
+  const [width, setWidth] = useState(() => clampWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT))
+  useEffect(() => localStorage.setItem(SIDEBAR_KEY, String(width)), [width])
+  const onResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      const el = e.currentTarget
+      el.setPointerCapture(e.pointerId)
+      const startX = e.clientX
+      const startW = width
+      const prevCursor = document.body.style.cursor
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+      const move = (ev: PointerEvent) => setWidth(clampWidth(startW + ev.clientX - startX))
+      const up = () => {
+        el.removeEventListener('pointermove', move)
+        el.removeEventListener('pointerup', up)
+        el.removeEventListener('pointercancel', up)
+        document.body.style.cursor = prevCursor
+        document.body.style.userSelect = ''
+      }
+      el.addEventListener('pointermove', move)
+      el.addEventListener('pointerup', up)
+      el.addEventListener('pointercancel', up)
+    },
+    [width]
+  )
+  return [width, onResize, () => setWidth(SIDEBAR_DEFAULT)]
+}
+
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 
 function ago(ts: number): string {
@@ -67,8 +105,19 @@ export function NavRail() {
     if (ok) deleteThread(t.id)
   }
 
+  const [width, onResize, resetWidth] = useSidebarWidth()
+
   return (
-    <nav className="drag flex w-[248px] shrink-0 flex-col border-r border-black/[0.06] bg-[#F3F3F5]/85 backdrop-blur-2xl">
+    <nav className="drag relative flex shrink-0 flex-col border-r border-black/[0.06] bg-[#F3F3F5]/85 backdrop-blur-2xl" style={{ width }}>
+      {/* resize handle on the right edge (double-click resets) */}
+      <div
+        className="no-drag group absolute top-0 -right-px bottom-0 z-20 w-[7px] cursor-col-resize"
+        onPointerDown={onResize}
+        onDoubleClick={resetWidth}
+        title="拖动调整宽度，双击恢复默认"
+      >
+        <div className="ml-auto h-full w-px bg-transparent transition-colors duration-150 group-hover:bg-accent/50 group-active:bg-accent" />
+      </div>
       {/* traffic-light zone */}
       <div className="h-[52px] shrink-0" />
 
