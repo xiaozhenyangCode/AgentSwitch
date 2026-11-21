@@ -561,6 +561,24 @@ function UserText({ msg }: { msg: UserMessage }) {
   )
 }
 
+/** Copy for a sent message: the full original text, even while the bubble is folded. */
+function CopyText({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={() => {
+        void window.agentswitch.sys.copy(text)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }}
+      className="-my-0.5 flex h-5 items-center gap-1 rounded-md px-1.5 text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]"
+    >
+      {copied ? <IconCheck size={12} className="text-ok" /> : <IconCopy size={12} />}
+      {copied ? t('common.copied') : t('common.copy')}
+    </button>
+  )
+}
+
 function UserBubble({ msg }: { msg: UserMessage }) {
   const images = msg.attachments.filter((a) => a.isImage && (a.thumb || a.path))
   const files = msg.attachments.filter((a) => !(a.isImage && (a.thumb || a.path)))
@@ -609,6 +627,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
             })}
           </>
         )}
+        {msg.text && <CopyText text={msg.text} />}
         <span title={fullTime(msg.createdAt)}>{msgTime(msg.createdAt)}</span>
       </div>
     </div>
