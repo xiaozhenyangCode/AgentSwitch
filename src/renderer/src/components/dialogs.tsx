@@ -67,7 +67,7 @@ export function AddAccountModal() {
         </div>
 
         {!installed && (
-          <div className="mt-4 rounded-xl bg-[#FFF8EB] px-4 py-3 text-[13px] leading-relaxed text-[#9A5B13]">
+          <div className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[13px] leading-relaxed text-warn">
             {meta.cli} 还没有安装。账号会先创建好，安装完成后再登录即可。
           </div>
         )}
@@ -116,7 +116,7 @@ export function ConfirmDialog() {
           <label className="mt-4 flex cursor-default items-start gap-2.5 rounded-xl bg-fill px-3 py-2.5">
             <input
               type="checkbox"
-              className="mt-[3px] accent-[#FF3B30]"
+              className="mt-[3px] accent-red"
               checked={checked}
               onChange={(e) => {
                 setChecked(e.target.checked)
@@ -135,7 +135,7 @@ export function ConfirmDialog() {
           </button>
           <button
             ref={okRef}
-            className={c.destructive ? btnPrimary.replace('bg-accent', 'bg-[#FF3B30]').replace('hover:bg-accent-hover', 'hover:bg-[#E0352B]') + ' shadow-none' : btnPrimary}
+            className={c.destructive ? btnPrimary.replace('bg-accent', 'bg-red').replace('hover:bg-accent-hover', 'hover:bg-red') + ' shadow-none' : btnPrimary}
             onClick={() => c.resolve(true)}
           >
             {c.confirmLabel}

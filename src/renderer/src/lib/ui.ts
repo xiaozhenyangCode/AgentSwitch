@@ -10,11 +10,11 @@ export interface BadgeMeta {
 
 /** Soft "macaron" status palette. */
 export const TONE = {
-  green: { cls: 'bg-[#E6F6EC] text-[#1A7F45]', dot: 'bg-[#34C759]' },
-  amber: { cls: 'bg-[#FFF4E0] text-[#9A5B13]', dot: 'bg-[#FF9F0A]' },
-  gray: { cls: 'bg-[#F0F0F2] text-[#6E6E73]', dot: 'bg-[#AEAEB2]' },
-  blue: { cls: 'bg-[#E8F1FF] text-[#0A5FCC]', dot: 'bg-[#007AFF]' },
-  red: { cls: 'bg-[#FDECEC] text-[#C2352B]', dot: 'bg-[#FF3B30]' }
+  green: { cls: 'bg-ok-soft text-ok', dot: 'bg-green' },
+  amber: { cls: 'bg-warn-soft text-warn', dot: 'bg-orange' },
+  gray: { cls: 'bg-fill text-ink-2', dot: 'bg-muted-dot' },
+  blue: { cls: 'bg-info-soft text-info', dot: 'bg-accent' },
+  red: { cls: 'bg-danger-soft text-danger', dot: 'bg-red' }
 } as const
 
 /** User-facing status of an account (profile). */
@@ -71,4 +71,4 @@ export const btnLink = `${base} text-[13px] text-accent hover:text-accent-hover 
 export const btnGhost = `${base} h-8 rounded-lg px-2.5 text-[13px] text-ink-2 hover:bg-black/[0.05] hover:text-ink`
 
 export const inputCls =
-  'h-9 w-full rounded-[10px] bg-fill px-3 text-[14px] text-ink placeholder:text-ink-3 outline-none ring-1 ring-transparent transition-shadow select-text focus:bg-white focus:ring-2 focus:ring-accent/40'
+  'h-9 w-full rounded-[10px] bg-fill px-3 text-[14px] text-ink placeholder:text-ink-3 outline-none ring-1 ring-transparent transition-shadow select-text focus:bg-surface focus:ring-2 focus:ring-accent/40'

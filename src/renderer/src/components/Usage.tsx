@@ -29,7 +29,7 @@ const STALE = 6 * 3600_000
  */
 const fillStyle = (kind: ProfileKind, pct: number, width: number): CSSProperties => ({
   width: `${width}%`,
-  background: pct >= 95 ? '#F0524F' : pct >= 80 ? '#F5A524' : KIND_META[kind].bar,
+  background: pct >= 95 ? 'var(--red)' : pct >= 80 ? 'var(--orange)' : KIND_META[kind].bar,
   backgroundSize: `${10000 / Math.max(width, 1)}% 100%`
 })
 const pctOf = (w: QuotaWindow) => Math.min(100, Math.max(0, w.percent))
@@ -119,7 +119,7 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
         <IconChevronDown size={11} />
       </button>
       {open && (
-        <div className="absolute top-7 left-0 z-30 w-[300px] rounded-xl border border-black/[0.07] bg-white/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
+        <div className="absolute top-7 left-0 z-30 w-[300px] rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
           {q.groups.map((g) => {
             const five = liveWindow(g.fiveHour)
             const seven = liveWindow(g.sevenDay)
@@ -189,7 +189,7 @@ export function RefreshUsage() {
   return (
     <div ref={ref} className="relative flex items-center gap-3">
       {at && <span className="text-[11.5px] text-ink-3 tabular-nums">{snap?.backfill === 'running' ? '正在回填历史…' : `更新于 ${pad2(at.getHours())}:${pad2(at.getMinutes())}`}</span>}
-      <div className="flex overflow-hidden rounded-lg border border-black/[0.09] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <div className="flex overflow-hidden rounded-lg border border-black/[0.09] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <button onClick={() => void run()} disabled={busy} className={`${seg} gap-1.5 pr-2.5 pl-2.5`} title={probe ? '刷新（含 Claude 额度探测）' : '刷新（不消耗额度）'}>
           {busy || snap?.backfill === 'running' ? <Spinner size={12} /> : <IconRefresh size={13} />}
           {busy ? '刷新中…' : '刷新用量'}
@@ -201,7 +201,7 @@ export function RefreshUsage() {
         </button>
       </div>
       {menu && (
-        <div className="absolute top-9 right-0 z-30 w-[280px] rounded-xl border border-black/[0.07] bg-white/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
+        <div className="absolute top-9 right-0 z-30 w-[280px] rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl">
           <button
             onClick={() => {
               setProbe(!probe)
@@ -210,7 +210,7 @@ export function RefreshUsage() {
             className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-black/[0.04]"
           >
             <span
-              className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${probe ? 'border-accent bg-accent text-white' : 'border-black/[0.2] bg-white'}`}
+              className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors ${probe ? 'border-accent bg-accent text-white' : 'border-black/[0.2] bg-surface'}`}
             >
               {probe && (
                 <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -233,7 +233,7 @@ const sumOf = (accounts: AccountUsage[], pick: (u: AccountUsage) => number) => a
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-xl border border-black/[0.07] bg-white px-4 py-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+    <div className="rounded-xl border border-black/[0.07] bg-surface px-4 py-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
       <div className="text-[12px] text-ink-3">{label}</div>
       <div className="mt-1 text-[24px] leading-8 font-semibold tracking-tight text-ink tabular-nums">{value}</div>
       {sub && <div className="text-[11.5px] text-ink-3 tabular-nums">{sub}</div>}
@@ -268,10 +268,10 @@ export function UsageView() {
         <Stat label="本周总 Token" value={fmtTokens(sumOf(all, (u) => tokenSum(u.week)))} sub="自周一起" />
         <Stat label="AgentSwitch 累计费用" value={fmtCost(cost)} sub={`${runs} 次运行`} />
       </div>
-      <div className="mt-4 overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <div className="mt-4 overflow-hidden rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <table className="w-full text-[13px]">
           <thead>
-            <tr className="border-b border-black/[0.06] bg-neutral-50/80 text-[11.5px] text-ink-3">
+            <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
               <th className="px-4 py-2 text-left font-medium">账号</th>
               <th className="px-4 py-2 text-left font-medium">额度</th>
               <th className="px-4 py-2 text-right font-medium">今日</th>
@@ -357,7 +357,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
     five && `5h 剩余 ${Math.max(0, 100 - Math.round(five.percent))}%${five.resetsAt ? ` · ${fmtReset(five.resetsAt)} 重置` : ''}`,
     seven && `7d 剩余 ${Math.max(0, 100 - Math.round(seven.percent))}%${seven.resetsAt ? ` · ${fmtReset(seven.resetsAt)} 重置` : ''}`
   ].filter(Boolean) as string[]
-  const color = level === 'danger' ? 'bg-[#FF3B30]' : 'bg-[#FF9F0A]'
+  const color = level === 'danger' ? 'bg-red' : 'bg-orange'
   return (
     <div ref={ref} className="relative">
       <button
@@ -369,8 +369,8 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
         <span className={`h-2 w-2 rounded-full ${color} shadow-[0_0_0_3px_rgba(255,159,10,0.18)]`} />
       </button>
       {open && (
-        <div className="absolute bottom-10 left-0 z-30 w-64 rounded-2xl bg-white/95 p-3 text-[12.5px] shadow-[0_0_0_1px_rgba(0,0,0,0.07),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
-          <div className={`font-medium ${level === 'danger' ? 'text-[#D70015]' : 'text-[#A05A00]'}`}>
+        <div className="absolute bottom-10 left-0 z-30 w-64 rounded-2xl bg-surface/95 p-3 text-[12.5px] shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+          <div className={`font-medium ${level === 'danger' ? 'text-danger' : 'text-warn'}`}>
             {driver.name} · {reason}
           </div>
           {eff.group && <div className="mt-0.5 text-ink-3">额度组：{eff.group.name}</div>}

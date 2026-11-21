@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { HistoryEntry } from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import type { HistoryEntry, ThemeMode } from '@shared/types'
+import { setThemeMode, useTheme } from '../state/theme'
 import { useApp } from '../state/AppContext'
 import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, useChat, type Thread } from '../state/chat'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { KindAvatar, Segmented } from './common'
 import { UsageSummaryButton } from './Usage'
-import { IconEngine, IconFolder, IconPlus, IconRefresh, IconSearch, IconTerminal, IconX, Spinner } from './icons'
+import { IconAuto, IconEngine, IconFolder, IconMoon, IconPlus, IconRefresh, IconSearch, IconSun, IconTerminal, IconX, Spinner } from './icons'
 
 const SIDEBAR_KEY = 'agentswitch.sidebar.width'
 const SIDEBAR_DEFAULT = 248
@@ -123,7 +124,7 @@ export function NavRail() {
   const [width, onResize, resetWidth] = useSidebarWidth()
 
   return (
-    <nav className="drag relative flex shrink-0 flex-col border-r border-black/[0.06] bg-[#F3F3F5]/85 backdrop-blur-2xl" style={{ width }}>
+    <nav className="drag relative flex shrink-0 flex-col border-r border-black/[0.06] bg-sidebar/85 backdrop-blur-2xl dark:bg-sidebar/95" style={{ width }}>
       {/* resize handle on the right edge (double-click resets) */}
       <div
         className="no-drag group absolute top-0 -right-px bottom-0 z-20 w-[7px] cursor-col-resize"
@@ -150,7 +151,7 @@ export function NavRail() {
       <div className="px-3 pb-3">
         <button
           onClick={() => start(current?.projectDir ?? null)}
-          className="no-drag flex h-9 w-full items-center justify-center gap-1.5 rounded-[10px] bg-white text-[14px] font-medium text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:bg-[#FAFAFB] active:scale-[0.98]"
+          className="no-drag flex h-9 w-full items-center justify-center gap-1.5 rounded-[10px] bg-surface text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:bg-surface-2 active:scale-[0.98]"
         >
           <IconPlus size={16} className="text-accent" /> 新建对话
         </button>
@@ -166,7 +167,7 @@ export function NavRail() {
             { value: 'history', label: '本机历史', title: '各 CLI 在本机留下的会话（只读导入）' }
           ]}
         />
-        <div className="flex h-7 items-center gap-1.5 rounded-lg bg-black/[0.04] px-2 text-ink-3 focus-within:bg-white focus-within:ring-1 focus-within:ring-accent/40">
+        <div className="flex h-7 items-center gap-1.5 rounded-lg bg-black/[0.04] px-2 text-ink-3 focus-within:bg-surface focus-within:ring-1 focus-within:ring-accent/40">
           <IconSearch size={13} className="shrink-0" />
           <input
             value={query}
@@ -222,7 +223,7 @@ export function NavRail() {
           <IconEngine size={18} className={page === 'engines' ? 'text-accent' : 'text-ink-2'} />
           <span className="flex-1 text-left">模型引擎</span>
           {attention > 0 && (
-            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#FF9F0A] px-1.5 text-[12px] font-semibold text-white" title={`${attention} 个账号未就绪`}>
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-orange px-1.5 text-[12px] font-semibold text-white" title={`${attention} 个账号未就绪`}>
               {attention}
             </span>
           )}
@@ -242,7 +243,7 @@ export function NavRail() {
           <span className="flex-1 text-left">调试日志</span>
           {info && (
             <span
-              className={`h-1.5 w-1.5 rounded-full ${info.shellEnvSource === 'fallback' ? 'bg-[#FF9F0A]' : 'bg-[#34C759]'}`}
+              className={`h-1.5 w-1.5 rounded-full ${info.shellEnvSource === 'fallback' ? 'bg-orange' : 'bg-green'}`}
               title={
                 (info.shellEnvSource === 'login' ? 'Shell 环境已加载' : info.shellEnvSource === 'cache' ? 'Shell 环境（缓存）' : 'Shell 环境回退：' + info.shellEnvError) +
                 '\n\n' +
@@ -251,6 +252,10 @@ export function NavRail() {
             />
           )}
         </button>
+        <div className="mt-0.5 flex h-8 items-center gap-2 px-3 text-[13px] text-ink-3">
+          <span className="flex-1">外观</span>
+          <ThemeSwitch />
+        </div>
       </div>
     </nav>
   )
@@ -387,7 +392,7 @@ function ThreadRow({ t, active, onOpen, onDelete }: { t: Thread; active: boolean
               setEditing(false)
             }
           }}
-          className="h-[46px] w-full rounded-lg bg-white px-2.5 text-[13px] text-ink ring-2 ring-accent/40 outline-none"
+          className="h-[46px] w-full rounded-lg bg-surface px-2.5 text-[13px] text-ink ring-2 ring-accent/40 outline-none"
         />
       ) : (
         <button
@@ -418,7 +423,7 @@ function ThreadRow({ t, active, onOpen, onDelete }: { t: Thread; active: boolean
         </button>
       )}
       {menu && (
-        <div className="absolute top-9 right-0 z-30 w-36 rounded-xl bg-white/95 p-1.5 shadow-[0_0_0_1px_rgba(0,0,0,0.07),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+        <div className="absolute top-9 right-0 z-30 w-36 rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl">
           <button
             className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink hover:bg-accent hover:text-white"
             onClick={() => {
@@ -430,7 +435,7 @@ function ThreadRow({ t, active, onOpen, onDelete }: { t: Thread; active: boolean
           </button>
           <div className="mx-2 my-1 h-px bg-hairline" />
           <button
-            className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-[#D70015] hover:bg-[#FDECEC]"
+            className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-danger hover:bg-danger-soft"
             onClick={() => {
               setMenu(false)
               onDelete()
@@ -440,6 +445,35 @@ function ThreadRow({ t, active, onOpen, onDelete }: { t: Thread; active: boolean
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+const THEME_OPTIONS: { mode: ThemeMode; title: string; Icon: (p: { size?: number }) => ReactElement }[] = [
+  { mode: 'system', title: '跟随系统', Icon: IconAuto },
+  { mode: 'light', title: '浅色', Icon: IconSun },
+  { mode: 'dark', title: '深色', Icon: IconMoon }
+]
+
+/** Compact macOS-style three-way appearance switch: 跟随系统 / 浅色 / 深色. */
+function ThemeSwitch() {
+  const { mode } = useTheme()
+  return (
+    <div className="no-drag flex rounded-[8px] bg-black/[0.05] p-[2px]" role="radiogroup" aria-label="外观">
+      {THEME_OPTIONS.map(({ mode: m, title, Icon }) => (
+        <button
+          key={m}
+          role="radio"
+          aria-checked={mode === m}
+          title={title}
+          onClick={() => void setThemeMode(m)}
+          className={`flex h-[22px] w-[26px] items-center justify-center rounded-[6px] transition-all duration-150 ${
+            mode === m ? 'bg-surface text-ink shadow-[0_1px_2px_rgba(0,0,0,0.12),0_0_0_0.5px_var(--ring)]' : 'text-ink-3 hover:text-ink-2'
+          }`}
+        >
+          <Icon size={13} />
+        </button>
+      ))}
     </div>
   )
 }

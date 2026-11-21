@@ -59,8 +59,8 @@ const fullTime = (ts: number) => {
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const pill =
-  'flex h-9 items-center gap-2 rounded-full bg-white px-4 text-[14px] font-medium text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-[#FAFAFB] active:scale-[0.98]'
-const popover = 'rounded-2xl bg-white/95 p-1.5 shadow-[0_0_0_1px_rgba(0,0,0,0.07),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
+  'flex h-9 items-center gap-2 rounded-full bg-surface px-4 text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-surface-2 active:scale-[0.98]'
+const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
 
 function useOutside<T extends HTMLElement>(open: boolean, close: () => void) {
   const ref = useRef<T>(null)
@@ -233,8 +233,8 @@ export function WorkbenchPage() {
                   ? `本机 CLI 历史（只读查看，不会改动原记录）· 发送消息后才会存为对话，用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 接着原会话继续`
                   : `从本机 CLI 历史继续（不会改动原记录）· 用 ${byId(thread.imported.profileId)?.name ?? '原账号'} 发送会接着原会话`}
                 {thread.historyState === 'loading' && <span className="ml-1 text-ink-3">· 正在读取…</span>}
-                {thread.historyState === 'error' && <span className="ml-1 text-[#A05A00]">· 历史读取失败</span>}
-                {thread.imported.notice && <span className="block text-[#A05A00]">{thread.imported.notice}</span>}
+                {thread.historyState === 'error' && <span className="ml-1 text-warn">· 历史读取失败</span>}
+                {thread.imported.notice && <span className="block text-warn">{thread.imported.notice}</span>}
               </span>
             </div>
           )}
@@ -264,7 +264,7 @@ export function WorkbenchPage() {
       {!thread?.pause && (handoffNeeded || handoffReady) && driverP && (
         <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
           {handoffReady ? (
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-[#EEF5FF] px-4 py-2.5 text-[13px] text-[#0B4FA8] shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-info-soft px-4 py-2.5 text-[13px] text-info shadow-[0_0_0_1px_rgba(0,102,214,0.22),0_8px_24px_rgba(0,0,0,0.06)]">
               <IconCheck size={15} className="shrink-0" />
               <span className="min-w-0 flex-1 truncate">
                 交接文档已就绪，下一条消息会同步给 <span className="font-semibold">{driverP.name}</span>
@@ -274,12 +274,12 @@ export function WorkbenchPage() {
               </button>
             </div>
           ) : (
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-white px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_8px_24px_rgba(0,0,0,0.08)]">
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
               <IconArrowRight size={15} className="shrink-0 text-accent" />
               <span className="min-w-0 flex-1">
                 切换到 <span className="font-semibold">{driverP.name}</span> 需同步前文上下文
-                {handoffFailed && <span className="block text-[12px] text-[#A05A00]">{srcP?.name ?? '原账号'} 生成交接失败{thread!.handoffFailed!.error === 'rate_limited' ? '（触发用量限制）' : ''}，可改为导出最近对话</span>}
-                {!srcOk && !handoffFailed && <span className="block text-[12px] text-[#A05A00]">{srcP?.name ?? '原账号'} 当前不可用，可导出最近对话作为交接</span>}
+                {handoffFailed && <span className="block text-[12px] text-warn">{srcP?.name ?? '原账号'} 生成交接失败{thread!.handoffFailed!.error === 'rate_limited' ? '（触发用量限制）' : ''}，可改为导出最近对话</span>}
+                {!srcOk && !handoffFailed && <span className="block text-[12px] text-warn">{srcP?.name ?? '原账号'} 当前不可用，可导出最近对话作为交接</span>}
               </span>
               {srcOk && !handoffFailed ? (
                 <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoff}>
@@ -299,15 +299,15 @@ export function WorkbenchPage() {
       )}
       {thread?.pause && (
         <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
-          <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-[#FFF6E5] px-4 py-3 text-[13px] text-[#8A5300] shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
+          <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-3 rounded-2xl bg-warn-soft px-4 py-3 text-[13px] text-warn shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
             <IconAlert size={16} className="shrink-0" />
             <span className="min-w-0 flex-1">
               <span className="font-semibold">需要人工介入</span> · {thread.pause.reason}
             </span>
-            <button className="h-7 shrink-0 rounded-full bg-[#FF9F0A] px-3 font-medium text-white hover:bg-[#F29100]" onClick={() => resolvePause(thread.id, 'retry')}>
+            <button className="h-7 shrink-0 rounded-full bg-orange px-3 font-medium text-white hover:bg-orange" onClick={() => resolvePause(thread.id, 'retry')}>
               再试一轮
             </button>
-            <button className="h-7 shrink-0 rounded-full bg-white px-3 font-medium text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.08)] hover:bg-[#FAFAFB]" onClick={() => resolvePause(thread.id, 'skip')}>
+            <button className="h-7 shrink-0 rounded-full bg-surface px-3 font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2" onClick={() => resolvePause(thread.id, 'skip')}>
               跳过验收继续
             </button>
             <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05]" onClick={() => resolvePause(thread.id, 'stop')}>
@@ -334,7 +334,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
       <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-2.5 pr-3 pl-2'} title="这个对话允许调用的模型">
         <span className="flex -space-x-1">
           {active.slice(0, 5).map((p) => (
-            <span key={p.id} className="rounded-[8px] ring-2 ring-white" title={p.name}>
+            <span key={p.id} className="rounded-[8px] ring-2 ring-canvas" title={p.name}>
               <KindAvatar kind={p.kind} size={22} />
             </span>
           ))}
@@ -358,7 +358,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
                 className="flex h-10 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left transition-colors enabled:hover:bg-black/[0.04] disabled:cursor-default"
                 title={isDriver ? '主控账号始终参与' : undefined}
               >
-                <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && ready ? 'bg-accent text-white' : 'bg-white shadow-[inset_0_0_0_1.5px_rgba(0,0,0,0.18)]'} ${!ready ? 'opacity-40' : ''}`}>
+                <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && ready ? 'bg-accent text-white' : 'bg-surface shadow-[inset_0_0_0_1.5px_var(--ring)]'} ${!ready ? 'opacity-40' : ''}`}>
                   {on && ready && <IconCheck size={12} strokeWidth={3} />}
                 </span>
                 <KindAvatar kind={p.kind} size={22} />
@@ -400,7 +400,7 @@ function EmptyState({ projectDir, onPickProject, participants }: { projectDir: s
       {ready.length ? (
         <div className="mt-8 flex items-center gap-1.5">
           {ready.map((p) => (
-            <span key={p.id} className="flex items-center gap-1.5 rounded-full bg-white py-1 pr-3 pl-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_rgba(0,0,0,0.05)]" title={`${p.name} 已就绪`}>
+            <span key={p.id} className="flex items-center gap-1.5 rounded-full bg-surface py-1 pr-3 pl-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)]" title={`${p.name} 已就绪`}>
               <KindAvatar kind={p.kind} size={20} />
               {p.name}
             </span>
@@ -450,7 +450,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
       {images.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {images.map((a) => (
-            <img key={a.id} src={a.thumb!} title={a.path ?? a.name} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_rgba(0,0,0,0.06)]" />
+            <img key={a.id} src={a.thumb!} title={a.path ?? a.name} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
           ))}
         </div>
       )}
@@ -472,7 +472,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
         )
       )}
       {msg.note && (
-        <div className="flex items-center gap-1 text-[11px] text-[#0B4FA8]">
+        <div className="flex items-center gap-1 text-[11px] text-info">
           <IconCheck size={11} /> {msg.note}
         </div>
       )}
@@ -490,7 +490,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
 
 function FileChip({ a, onRemove }: { a: Attachment; onRemove?: () => void }) {
   return (
-    <span className="flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-white pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_rgba(0,0,0,0.07)]" title={a.path ?? a.name}>
+    <span className="flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)]" title={a.path ?? a.name}>
       <IconFile size={16} className="shrink-0 text-ink-2" />
       <span className="min-w-0 truncate">{a.name}</span>
       {onRemove && (
@@ -523,10 +523,10 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
         </span>
       </span>
       {msg.dispatchedBy && <span className="rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-ink-2">响应 {msg.dispatchedBy.name} 的调度</span>}
-      {msg.retry > 0 && !msg.review && <span className="rounded-full bg-[#FFF1DB] px-2 py-0.5 text-[11px] text-[#A05A00]">第 {msg.retry} 次重做</span>}
+      {msg.retry > 0 && !msg.review && <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">第 {msg.retry} 次重做</span>}
       {msg.verdict && (
         <span
-          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${msg.verdict.status === 'PASS' ? 'bg-[#E3F6E8] text-[#1A7F45]' : 'bg-[#FFF1DB] text-[#A05A00]'}`}
+          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${msg.verdict.status === 'PASS' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn'}`}
           title={msg.verdict.reason}
         >
           {msg.verdict.status === 'PASS' ? '验收通过' : '验收打回'}
@@ -595,13 +595,13 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
           {streaming && msg.content && <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-accent" />}
           <Outputs msg={msg} />
           {(msg.notices ?? []).map((n, i) => (
-            <div key={i} className="mt-2 flex items-start gap-2 rounded-xl bg-[#FFF6E5] px-3 py-2 text-[12px] leading-relaxed text-[#8A5300]">
+            <div key={i} className="mt-2 flex items-start gap-2 rounded-xl bg-warn-soft px-3 py-2 text-[12px] leading-relaxed text-warn">
               <IconAlert size={14} className="mt-0.5 shrink-0" />
               <span className="min-w-0">{n}</span>
             </div>
           ))}
           {msg.error && (
-            <div className="mt-2 flex items-start gap-2 rounded-xl bg-[#FDECEC] px-3 py-2 text-[13px] leading-relaxed text-[#B42318]">
+            <div className="mt-2 flex items-start gap-2 rounded-xl bg-danger-soft px-3 py-2 text-[13px] leading-relaxed text-danger">
               <IconAlert size={15} className="mt-0.5 shrink-0" />
               <span className="min-w-0 break-words whitespace-pre-wrap select-text">{msg.error}</span>
             </div>
@@ -611,7 +611,7 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
           <div className="mt-1 -ml-2 flex items-center gap-2">
             {msg.content && (
               <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink">
-                {copied ? <IconCheck size={14} className="text-[#1A7F45]" /> : <IconCopy size={14} />}
+                {copied ? <IconCheck size={14} className="text-ok" /> : <IconCopy size={14} />}
                 {copied ? '已复制' : '复制'}
               </button>
             )}
@@ -1084,7 +1084,7 @@ function Composer({
         )}
 
         <div
-          className={`rounded-[24px] bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
+          className={`rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
             drag ? 'shadow-[0_0_0_2px_rgba(0,122,255,0.6),0_16px_40px_rgba(0,0,0,0.08)]' : ''
           }`}
           onDragOver={(e) => {
@@ -1103,10 +1103,10 @@ function Composer({
               {atts.map((a) =>
                 a.isImage && a.thumb ? (
                   <span key={a.id} className="group relative" title={a.path ?? a.name}>
-                    <img src={a.thumb} className="h-16 w-16 rounded-xl object-cover shadow-[0_0_0_1px_rgba(0,0,0,0.07)]" />
+                    <img src={a.thumb} className="h-16 w-16 rounded-xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
                     <button
                       onClick={() => setAtts((x) => x.filter((y) => y.id !== a.id))}
-                      className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#1C1C1E] text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                      className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-canvas opacity-0 shadow transition-opacity group-hover:opacity-100"
                       title="移除"
                     >
                       <IconX size={11} strokeWidth={2.4} />
@@ -1175,7 +1175,7 @@ function Composer({
             />
             <div className="flex-1" />
             {busy ? (
-              <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1C1C1E] text-white transition-transform active:scale-95" title="停止">
+              <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-canvas transition-transform active:scale-95" title="停止">
                 <IconStop size={14} />
               </button>
             ) : (

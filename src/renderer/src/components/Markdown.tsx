@@ -8,20 +8,22 @@ import rehypeHighlight from 'rehype-highlight'
 import 'katex/dist/katex.min.css'
 import { fileUrl, localPath, upgradeFileUrl } from '../lib/fileUrl'
 import { IconCheck, IconCopy, IconFolder } from './icons'
+import { useTheme } from '../state/theme'
 
 let mermaidSeq = 0
 let mermaidLib: Promise<typeof import('mermaid')['default']> | null = null
 /** Loaded on first use (large); strict mode sanitises labels and disables click handlers. */
-const loadMermaid = () =>
-  (mermaidLib ??= import('mermaid').then((m) => {
-    m.default.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: 'neutral',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif'
-    })
-    return m.default
-  }))
+const loadMermaid = async (dark: boolean) => {
+  const m = await (mermaidLib ??= import('mermaid').then((x) => x.default))
+  // re-initialised per render: the theme follows the app's light / dark appearance
+  m.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: dark ? 'dark' : 'neutral',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif'
+  })
+  return m
+}
 
 /** Folder relative image paths resolve against (the thread's working dir) + real HOME for `~/`. */
 export const MarkdownBase = createContext<{ baseDir: string | null; home: string | null }>({ baseDir: null, home: null })
@@ -41,12 +43,13 @@ function MermaidBlock({ source }: { source: string }) {
   const [err, setErr] = useState<string | null>(null)
   const [showSrc, setShowSrc] = useState(false)
   const [copied, setCopied] = useState(false)
+  const { dark } = useTheme()
   useEffect(() => {
     let dead = false
     // debounce: while a reply streams the block is re-rendered on every token
     const t = setTimeout(async () => {
       try {
-        const m = await loadMermaid()
+        const m = await loadMermaid(dark)
         await m.parse(source)
         const { svg } = await m.render(`mmd-${++mermaidSeq}`, source)
         if (!dead) {
@@ -61,7 +64,7 @@ function MermaidBlock({ source }: { source: string }) {
       dead = true
       clearTimeout(t)
     }
-  }, [source])
+  }, [source, dark])
   const copy = async () => {
     await window.agentswitch.sys.copy(source)
     setCopied(true)
@@ -78,14 +81,14 @@ function MermaidBlock({ source }: { source: string }) {
           </button>
         )}
         <button onClick={() => void copy()} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink">
-          {copied ? <IconCheck size={13} className="text-[#1A7F45]" /> : <IconCopy size={13} />}
+          {copied ? <IconCheck size={13} className="text-ok" /> : <IconCopy size={13} />}
           {copied ? '已复制' : '复制'}
         </button>
       </div>
       {raw ? (
         <pre>
           <code>{source}</code>
-          {err && !svg && <span className="mt-2 block font-sans text-[12px] text-[#A05A00]">{err}</span>}
+          {err && !svg && <span className="mt-2 block font-sans text-[12px] text-warn">{err}</span>}
         </pre>
       ) : (
         <div className="md-mermaid" dangerouslySetInnerHTML={{ __html: svg! }} />
@@ -109,7 +112,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
       <div className="flex h-8 items-center justify-between px-3.5 text-[12px] text-ink-3">
         <span className="font-mono">{lang || 'text'}</span>
         <button onClick={() => void copy()} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.05] hover:text-ink">
-          {copied ? <IconCheck size={13} className="text-[#1A7F45]" /> : <IconCopy size={13} />}
+          {copied ? <IconCheck size={13} className="text-ok" /> : <IconCopy size={13} />}
           {copied ? '已复制' : '复制'}
         </button>
       </div>
@@ -136,7 +139,7 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
       </span>
       {open &&
         createPortal(
-          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-black/55 backdrop-blur-md" onClick={() => setOpen(false)}>
+          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-[rgba(0,0,0,0.55)] backdrop-blur-md" onClick={() => setOpen(false)}>
             <img src={src} alt={alt} className="max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)]" />
             <div className="flex items-center gap-3 text-[14px] font-medium text-white/90">
               {alt && <span>{alt}</span>}

@@ -1,10 +1,11 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
-import { app, BrowserWindow, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { initProfiles } from './profiles'
 import { registerIpc } from './ipc'
 import { initShellEnv } from './shellEnv'
 import { handleFileProtocol, registerFileScheme } from './fileProtocol'
+import { initTheme } from './theme'
 
 registerFileScheme()
 
@@ -50,8 +51,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-  // Light mode for now; switching to 'system' later lets vibrancy + CSS tokens follow macOS.
-  nativeTheme.themeSource = 'light'
+  // appearance (system / light / dark): window chrome, vibrancy and menus follow nativeTheme
+  initTheme()
   let broadcastAll = (): void => {}
   await initShellEnv(join(app.getPath('userData'), 'shell-env.json'), () => broadcastAll())
   initProfiles()

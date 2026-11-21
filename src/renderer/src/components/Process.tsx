@@ -143,7 +143,7 @@ function CopyButton({ text, dark }: { text: string; dark?: boolean }) {
 export function DiffView({ diff }: { diff: string }) {
   const lines = diff.replace(/\n$/, '').split('\n')
   return (
-    <div className="overflow-hidden rounded-lg border border-black/[0.06] bg-white">
+    <div className="overflow-hidden rounded-lg border border-black/[0.06] bg-surface">
       <div className="max-h-80 overflow-auto py-1 font-mono text-[11.5px] leading-[18px]">
         {lines.map((l, i) => {
           if (l.startsWith('---') || l.startsWith('+++'))
@@ -153,11 +153,11 @@ export function DiffView({ diff }: { diff: string }) {
               </div>
             )
           const cls = l.startsWith('@@')
-            ? 'bg-[#F1F5FD] text-[#4A6FA5]'
+            ? 'bg-info-soft text-info'
             : l.startsWith('+')
-              ? 'bg-[#E9F7EE] text-[#1A6E3B]'
+              ? 'bg-ok-soft text-ok dark:text-ink'
               : l.startsWith('-')
-                ? 'bg-[#FDEEEE] text-[#A8281E]'
+                ? 'bg-danger-soft text-danger dark:text-ink'
                 : l.startsWith('\\') || l.startsWith('…')
                   ? 'text-ink-3 italic'
                   : 'text-ink-2'
@@ -196,7 +196,7 @@ function TerminalView({ a }: { a: Activity }) {
 
 function Block({ label, text }: { label: string; text: string }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-black/[0.06] bg-white">
+    <div className="overflow-hidden rounded-lg border border-black/[0.06] bg-surface">
       <div className="flex items-center border-b border-black/[0.05] px-3 py-1 text-[11px] text-ink-3">
         <span className="flex-1">{label}</span>
         <CopyButton text={text} />
@@ -219,8 +219,8 @@ function ActivityDetailView({ a }: { a: Activity }) {
 
 function StatusIcon({ s }: { s?: Activity['status'] }) {
   if (s === 'running') return <Spinner size={11} className="text-accent" />
-  if (s === 'error') return <IconX size={12} className="text-[#C4321F]" />
-  return <IconCheck size={12} className="text-[#2E9E5B]" />
+  if (s === 'error') return <IconX size={12} className="text-danger" />
+  return <IconCheck size={12} className="text-ok" />
 }
 
 function ActivityRow({ a }: { a: Activity }) {
@@ -242,11 +242,11 @@ function ActivityRow({ a }: { a: Activity }) {
         </span>
         {stat && (
           <span className="shrink-0 font-mono text-[11px]">
-            <span className="text-[#2E9E5B]">+{stat.add}</span> <span className="text-[#C4321F]">−{stat.del}</span>
+            <span className="text-ok">+{stat.add}</span> <span className="text-danger">−{stat.del}</span>
           </span>
         )}
         {a.type === 'run' && d?.exitCode !== undefined && d.exitCode !== null && (
-          <span className={`shrink-0 rounded-full px-1.5 font-mono text-[10.5px] ${d.exitCode === 0 ? 'bg-[#E3F6E8] text-[#1A7F45]' : 'bg-[#FDECEC] text-[#B42318]'}`}>exit {d.exitCode}</span>
+          <span className={`shrink-0 rounded-full px-1.5 font-mono text-[10.5px] ${d.exitCode === 0 ? 'bg-ok-soft text-ok' : 'bg-danger-soft text-danger'}`}>exit {d.exitCode}</span>
         )}
         <IconChevronDown size={12} className={`shrink-0 text-ink-3 opacity-0 transition group-hover:opacity-100 ${open ? 'rotate-180 opacity-100' : ''}`} />
       </button>
@@ -310,7 +310,7 @@ export function ActivityBar({ items, others, live }: { items: Activity[]; others
       <button onClick={() => setOpen((o) => !o)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] text-ink-2 transition-colors hover:bg-black/[0.025]">
         {current ? <Spinner size={12} className="text-accent" /> : <IconTerminal size={13} className="text-ink-3" />}
         <span className="min-w-0 flex-1 truncate">{current ? `正在${ACT[current.type]?.verb ?? ''} ${current.target}` : summary || `其他事件 ${others.length} 条`}</span>
-        {errors > 0 && <span className="shrink-0 rounded-full bg-[#FDECEC] px-1.5 text-[11px] text-[#B42318]">{errors} 个失败</span>}
+        {errors > 0 && <span className="shrink-0 rounded-full bg-danger-soft px-1.5 text-[11px] text-danger">{errors} 个失败</span>}
         <span className="shrink-0 text-ink-3">{open ? '收起' : '展开过程'}</span>
         <IconChevronDown size={13} className={`shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>

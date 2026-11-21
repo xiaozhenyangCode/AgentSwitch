@@ -145,14 +145,14 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
                 <div className="flex items-center gap-2">
                   <span
                     className={`flex h-6 w-6 items-center justify-center rounded-full text-[12px] font-semibold transition-colors ${
-                      done ? 'bg-[#34C759] text-white' : active ? 'bg-accent text-white' : 'bg-fill text-ink-3'
+                      done ? 'bg-green text-white' : active ? 'bg-accent text-white' : 'bg-fill text-ink-3'
                     }`}
                   >
                     {done ? <IconCheck size={13} strokeWidth={2.6} /> : i + 1}
                   </span>
                   <span className={`text-[13px] font-medium whitespace-nowrap ${done || active ? 'text-ink' : 'text-ink-3'}`}>{s}</span>
                 </div>
-                {i < steps.length - 1 && <div className={`mx-3 h-px flex-1 ${done ? 'bg-[#34C759]/50' : 'bg-black/[0.08]'}`} />}
+                {i < steps.length - 1 && <div className={`mx-3 h-px flex-1 ${done ? 'bg-green/50' : 'bg-black/[0.08]'}`} />}
               </div>
             )
           })}
@@ -182,7 +182,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
                 如果你有多个账号，建议复制链接到浏览器的<span className="font-medium text-ink">无痕窗口</span>
                 中打开，避免用错账号授权。
               </div>
-              <div className="mt-3 truncate rounded-lg bg-white px-3 py-2 font-mono text-[12px] text-ink-2 shadow-[0_0_0_1px_rgba(0,0,0,0.05)] select-text" title={primary.url}>
+              <div className="mt-3 truncate rounded-lg bg-surface px-3 py-2 font-mono text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)] select-text" title={primary.url}>
                 {primary.url}
               </div>
             </div>
@@ -191,7 +191,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
                 <IconExternal size={16} /> 打开浏览器授权
               </button>
               <button className={btnSecondary + ' h-11 text-[15px]'} onClick={() => void copy()}>
-                {copied ? <IconCheck size={16} className="text-[#1A7F45]" /> : <IconCopy size={16} />}
+                {copied ? <IconCheck size={16} className="text-ok" /> : <IconCopy size={16} />}
                 {copied ? '已复制，粘贴到无痕窗口打开' : '复制链接（无痕窗口防串号）'}
               </button>
             </div>
@@ -202,8 +202,8 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
         )}
 
         {phase === 'success' && (
-          <div className="flex flex-col items-center rounded-2xl bg-[#F0FAF3] px-6 py-9">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#34C759] text-white shadow-[0_4px_12px_rgba(52,199,89,0.35)]">
+          <div className="flex flex-col items-center rounded-2xl bg-ok-soft px-6 py-9">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green text-white shadow-[0_4px_12px_rgba(52,199,89,0.35)]">
               <IconCheck size={24} strokeWidth={2.6} />
             </div>
             <div className="mt-4 text-[16px] font-semibold text-ink">登录成功</div>
@@ -282,7 +282,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   if (drawer.open) {
     return (
       <div
-        className="fixed right-5 z-50 max-h-[calc(100vh-380px)] w-[440px] overflow-y-auto rounded-2xl bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_24px_64px_rgba(0,0,0,0.22)]"
+        className="fixed right-5 z-50 max-h-[calc(100vh-380px)] w-[440px] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.22)]"
         style={{ bottom: DRAWER_HEIGHT + 20 }}
       >
         {body}

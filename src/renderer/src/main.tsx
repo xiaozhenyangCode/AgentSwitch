@@ -1,4 +1,5 @@
 import './lib/legacyStorage' // first: copies AgentMux-era localStorage keys before stores load
+import './state/theme' // before first paint: applies .dark from the saved appearance
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'

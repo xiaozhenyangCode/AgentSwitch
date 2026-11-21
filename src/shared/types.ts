@@ -374,6 +374,9 @@ export interface EnvPreview {
 }
 
 export const IPC = {
+  themeGetSync: 'theme:getSync',
+  themeSet: 'theme:set',
+  themeChanged: 'theme:changed',
   stateGet: 'state:get',
   stateChanged: 'state:changed',
   profilesAdd: 'profiles:add',
@@ -442,4 +445,12 @@ export interface DeleteThreadResult {
   /** Native CLI files moved to the Trash. */
   trashed: string[]
   failed: string[]
+}
+
+/** Appearance: follow macOS, or pin light / dark. */
+export type ThemeMode = 'system' | 'light' | 'dark'
+export interface ThemeState {
+  mode: ThemeMode
+  /** Effective appearance right now. */
+  dark: boolean
 }

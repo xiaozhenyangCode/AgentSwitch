@@ -3,6 +3,8 @@ import {
   IPC,
   type AppInfo,
   type DeleteThreadRequest,
+  type ThemeMode,
+  type ThemeState,
   type DeleteThreadResult,
   type ChatEvent,
   type ModelList,
@@ -95,6 +97,16 @@ const api = {
   attach: {
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */
     stage: (name: string, data: ArrayBuffer): Promise<string> => ipcRenderer.invoke(IPC.attachStage, name, data)
+  },
+  theme: {
+    /** Sync on purpose: applied before the first paint. */
+    get: (): ThemeState => ipcRenderer.sendSync(IPC.themeGetSync),
+    set: (mode: ThemeMode): Promise<ThemeState> => ipcRenderer.invoke(IPC.themeSet, mode),
+    onChanged: (cb: (s: ThemeState) => void): (() => void) => {
+      const h = (_e: IpcRendererEvent, s: ThemeState) => cb(s)
+      ipcRenderer.on(IPC.themeChanged, h)
+      return () => ipcRenderer.removeListener(IPC.themeChanged, h)
+    }
   },
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),

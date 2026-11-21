@@ -1,9 +1,12 @@
 @import 'tailwindcss';
 @import '@xterm/xterm/css/xterm.css';
 
+/* dark: variant follows the .dark class (manual switch), not only the OS media query */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /*
- * Design tokens. Values live in CSS variables so a dark theme can later be added by
- * overriding them under [data-theme='dark'] (the app currently forces light).
+ * Design tokens. Every color lives in a CSS variable; `.dark` on <html> (set from the saved
+ * appearance / macOS, see state/theme.ts) swaps them for the macOS dark palette.
  */
 :root {
   --ink: #1d1d1f;
@@ -11,11 +14,67 @@
   --ink-3: #86868b;
   --canvas: #f5f5f7;
   --surface: #ffffff;
+  --surface-2: #fafafb;
   --fill: #f5f5f7;
   --fill-hover: #ebebf0;
   --hairline: rgba(0, 0, 0, 0.06);
+  /* hairline ring used in box-shadows (cards, popovers, inputs) */
+  --ring: rgba(0, 0, 0, 0.06);
+  /* base of the black/[x] tint utilities: dark tints on light, light tints on dark */
+  --tint: #000000;
+  --sidebar: #f3f3f5;
+  --tile: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.2);
   --accent: #007aff;
   --accent-hover: #0066d6;
+  /* status: text on canvas, soft background, solid dot / bar */
+  --ok: #1a7f45;
+  --ok-soft: #e6f6ec;
+  --warn: #a05a00;
+  --warn-soft: #fff4e0;
+  --danger: #d70015;
+  --danger-soft: #fdecec;
+  --info: #0a5fcc;
+  --info-soft: #e8f1ff;
+  --green: #34c759;
+  --orange: #ff9f0a;
+  --red: #ff3b30;
+  --muted-dot: #aeaeb2;
+  --code-bg: #f7f7f9;
+  --code-ink: #1d1d1f;
+}
+
+.dark {
+  --ink: #f5f5f7;
+  --ink-2: #a1a1a6;
+  --ink-3: #6e6e73;
+  --canvas: #1c1c1e;
+  --surface: #252528;
+  --surface-2: #2c2c2e;
+  --fill: #2c2c2e;
+  --fill-hover: #3a3a3c;
+  --hairline: rgba(255, 255, 255, 0.08);
+  --ring: rgba(255, 255, 255, 0.08);
+  --tint: #ffffff;
+  --sidebar: #161618;
+  --tile: #2c2c2e;
+  --scrim: rgba(0, 0, 0, 0.45);
+  --accent: #0a84ff;
+  --accent-hover: #409cff;
+  --ok: #30d158;
+  --ok-soft: rgba(48, 209, 88, 0.14);
+  --warn: #ffb340;
+  --warn-soft: rgba(255, 159, 10, 0.14);
+  --danger: #ff6961;
+  --danger-soft: rgba(255, 69, 58, 0.16);
+  --info: #64a8ff;
+  --info-soft: rgba(10, 132, 255, 0.16);
+  --green: #30d158;
+  --orange: #ffa524;
+  --red: #ff453a;
+  --muted-dot: #636366;
+  --code-bg: #1e1e21;
+  --code-ink: #e6e6e8;
 }
 
 @theme {
@@ -27,11 +86,28 @@
   --color-ink-3: var(--ink-3);
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
   --color-fill: var(--fill);
   --color-fill-hover: var(--fill-hover);
   --color-hairline: var(--hairline);
+  --color-sidebar: var(--sidebar);
+  --color-tile: var(--tile);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-green: var(--green);
+  --color-orange: var(--orange);
+  --color-red: var(--red);
+  --color-muted-dot: var(--muted-dot);
+  /* black/[x] fills, borders and dividers flip to white tints in dark mode */
+  --color-black: var(--tint);
 
   --color-claude: #d97757;
   --color-gemini: #4285f4;
@@ -76,7 +152,7 @@ label {
     background: var(--surface);
     border-radius: 16px;
     box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.05),
+      0 0 0 1px var(--ring),
       0 2px 8px rgba(0, 0, 0, 0.04),
       0 12px 32px rgba(0, 0, 0, 0.04);
   }
@@ -88,7 +164,7 @@ label {
   .card-hover:hover {
     transform: translateY(-2px);
     box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.06),
+      0 0 0 1px var(--ring),
       0 4px 12px rgba(0, 0, 0, 0.06),
       0 18px 40px rgba(0, 0, 0, 0.07);
   }
@@ -108,7 +184,7 @@ label {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.14);
+  background: color-mix(in srgb, var(--tint) 14%, transparent);
   border-radius: 6px;
   border: 3px solid transparent;
   background-clip: content-box;
@@ -152,7 +228,7 @@ label {
 .md blockquote {
   margin: 0 0 12px;
   padding: 2px 0 2px 14px;
-  border-left: 3px solid rgba(0, 0, 0, 0.1);
+  border-left: 3px solid color-mix(in srgb, var(--tint) 12%, transparent);
   color: var(--ink-2);
 }
 .md :not(pre) > code {
@@ -160,7 +236,7 @@ label {
   font-size: 0.86em;
   padding: 1px 6px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.05);
+  background: color-mix(in srgb, var(--tint) 6%, transparent);
 }
 .md-figure {
   display: inline-flex;
@@ -176,26 +252,26 @@ label {
   height: 200px;
   object-fit: cover;
   border-radius: 18px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 10px rgba(0, 0, 0, 0.07);
+  box-shadow: 0 0 0 1px var(--ring), 0 2px 10px rgba(0, 0, 0, 0.07);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 .md-figure:hover img {
   transform: translateY(-2px);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 10px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 0 0 1px var(--ring), 0 10px 24px rgba(0, 0, 0, 0.12);
 }
 .md-code pre code.language-text { white-space: pre-wrap; word-break: break-word; }
 .md-figure-broken { cursor: default; }
 .md-broken {
   display: flex; align-items: center; justify-content: center;
   width: 200px; height: 120px; border-radius: 18px;
-  background: rgba(0, 0, 0, 0.04); color: var(--ink-3); font-size: 12px;
+  background: color-mix(in srgb, var(--tint) 5%, transparent); color: var(--ink-3); font-size: 12px;
 }
 .md-caption { font-size: 12px; color: var(--ink-2); }
 .md-code {
   margin: 0 0 14px;
   border-radius: 14px;
-  background: #f7f7f9;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05);
+  background: var(--code-bg);
+  box-shadow: 0 0 0 1px var(--ring);
   overflow: hidden;
 }
 .md-code pre {
@@ -205,11 +281,11 @@ label {
   font-family: 'SF Mono', ui-monospace, Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.6;
-  color: #1d1d1f;
+  color: var(--code-ink);
 }
-.md-table { margin: 0 0 14px; overflow-x: auto; border-radius: 12px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.07); }
+.md-table { margin: 0 0 14px; overflow-x: auto; border-radius: 12px; box-shadow: 0 0 0 1px var(--ring); }
 .md table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-.md th { text-align: left; font-weight: 600; background: #f7f7f9; }
+.md th { text-align: left; font-weight: 600; background: var(--code-bg); }
 .md th, .md td { padding: 8px 12px; border-bottom: 1px solid var(--hairline); }
 .md tr:last-child td { border-bottom: 0; }
 
@@ -224,11 +300,24 @@ label {
 .hljs-meta, .hljs-subst { color: #643820; }
 .hljs-symbol, .hljs-bullet, .hljs-link { color: #0e0eff; }
 
+/* GitHub Dark-like syntax colors */
+.dark .hljs-keyword, .dark .hljs-literal, .dark .hljs-built_in.hljs-keyword, .dark .hljs-selector-tag { color: #ff7b72; font-weight: 500; }
+.dark .hljs-string, .dark .hljs-template-string, .dark .hljs-regexp { color: #a5d6ff; }
+.dark .hljs-number { color: #79c0ff; }
+.dark .hljs-comment, .dark .hljs-quote { color: #8b949e; }
+.dark .hljs-title, .dark .hljs-title.function_, .dark .hljs-section { color: #d2a8ff; }
+.dark .hljs-title.class_, .dark .hljs-type, .dark .hljs-built_in { color: #ffa657; }
+.dark .hljs-attr, .dark .hljs-property, .dark .hljs-variable, .dark .hljs-params { color: #79c0ff; }
+.dark .hljs-meta, .dark .hljs-subst { color: #e6e6e8; }
+.dark .hljs-symbol, .dark .hljs-bullet, .dark .hljs-link { color: #7ee787; }
+.dark .hljs-addition { color: #7ee787; background: rgba(46, 160, 67, 0.15); }
+.dark .hljs-deletion { color: #ffa198; background: rgba(248, 81, 73, 0.15); }
+
 /* nested lists, math, mermaid */
 .md ul ul { list-style: circle; }
 .md ul ul ul { list-style: square; }
 .md li > ul, .md li > ol { margin: 2px 0 4px; }
-.md .katex { font-size: 1.06em; }
+.md .katex { font-size: 1.06em; color: inherit; }
 .md .katex-display { margin: 10px 0 14px; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
 .md-mermaid { display: flex; justify-content: center; padding: 8px 14px 14px; overflow-x: auto; }
 .md-mermaid svg { max-width: 100%; max-height: 480px; height: auto; }

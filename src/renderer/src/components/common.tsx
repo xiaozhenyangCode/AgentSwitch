@@ -24,7 +24,7 @@ export function StatusBadge({ profile }: { profile: ProfileState }) {
 export function KindAvatar({ kind, size = 32 }: { kind: ProfileKind; size?: number }) {
   return (
     <div
-      className="flex shrink-0 items-center justify-center bg-white shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.12),0_0.5px_1px_rgba(0,0,0,0.06)]"
+      className="flex shrink-0 items-center justify-center bg-tile shadow-[inset_0_0_0_0.5px_var(--ring),0_0.5px_1px_rgba(0,0,0,0.06)]"
       style={{ width: size, height: size, borderRadius: size * 0.28 }}
       aria-label={KIND_META[kind].name}
     >
@@ -56,7 +56,7 @@ export function Segmented<T extends string>({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => onChange(o.value)}
           className={`${sm ? 'h-6 flex-auto px-1.5 text-[12px]' : 'h-7 px-3.5 text-[13px]'} rounded-[7px] font-medium whitespace-nowrap transition-all duration-150 ${
-            value === o.value ? 'bg-white text-ink shadow-[0_1px_3px_rgba(0,0,0,0.12),0_0_0_0.5px_rgba(0,0,0,0.06)]' : 'text-ink-2 hover:text-ink'
+            value === o.value ? 'bg-surface text-ink shadow-[0_1px_3px_rgba(0,0,0,0.12),0_0_0_0.5px_var(--ring)]' : 'text-ink-2 hover:text-ink'
           }`}
         >
           {o.label}
@@ -69,9 +69,9 @@ export function Segmented<T extends string>({
 /** Centered sheet over a frosted backdrop. */
 export function Modal({ children, onClose, width = 500 }: { children: ReactNode; onClose: () => void; width?: number }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-md" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim) backdrop-blur-md" onMouseDown={onClose}>
       <div
-        className="max-h-[88vh] overflow-y-auto rounded-2xl bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
+        className="max-h-[88vh] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
         style={{ width }}
         onMouseDown={(e) => e.stopPropagation()}
       >

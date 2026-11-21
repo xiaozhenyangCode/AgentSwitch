@@ -183,7 +183,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
               <EffortBar opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
             </div>
           )}
-          {models?.error && <div className="mt-1.5 text-[12px] text-[#A05A00]">模型列表获取失败，使用{models.source === 'cache' ? '上次缓存' : '内置列表'}：{models.error}</div>}
+          {models?.error && <div className="mt-1.5 text-[12px] text-warn">模型列表获取失败，使用{models.source === 'cache' ? '上次缓存' : '内置列表'}：{models.error}</div>}
         </Field>
 
         <Field
@@ -245,12 +245,12 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           )}
         </div>
 
-        {error && <div className="text-[13px] text-[#C2352B]">{error}</div>}
+        {error && <div className="text-[13px] text-danger">{error}</div>}
       </div>
 
       <div className="flex items-center justify-between border-t border-hairline px-7 py-4">
         <div className="flex gap-1">
-          <button className={btnGhost + ' text-[#D70015] hover:bg-[#FDECEC] hover:text-[#D70015]'} onClick={onDelete}>
+          <button className={btnGhost + ' text-danger hover:bg-danger-soft hover:text-danger'} onClick={onDelete}>
             删除账号
           </button>
           <button className={btnGhost} onClick={() => void reset()} title="恢复默认的登录 / 运行命令与环境变量">

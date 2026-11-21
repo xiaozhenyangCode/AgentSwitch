@@ -101,7 +101,7 @@ export function DebugDrawer() {
               }`}
               title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? ' · 运行中' : ' · 已结束'}`}
             >
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-[#30D158]' : 'bg-white/25'}`} />
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-green' : 'bg-white/25'}`} />
               {s.label}
             </button>
           ))}

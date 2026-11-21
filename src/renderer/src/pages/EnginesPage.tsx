@@ -8,7 +8,7 @@ import { AccountQuotaCells, QuotaGroupChip, RefreshUsage, UsageView, todayBrief 
 import { fmtTokens, setEnginesTab, tokenSum, useEnginesTab, useUsage } from '../state/usage'
 
 /** macOS card material: white, hairline border, barely-there shadow. */
-const CARD = 'rounded-xl border border-black/[0.07] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
+const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
 const btnSolid =
   'inline-flex h-7 items-center justify-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-white transition-colors hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40'
 const btnText =
@@ -20,17 +20,17 @@ const btnIcon =
 const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_11rem_11rem_2rem] items-center gap-x-6'
 
 const DOT_COLOR: Record<ProfileState['status'], string> = {
-  idle: '#30B158',
-  running: '#0A84FF',
-  not_logged_in: '#F5A524',
-  rate_limited: '#F0524F',
-  uninstalled: '#A1A1A6'
+  idle: 'var(--green)',
+  running: 'var(--accent)',
+  not_logged_in: 'var(--orange)',
+  rate_limited: 'var(--red)',
+  uninstalled: 'var(--muted-dot)'
 }
 /** Tag shown only when something needs attention (healthy rows just get the dot). */
 const ALERT: Partial<Record<ProfileState['status'] | 'login', { label: string; cls: string }>> = {
-  login: { label: '登录中', cls: 'bg-[#0A84FF]/10 text-[#0A6AD6]' },
-  not_logged_in: { label: '未登录', cls: 'bg-[#F5A524]/12 text-[#9A5B00]' },
-  rate_limited: { label: '限流', cls: 'bg-[#F0524F]/10 text-[#C9302C]' },
+  login: { label: '登录中', cls: 'bg-accent/10 text-info' },
+  not_logged_in: { label: '未登录', cls: 'bg-orange/12 text-warn' },
+  rate_limited: { label: '限流', cls: 'bg-red/10 text-danger' },
   uninstalled: { label: '未安装', cls: 'bg-black/[0.05] text-ink-3' }
 }
 
@@ -128,9 +128,9 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
   }
 
   return (
-    <section ref={ref} className={`${CARD} transition-shadow duration-300 ${flash ? 'ring-4 ring-[#FF9F0A]/25' : ''}`}>
+    <section ref={ref} className={`${CARD} transition-shadow duration-300 ${flash ? 'ring-4 ring-orange/25' : ''}`}>
       {/* CLI title bar */}
-      <div className="flex h-[52px] items-center gap-3 rounded-t-xl border-b border-black/[0.06] bg-neutral-50/80 pr-3 pl-4">
+      <div className="flex h-[52px] items-center gap-3 rounded-t-xl border-b border-black/[0.06] bg-surface-2/80 pr-3 pl-4">
         <KindAvatar kind={kind} size={26} />
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
           <span className="shrink-0 text-[14px] font-semibold text-ink">{meta.cli}</span>
@@ -215,7 +215,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   }
 
   return (
-    <div className={`${ROW_GRID} min-h-[64px] px-4 py-3 transition-colors duration-300 ${flash ? 'bg-[#FFF8EB]' : ''}`}>
+    <div className={`${ROW_GRID} min-h-[64px] px-4 py-3 transition-colors duration-300 ${flash ? 'bg-warn-soft' : ''}`}>
       {/* identity + today */}
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
@@ -223,7 +223,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
           {editing ? (
             <input
               autoFocus
-              className="h-7 w-full max-w-[240px] rounded-md bg-white px-2 text-[14px] font-semibold text-ink ring-2 ring-accent/40 outline-none select-text"
+              className="h-7 w-full max-w-[240px] rounded-md bg-surface px-2 text-[14px] font-semibold text-ink ring-2 ring-accent/40 outline-none select-text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onBlur={() => void commitRename()}
@@ -290,13 +290,13 @@ function RowMenu({ items }: { items: { label: string; run: () => void; destructi
         </svg>
       </button>
       {open && (
-        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-black/[0.07] bg-white/95 p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)] backdrop-blur-xl">
+        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)] backdrop-blur-xl">
           {items.map((it, i) => (
             <div key={it.label}>
               {it.destructive && i > 0 && <div className="mx-2 my-1 h-px bg-hairline" />}
               <button
                 disabled={it.disabled}
-                className={`flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] disabled:opacity-40 ${it.destructive ? 'text-[#D70015] hover:bg-[#FDECEC]' : 'text-ink enabled:hover:bg-accent enabled:hover:text-white'}`}
+                className={`flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] disabled:opacity-40 ${it.destructive ? 'text-danger hover:bg-danger-soft' : 'text-ink enabled:hover:bg-accent enabled:hover:text-white'}`}
                 onClick={() => {
                   setOpen(false)
                   it.run()

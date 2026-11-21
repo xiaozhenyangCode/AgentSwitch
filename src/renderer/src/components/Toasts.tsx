@@ -3,22 +3,22 @@ import { IconAlert, IconCheck, IconX } from './icons'
 
 const ICON = {
   success: (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#E6F6EC] text-[#1A7F45]">
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ok-soft text-ok">
       <IconCheck size={14} strokeWidth={2.4} />
     </span>
   ),
   error: (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#FDECEC] text-[#C2352B]">
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-danger-soft text-danger">
       <IconAlert size={14} />
     </span>
   ),
   warn: (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#FFF4E0] text-[#9A5B13]">
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-warn-soft text-warn">
       <IconAlert size={14} />
     </span>
   ),
   info: (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#E8F1FF] text-accent">
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-info-soft text-accent">
       <span className="text-[13px] font-bold">i</span>
     </span>
   )
@@ -31,7 +31,7 @@ export function Toasts() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto flex items-start gap-3 rounded-2xl bg-white/95 px-4 py-3.5 shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.12)] backdrop-blur-xl"
+          className="pointer-events-auto flex items-start gap-3 rounded-2xl bg-surface/95 px-4 py-3.5 shadow-[0_0_0_1px_var(--ring),0_10px_30px_rgba(0,0,0,0.12)] backdrop-blur-xl"
         >
           {ICON[t.kind]}
           <div className="min-w-0 flex-1 pt-0.5">
