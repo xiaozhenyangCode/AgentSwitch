@@ -704,5 +704,15 @@ export const zhTW: Dict = {
   'chg.st.A': '已新增',
   'chg.st.D': '已刪除',
   'chg.st.U': '未追蹤（新檔案）',
-  'chg.st.R': '已重新命名'
+  'chg.st.R': '已重新命名',
+  'proj.lockedHint': '對話已開始，工作目錄已鎖定，無法再切換',
+  'proj.lockedNone': '這是一個未綁定專案的通用對話，開始後無法再綁定目錄',
+  'proj.copyPath': '複製路徑',
+  'proj.newHere': '在此專案新增對話',
+  'proj.newNone': '新增通用對話',
+  'proj.recent': '最近專案',
+  'proj.pickOther': '選擇其他資料夾…',
+  'proj.none': '不綁定專案（通用對話）',
+  'nav.newInProject': '在 {name} 中新增對話',
+  'nav.newNoProject': '新增通用對話'
 }

@@ -149,6 +149,12 @@ export const IconCompose = (p: P) => (
     <path d="M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 8.5-8.5Z" />
   </svg>
 )
+export const IconLock = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="5" y="11" width="14" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+  </svg>
+)
 export const IconFile = (p: P) => (
   <svg {...base(p)}>
     <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />

@@ -682,5 +682,15 @@ export const en: Dict = {
   'chg.st.A': 'Added',
   'chg.st.D': 'Deleted',
   'chg.st.U': 'Untracked (new file)',
-  'chg.st.R': 'Renamed'
+  'chg.st.R': 'Renamed',
+  'proj.lockedHint': 'The chat has started, so its folder is locked',
+  'proj.lockedNone': 'A general chat with no project; a folder can\'t be added once it has started',
+  'proj.copyPath': 'Copy path',
+  'proj.newHere': 'New chat in this project',
+  'proj.newNone': 'New general chat',
+  'proj.recent': 'Recent projects',
+  'proj.pickOther': 'Choose another folder…',
+  'proj.none': 'No project (general chat)',
+  'nav.newInProject': 'New chat in {name}',
+  'nav.newNoProject': 'New general chat'
 }

@@ -192,9 +192,16 @@ export function NavRail() {
         {groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? t('nav.noMatchThreads') : t('nav.noThreads')}</div>}
         {groups.map(([dir, threads]) => (
           <div key={dir || '_'} className="mb-3">
-            <div className="flex h-7 items-center gap-1.5 px-2.5 text-[12px] font-medium text-ink-3" title={dir || undefined}>
+            <div className="group flex h-7 items-center gap-1.5 pr-1 pl-2.5 text-[12px] font-medium text-ink-3" title={dir || undefined}>
               <IconFolder size={13} className="shrink-0" />
-              <span className="truncate">{dir ? baseName(dir) : t('nav.noProject')}</span>
+              <span className="min-w-0 flex-1 truncate">{dir ? baseName(dir) : t('nav.noProject')}</span>
+              <button
+                onClick={() => start(dir || null)}
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-md opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.06] hover:text-ink focus-visible:opacity-100 dark:hover:bg-white/[0.08]"
+                title={dir ? t('nav.newInProject', { name: baseName(dir) }) : t('nav.newNoProject')}
+              >
+                <IconPlus size={13} />
+              </button>
             </div>
             {threads.map((th) => (
               <ThreadRow

@@ -13,6 +13,8 @@ import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
 import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
+import { ProjectBar } from '../components/ProjectBar'
+import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
@@ -129,7 +131,11 @@ export function WorkbenchPage() {
   const setDriver = (id: ProfileId, model: string | null) =>
     update({ driver: { profileId: id, model }, participants: participants.includes(id) ? participants : [...participants, id] })
 
+  // the folder is fixed once the first message went out (the CLI sessions are bound to it)
+  const projectLocked = !!thread && (!!thread.imported || thread.messages.some((m) => m.role === 'user'))
+  const startThread = useStartThread()
   const pickProject = async () => {
+    if (projectLocked) return
     const dir = await window.agentswitch.sys.pickProject(ctx.projectDir ?? undefined)
     if (dir) update({ projectDir: dir })
   }
@@ -243,11 +249,9 @@ export function WorkbenchPage() {
     <div className="flex h-full">
       <div className="relative flex h-full min-w-0 flex-1 flex-col">
         <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
-          <button onClick={() => void pickProject()} className={pill + ' no-drag max-w-[340px] min-w-0'} title={ctx.projectDir ? shortPath(ctx.projectDir) : t('wb.projectHint')}>
-            <IconFolder size={16} className="shrink-0 text-accent" />
-            <span className={`truncate ${ctx.projectDir ? '' : 'text-ink-2'}`}>{ctx.projectDir ? baseName(ctx.projectDir) : t('wb.pickProject')}</span>
-            <IconChevronDown size={14} className="shrink-0 text-ink-3" />
-          </button>
+          <div className="min-w-0 truncate text-[14px] font-semibold text-ink" title={thread?.title}>
+            {thread && !thread.preview ? thread.title : t('nav.newChat')}
+          </div>
           <div className="flex-1" />
           {synced && (
             <div key={synced.seq} className="no-drag pointer-events-none absolute top-3.5 left-1/2 z-20 -translate-x-1/2">
@@ -323,6 +327,15 @@ export function WorkbenchPage() {
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
+          footer={
+            <ProjectBar
+              dir={ctx.projectDir}
+              locked={projectLocked}
+              onChange={(dir) => !projectLocked && update({ projectDir: dir })}
+              onPick={() => void pickProject()}
+              onNewHere={startThread}
+            />
+          }
         />
         {!thread?.pause && (handoffNeeded || handoffReady) && driverP && (
           <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
@@ -988,7 +1001,8 @@ function Composer({
   onHeight,
   onSend,
   onStop,
-  suggestion
+  suggestion,
+  footer
 }: {
   driver: ProfileState | null
   driverModel: string | null
@@ -1004,6 +1018,8 @@ function Composer({
   onStop: () => void
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
+  /** Context line under the input card (project folder). */
+  footer?: ReactNode
 }) {
   const { toast, navigate } = useApp()
   const { sendKey } = useSettings()
@@ -1490,6 +1506,7 @@ function Composer({
             )}
           </div>
         </div>
+        {footer}
       </div>
     </div>
   )

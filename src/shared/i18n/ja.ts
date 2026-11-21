@@ -682,5 +682,15 @@ export const ja: Dict = {
   'chg.st.A': '追加',
   'chg.st.D': '削除',
   'chg.st.U': '未追跡（新規）',
-  'chg.st.R': '名前変更'
+  'chg.st.R': '名前変更',
+  'proj.lockedHint': '会話が始まったため、作業フォルダは固定されています',
+  'proj.lockedNone': 'プロジェクトなしの会話です。開始後はフォルダを設定できません',
+  'proj.copyPath': 'パスをコピー',
+  'proj.newHere': 'このプロジェクトで新しい会話',
+  'proj.newNone': '新しい会話（プロジェクトなし）',
+  'proj.recent': '最近のプロジェクト',
+  'proj.pickOther': '別のフォルダを選択…',
+  'proj.none': 'プロジェクトなし（一般の会話）',
+  'nav.newInProject': '{name} で新しい会話',
+  'nav.newNoProject': '新しい会話（プロジェクトなし）'
 }

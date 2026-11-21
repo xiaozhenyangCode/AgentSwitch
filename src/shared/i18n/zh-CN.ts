@@ -706,5 +706,15 @@ export const zhCN = {
   'chg.st.A': '已新增',
   'chg.st.D': '已删除',
   'chg.st.U': '未跟踪（新文件）',
-  'chg.st.R': '已重命名'
+  'chg.st.R': '已重命名',
+  'proj.lockedHint': '对话已开始，工作目录已锁定，不能再切换',
+  'proj.lockedNone': '这是一个未绑定项目的通用对话，已开始后无法再绑定目录',
+  'proj.copyPath': '复制路径',
+  'proj.newHere': '在此项目新建对话',
+  'proj.newNone': '新建通用对话',
+  'proj.recent': '最近项目',
+  'proj.pickOther': '选择其他文件夹…',
+  'proj.none': '不绑定项目（通用对话）',
+  'nav.newInProject': '在 {name} 中新建对话',
+  'nav.newNoProject': '新建通用对话'
 } as const
