@@ -16,6 +16,7 @@ import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../component
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
 import { CollapsibleBody } from '../components/CollapsibleBody'
+import { scrollListTo } from '../lib/scrollList'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
@@ -279,7 +280,7 @@ export function WorkbenchPage() {
 
   return (
     <div className="flex h-full">
-      <div className="relative flex h-full min-w-0 flex-1 flex-col">
+      <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-clip">
         <div className="drag flex h-14 shrink-0 items-center gap-2.5 px-8">
           <div className="min-w-0 truncate text-[14px] font-semibold text-ink" title={thread?.title}>
             {thread && !thread.preview ? thread.title : t('nav.newChat')}
@@ -331,6 +332,7 @@ export function WorkbenchPage() {
 
         <div
           ref={scroller}
+          data-scroller
           className="min-h-0 flex-1 overflow-y-auto"
           onScroll={(e) => {
             const el = e.currentTarget
@@ -581,7 +583,7 @@ const FOLD_PX = 140
 function UserText({ msg }: { msg: UserMessage }) {
   return (
     <div className="max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
-      <CollapsibleBody threshold={FOLD_PX + 40} collapsedHeight={FOLD_PX} fadeClass="to-accent" tone="bubble" className="overflow-hidden rounded-[inherit]">
+      <CollapsibleBody threshold={FOLD_PX + 40} collapsedHeight={FOLD_PX} tone="bubble" className="overflow-clip rounded-[inherit]">
         <div className="px-4 py-2.5 whitespace-pre-wrap select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
       </CollapsibleBody>
     </div>
@@ -750,7 +752,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
   const detailsRef = useRef<HTMLDivElement>(null)
   const showDetails = () => {
     setDetailsSeq((n) => n + 1)
-    detailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    scrollListTo(detailsRef.current)
   }
   const busy = msg.content || msg.activity.length > 0 || msg.thinking || msg.phase
   const copy = async () => {
@@ -768,7 +770,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
     )
 
   return (
-    <div ref={rootRef} className="flex scroll-mt-16 gap-3 pr-10">
+    <div ref={rootRef} className="flex gap-3 pr-10">
       <div className="pt-0.5">
         <KindAvatar kind={msg.agent.kind} size={28} />
       </div>
@@ -776,13 +778,13 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
         <SpeakerLine msg={msg} />
         <div className="mt-2">
           {msg.thinking && <ThinkingCard t={msg.thinking} live={streaming} />}
-          <div ref={detailsRef} className="scroll-mt-4">
+          <div ref={detailsRef}>
             {(msg.activity.length > 0 || (msg.others?.length ?? 0) > 0) && (
               <ActivityBar items={msg.activity} others={msg.others ?? []} live={streaming && !msg.content} openSeq={detailsSeq} />
             )}
           </div>
           {msg.content ? (
-            <CollapsibleBody threshold={REPLY_FOLD_AT} collapsedHeight={REPLY_FOLD_PX} defaultOpen={latest || streaming} disabled={streaming} fadeClass="to-canvas" anchor={rootRef}>
+            <CollapsibleBody threshold={REPLY_FOLD_AT} collapsedHeight={REPLY_FOLD_PX} defaultOpen={latest || streaming} disabled={streaming} anchor={rootRef}>
               <Markdown text={msg.content} />
             </CollapsibleBody>
           ) : streaming ? (

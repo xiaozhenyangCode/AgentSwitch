@@ -351,3 +351,13 @@ label {
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
+
+/* CollapsibleBody: the part revealed by 展开全部 fades in (opacity only, no layout per frame) */
+@keyframes cb-reveal {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.cb-reveal { animation: cb-reveal 160ms ease-out forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .cb-reveal { animation-duration: 1ms; }
+}

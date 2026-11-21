@@ -50,8 +50,8 @@ function Shell() {
       ) : (
         <>
           <NavRail />
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
-            <div className="min-h-0 flex-1" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas">
+            <div className="min-h-0 flex-1 overflow-clip" style={{ paddingBottom: drawer.open ? DRAWER_HEIGHT : 0 }}>
               <WorkbenchPage />
             </div>
             <DebugDrawer />

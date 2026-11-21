@@ -1,16 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { t } from '../state/i18n'
-import { IconChevronDown } from './icons'
+import { scrollListTo } from '../lib/scrollList'
 
-const DURATION = 240
-const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+const FADE_H = 64
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 
 /**
- * Long content folded to `collapsedHeight` with a fade at the bottom and an 展开全部 / 收起
- * toggle. Height animates from the real scrollHeight; once expanded the height is released
- * (`auto`) so late-loading images, diagrams or opened code blocks are never clipped, and
- * collapsing first locks the current height so it animates back just as smoothly.
+ * Long content clipped to `collapsedHeight` with a soft fade and a 展开全部 / 收起 text link
+ * right under it (X / Twitter style). No height animation: expanding releases the height at
+ * once and the newly revealed part fades in (opacity only, no per-frame layout); collapsing
+ * snaps back, and if the top of the message has scrolled above the list it realigns the
+ * message list itself — never `scrollIntoView`, which would also move outer containers.
  */
 export function CollapsibleBody({
   children,
@@ -18,7 +18,6 @@ export function CollapsibleBody({
   collapsedHeight,
   defaultOpen = false,
   disabled = false,
-  fadeClass,
   tone = 'plain',
   anchor,
   className = ''
@@ -30,11 +29,9 @@ export function CollapsibleBody({
   defaultOpen?: boolean
   /** e.g. while streaming: always shown in full, no toggle. */
   disabled?: boolean
-  /** Gradient into the surrounding background, e.g. `to-accent` / `to-canvas`. */
-  fadeClass: string
-  /** Toggle colours: on an accent bubble or on the page. */
+  /** On the accent user bubble or on the page background (fade colour + link colour). */
   tone?: 'bubble' | 'plain'
-  /** Element scrolled back into view when collapsing hides its top. */
+  /** Element realigned to the list top when collapsing hides it. */
   anchor?: RefObject<HTMLElement | null>
   className?: string
 }) {
@@ -42,10 +39,9 @@ export function CollapsibleBody({
   const inner = useRef<HTMLDivElement>(null)
   const [long, setLong] = useState(false)
   const [open, setOpen] = useState(defaultOpen)
-  /** Explicit height while animating (null: natural / collapsed by `open`). */
-  const [h, setH] = useState<number | null>(null)
-  const [anim, setAnim] = useState(false)
-  const done = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Expanding: the overlay is fading out over the newly revealed part. */
+  const [fading, setFading] = useState(false)
+  const realign = useRef(false)
 
   useLayoutEffect(() => {
     const el = inner.current
@@ -56,82 +52,47 @@ export function CollapsibleBody({
     ro.observe(el)
     return () => ro.disconnect()
   }, [threshold])
-  useEffect(() => () => void (done.current && clearTimeout(done.current)), [])
+
+  // after the collapse is laid out, before paint: bring the message top back if it is above the list
+  useLayoutEffect(() => {
+    if (open || !realign.current) return
+    realign.current = false
+    scrollListTo(anchor?.current ?? box.current, { smooth: false, onlyIfAbove: true })
+  }, [open, anchor])
 
   const active = long && !disabled
-  const finish = () => {
-    if (done.current) clearTimeout(done.current)
-    done.current = null
-    setAnim(false)
-    setH(null)
-  }
-  // fallback when transitionend never fires (hidden tab, interrupted transition)
-  const armFallback = () => {
-    if (done.current) clearTimeout(done.current)
-    done.current = setTimeout(finish, DURATION + 120)
-  }
-
   const toggle = () => {
-    const full = inner.current?.offsetHeight ?? 0
-    if (reducedMotion()) {
-      setOpen((o) => !o)
-      return
-    }
-    if (!open) {
-      // collapsed -> full content height, then release to auto
-      setH(collapsedHeight)
-      requestAnimationFrame(() => {
-        setAnim(true)
-        setH(full)
-        setOpen(true)
-        armFallback()
-      })
+    if (open) {
+      realign.current = true
+      setFading(false)
+      setOpen(false)
     } else {
-      // lock the current height first so the collapse animates from where it is
-      setAnim(false)
-      setH(box.current?.offsetHeight ?? full)
-      const top = (anchor?.current ?? box.current)?.getBoundingClientRect().top ?? 0
-      if (top < 64) (anchor?.current ?? box.current)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          setAnim(true)
-          setH(collapsedHeight)
-          setOpen(false)
-          armFallback()
-        })
-      )
+      setOpen(true)
+      setFading(!reducedMotion())
     }
   }
 
-  const style = !active
-    ? undefined
-    : h !== null
-      ? { height: h, overflow: 'hidden' as const, transition: anim ? `height ${DURATION}ms ${EASE}` : undefined }
-      : !open
-        ? { height: collapsedHeight, overflow: 'hidden' as const }
-        : undefined
-
-  const btn =
-    tone === 'bubble'
-      ? 'text-white/85 hover:bg-white/15 hover:text-white'
-      : 'text-ink-3 hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]'
+  const color = tone === 'bubble' ? 'var(--accent)' : 'var(--canvas)'
+  const link = tone === 'bubble' ? 'text-white/90 hover:text-white' : 'text-accent hover:text-accent-hover'
 
   return (
     <div className={className}>
-      <div ref={box} className="relative" style={style} onTransitionEnd={(e) => e.target === box.current && e.propertyName === 'height' && finish()}>
+      <div ref={box} className="relative" style={active && !open ? { height: collapsedHeight, overflow: 'hidden' } : undefined}>
         <div ref={inner}>{children}</div>
-        {active && (
+        {/* collapsed: the visible part is just the fade at the cut; expanding: also covers the
+            revealed rest in the background colour and fades out — a pure opacity animation */}
+        {active && (!open || fading) && (
           <div
-            className={`pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent ${fadeClass} transition-opacity ease-out motion-reduce:transition-none ${open ? 'opacity-0' : 'opacity-100'}`}
-            style={{ transitionDuration: `${DURATION}ms` }}
+            className={`pointer-events-none absolute inset-x-0 bottom-0 ${fading ? 'cb-reveal' : ''}`}
+            style={{ top: Math.max(0, collapsedHeight - FADE_H), background: `linear-gradient(to bottom, transparent, ${color} ${FADE_H}px)` }}
+            onAnimationEnd={() => setFading(false)}
           />
         )}
       </div>
       {active && (
-        <div className={`flex ${tone === 'bubble' ? 'justify-end px-2 pb-1.5' : 'mt-1'}`}>
-          <button onClick={toggle} aria-expanded={open} className={`flex h-6 items-center gap-1 rounded-full px-2 text-[12px] font-medium transition-colors ${btn}`}>
+        <div className={tone === 'bubble' ? 'px-4 pb-2.5' : 'mt-1.5'}>
+          <button onClick={toggle} aria-expanded={open} className={`text-[13px] font-medium transition-colors hover:underline ${link}`}>
             {open ? t('wb.collapse') : t('wb.expandAll')}
-            <IconChevronDown size={12} className="transition-transform motion-reduce:transition-none" style={{ transform: open ? 'rotate(180deg)' : undefined, transitionDuration: `${DURATION}ms`, transitionTimingFunction: EASE }} />
           </button>
         </div>
       )}
