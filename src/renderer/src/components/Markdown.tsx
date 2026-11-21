@@ -2,9 +2,26 @@ import { Children, createContext, isValidElement, memo, useContext, useEffect, u
 import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
+import 'katex/dist/katex.min.css'
 import { fileUrl, localPath } from '../lib/fileUrl'
 import { IconCheck, IconCopy, IconFolder } from './icons'
+
+let mermaidSeq = 0
+let mermaidLib: Promise<typeof import('mermaid')['default']> | null = null
+/** Loaded on first use (large); strict mode sanitises labels and disables click handlers. */
+const loadMermaid = () =>
+  (mermaidLib ??= import('mermaid').then((m) => {
+    m.default.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'neutral',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif'
+    })
+    return m.default
+  }))
 
 /** Folder relative image paths resolve against (the thread's working dir) + real HOME for `~/`. */
 export const MarkdownBase = createContext<{ baseDir: string | null; home: string | null }>({ baseDir: null, home: null })
@@ -18,10 +35,70 @@ function textOf(node: ReactNode): string {
   return ''
 }
 
+/** ```mermaid block rendered as SVG; falls back to the source while incomplete/invalid. */
+function MermaidBlock({ source }: { source: string }) {
+  const [svg, setSvg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [showSrc, setShowSrc] = useState(false)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    let dead = false
+    // debounce: while a reply streams the block is re-rendered on every token
+    const t = setTimeout(async () => {
+      try {
+        const m = await loadMermaid()
+        await m.parse(source)
+        const { svg } = await m.render(`mmd-${++mermaidSeq}`, source)
+        if (!dead) {
+          setSvg(svg)
+          setErr(null)
+        }
+      } catch (e) {
+        if (!dead) setErr(e instanceof Error ? e.message.split('\n')[0] : String(e))
+      }
+    }, 350)
+    return () => {
+      dead = true
+      clearTimeout(t)
+    }
+  }, [source])
+  const copy = async () => {
+    await window.agentmux.sys.copy(source)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1400)
+  }
+  const raw = showSrc || !svg
+  return (
+    <div className="md-code group">
+      <div className="flex h-8 items-center gap-1 px-3.5 text-[12px] text-ink-3">
+        <span className="flex-1 font-mono">mermaid{err && !svg ? ' · 渲染失败' : ''}</span>
+        {svg && (
+          <button onClick={() => setShowSrc((x) => !x)} className="rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink">
+            {showSrc ? '查看图表' : '查看源码'}
+          </button>
+        )}
+        <button onClick={() => void copy()} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink">
+          {copied ? <IconCheck size={13} className="text-[#1A7F45]" /> : <IconCopy size={13} />}
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      {raw ? (
+        <pre>
+          <code>{source}</code>
+          {err && !svg && <span className="mt-2 block font-sans text-[12px] text-[#A05A00]">{err}</span>}
+        </pre>
+      ) : (
+        <div className="md-mermaid" dangerouslySetInnerHTML={{ __html: svg! }} />
+      )}
+    </div>
+  )
+}
+
 function CodeBlock({ children }: { children?: ReactNode }) {
   const [copied, setCopied] = useState(false)
   const code = Children.toArray(children)[0] as ReactElement<{ className?: string; children?: ReactNode }> | undefined
   const lang = /language-([\w+-]+)/.exec(code?.props.className ?? '')?.[1] ?? ''
+  if (lang === 'mermaid') return <MermaidBlock source={textOf(code?.props.children).replace(/\n$/, '')} />
   const copy = async () => {
     await window.agentmux.sys.copy(textOf(code?.props.children).replace(/\n$/, ''))
     setCopied(true)
@@ -125,7 +202,15 @@ const visible = (text: string) => text.replace(/```agentmux:dispatch[\s\S]*?(```
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]} components={components} urlTransform={urlTransform}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+        rehypePlugins={[
+          [rehypeKatex, { throwOnError: false, strict: 'ignore', output: 'htmlAndMathml' }],
+          [rehypeHighlight, { detect: false, ignoreMissing: true, plainText: ['mermaid'] }]
+        ]}
+        components={components}
+        urlTransform={urlTransform}
+      >
         {visible(text)}
       </ReactMarkdown>
     </div>

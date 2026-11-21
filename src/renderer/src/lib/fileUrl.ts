@@ -31,5 +31,5 @@ export function localPath(src: string, baseDir: string | null, home: string | nu
   return baseDir ? join(baseDir, p) : null
 }
 
-export const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i
+export const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg)$/i
 export const baseName = (p: string): string => p.split('/').filter(Boolean).pop() ?? p

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { ChatEvent, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
+import type { ActivityDetail, ActivityType, ChatEvent, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
@@ -40,8 +40,22 @@ export interface UserMessage {
 }
 
 export interface Activity {
-  type: 'read' | 'write' | 'run' | 'search'
+  id?: string
+  type: ActivityType
   target: string
+  status?: 'running' | 'done' | 'error'
+  detail?: ActivityDetail
+}
+
+export interface Thinking {
+  text: string
+  /** Latest token estimate (claude live estimate, agy/codex totals). */
+  tokens: number | null
+  startedAt: number
+  /** Set when the answer (text or a tool call) starts. */
+  endedAt: number | null
+  /** false: only a token total was reported afterwards, so the duration is unknown. */
+  timed?: boolean
 }
 
 export interface AssistantMessage {
@@ -57,6 +71,10 @@ export interface AssistantMessage {
   /** Markdown. */
   content: string
   activity: Activity[]
+  thinking: Thinking | null
+  usage: Usage | null
+  /** Structured CLI events no adapter rule handles (kept visible, never dropped). */
+  others: { kind: string; payload: string }[]
   /** Absolute paths of files this step produced. */
   outputs: string[]
   error: string | null
@@ -97,6 +115,7 @@ interface ChatState {
 const LS_KEY = 'agentmux.threads.v2'
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
+const endThinking = (t: Thinking | null): Thinking | null => (t && !t.endedAt ? { ...t, endedAt: now() } : t)
 
 function load(): ChatState {
   try {
@@ -202,6 +221,9 @@ const errorMessage = (turnId: string, agent: AgentRef, error: string): Assistant
   status: 'error',
   content: '',
   activity: [],
+  thinking: null,
+  usage: null,
+  others: [],
   outputs: [],
   error,
   notices: [],
@@ -292,6 +314,9 @@ function onEvent(e: ChatEvent) {
         status: 'queued',
         content: '',
         activity: [],
+        thinking: null,
+        usage: null,
+        others: [],
         outputs: [],
         error: null,
         notices: [],
@@ -314,9 +339,29 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => {
         switch (ev.t) {
           case 'text':
-            return { ...m, content: m.content + ev.delta }
-          case 'activity':
-            return { ...m, activity: [...m.activity, { type: ev.type, target: ev.target }] }
+            return { ...m, content: m.content + ev.delta, thinking: endThinking(m.thinking) }
+          case 'thinking': {
+            const live = m.thinking && !m.thinking.endedAt
+            // token count reported after the fact (agy totals, late claude estimates): update, don't reopen
+            if (!ev.delta && ev.tokens !== undefined && !live) {
+              const base = m.thinking ?? { text: '', tokens: null, startedAt: now(), endedAt: now(), timed: false }
+              return { ...m, thinking: { ...base, tokens: ev.tokens } }
+            }
+            const th: Thinking = live
+              ? m.thinking!
+              : { text: m.thinking?.text ? m.thinking.text + '\n\n' : '', tokens: m.thinking?.tokens ?? null, startedAt: m.thinking?.startedAt ?? now(), endedAt: null, timed: true }
+            return { ...m, thinking: { ...th, text: th.text + ev.delta, tokens: ev.tokens ?? th.tokens, timed: true } }
+          }
+          case 'activity': {
+            const a: Activity = { id: ev.id, type: ev.type, target: ev.target, status: ev.status, detail: ev.detail }
+            const i = ev.id ? m.activity.findIndex((x) => x.id === ev.id) : -1
+            const activity = i < 0 ? [...m.activity, a] : m.activity.map((x, j) => (j === i ? { ...x, ...a, detail: { ...x.detail, ...a.detail } } : x))
+            return { ...m, activity, thinking: endThinking(m.thinking) }
+          }
+          case 'usage':
+            return { ...m, usage: { ...m.usage, ...ev.usage } }
+          case 'other_event':
+            return m.others && m.others.length >= 100 ? m : { ...m, others: [...(m.others ?? []), { kind: ev.kind, payload: ev.payload }] }
           case 'output':
             return m.outputs.includes(ev.path) ? m : { ...m, outputs: [...m.outputs, ev.path] }
           case 'session':
@@ -331,7 +376,7 @@ function onEvent(e: ChatEvent) {
       })
     }
     case 'step-end':
-      return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null }))
+      return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
     case 'paused':
       return patchThread(e.threadId, (t) => ({ ...t, pause: { turnId: e.turnId, reason: e.reason } }))
     case 'turn-end':

@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSyn
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
 import type { AgentEvent, ChatEvent, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
+import { FileBaseline } from './fileBaseline'
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 
@@ -356,7 +357,9 @@ export class Orchestrator {
       '回复使用 Markdown，语言与用户一致。',
       cfg.autoApprove === 'full'
         ? '当前授权：完全放行，可以执行命令。'
-        : '当前授权：只能读写项目内的文件，执行 shell 命令会被自动拒绝。请直接用文件读取 / 查看 / 编辑工具完成任务（图片可以直接用读取工具查看）；确实需要执行命令时，说明需要执行什么，让用户决定。'
+        : cfg.kind === 'codex'
+          ? '当前授权：沙箱模式（workspace-write）。可以正常执行命令和读写项目内文件；沙箱内不能写项目以外的位置，也不能联网。'
+          : '当前授权：只能读写项目内的文件，执行 shell 命令会被自动拒绝。请直接用文件读取 / 查看 / 编辑工具完成任务（图片可以直接用读取工具查看）；确实需要执行命令时，说明需要执行什么，让用户决定。'
     ]
     if (step.allowDispatch) {
       const others = turn.req.participants.filter((p) => p !== step.profileId && hasProfile(p)).map((p) => getConfig(p))
@@ -427,6 +430,7 @@ export class Orchestrator {
     this.onState()
 
     const before = snapshot(turn.cwd, [turn.outDir])
+    const baseline = new FileBaseline(turn.cwd)
     const reported = new Set<string>()
     const written = new Set<string>()
     const { prompt, system } = this.prompt(turn, step)
@@ -436,7 +440,17 @@ export class Orchestrator {
       if (event.t === 'output' || (event.t === 'activity' && event.type === 'write')) {
         const p = event.t === 'output' ? event.path : event.target
         const abs = isAbsolute(p) ? p : join(turn.cwd, p)
-        if (event.t === 'activity') written.add(abs)
+        if (event.t === 'activity') {
+          written.add(abs)
+          // finished edits without a CLI-supplied patch: diff against the pre-step baseline
+          if (event.status !== 'running') {
+            if (event.detail?.diff) baseline.touch(abs)
+            else {
+              const diff = baseline.diff(abs)
+              if (diff) event = { ...event, detail: { ...event.detail, diff } }
+            }
+          }
+        }
         if (event.t === 'output') {
           if (reported.has(abs)) return
           reported.add(abs)
@@ -479,7 +493,7 @@ export class Orchestrator {
     for (const [p, sig] of after) {
       if (before.get(p) === sig || reported.has(p) || extra >= 30) continue
       extra++
-      if (!written.has(p)) emit({ t: 'activity', type: 'write', target: relative(turn.cwd, p) })
+      if (!written.has(p)) emit({ t: 'activity', type: 'write', target: relative(turn.cwd, p), status: 'done', detail: { tool: '磁盘变更检测' } })
       emit({ t: 'output', path: p })
     }
 

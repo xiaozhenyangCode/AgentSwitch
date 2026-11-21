@@ -5,6 +5,7 @@ import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { DEFAULT_HINT, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar } from '../components/common'
 import { EffortBar } from '../components/EffortBar'
+import { ActivityBar, ThinkingCard, UsageLine } from '../components/Process'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
@@ -443,11 +444,12 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
       <div className="min-w-0 flex-1">
         <SpeakerLine msg={msg} />
         <div className="mt-2">
-          {msg.activity.length > 0 && <ActivityBar items={msg.activity} live={streaming && !msg.content} />}
+          {msg.thinking && <ThinkingCard t={msg.thinking} live={streaming} />}
+          {(msg.activity.length > 0 || (msg.others?.length ?? 0) > 0) && <ActivityBar items={msg.activity} others={msg.others ?? []} live={streaming && !msg.content} />}
           {msg.content ? (
             <Markdown text={msg.content} />
           ) : streaming ? (
-            msg.activity.length === 0 && (
+            msg.activity.length === 0 && !(msg.thinking && !msg.thinking.endedAt) && (
               <div className="flex h-6 items-center gap-1">
                 {[0, 1, 2].map((i) => (
                   <span key={i} className="h-1.5 w-1.5 animate-pulse rounded-full bg-ink-3" style={{ animationDelay: `${i * 160}ms` }} />
@@ -472,12 +474,15 @@ function AssistantBlock({ msg }: { msg: AssistantMessage }) {
             </div>
           )}
         </div>
-        {!streaming && msg.content && (
-          <div className="mt-1 -ml-2 flex items-center">
-            <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink">
-              {copied ? <IconCheck size={14} className="text-[#1A7F45]" /> : <IconCopy size={14} />}
-              {copied ? '已复制' : '复制'}
-            </button>
+        {!streaming && (msg.content || msg.usage) && (
+          <div className="mt-1 -ml-2 flex items-center gap-2">
+            {msg.content && (
+              <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink">
+                {copied ? <IconCheck size={14} className="text-[#1A7F45]" /> : <IconCopy size={14} />}
+                {copied ? '已复制' : '复制'}
+              </button>
+            )}
+            <UsageLine usage={msg.usage} ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null} />
           </div>
         )}
       </div>
@@ -516,47 +521,6 @@ function Outputs({ msg }: { msg: AssistantMessage }) {
             </button>
           ))}
           {files.length > 12 && <span className="px-1 text-[12px] leading-7 text-ink-3">等 {files.length} 个文件</span>}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const ACT: Record<Activity['type'], { verb: string; unit: string }> = {
-  read: { verb: '读取', unit: '个文件' },
-  write: { verb: '写入', unit: '个文件' },
-  run: { verb: '执行', unit: '条命令' },
-  search: { verb: '搜索', unit: '次' }
-}
-
-function ActivityBar({ items, live }: { items: Activity[]; live: boolean }) {
-  const [open, setOpen] = useState(false)
-  const last = items[items.length - 1]
-  const summary = (['read', 'write', 'run', 'search'] as const)
-    .map((t) => {
-      const xs = items.filter((i) => i.type === t)
-      if (!xs.length) return null
-      // single write: show the path, it's usually what the user cares about
-      return t === 'write' && xs.length === 1 ? `写入 ${xs[0].target}` : `${ACT[t].verb}了 ${xs.length} ${ACT[t].unit}`
-    })
-    .filter(Boolean)
-    .join(' · ')
-  return (
-    <div className="mb-3 overflow-hidden rounded-xl bg-black/[0.035]">
-      <button onClick={() => setOpen((o) => !o)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] text-ink-2 transition-colors hover:bg-black/[0.025]">
-        {live ? <Spinner size={12} className="text-accent" /> : <IconTerminal size={13} className="text-ink-3" />}
-        <span className="min-w-0 flex-1 truncate">{live ? `正在${ACT[last.type].verb} ${last.target}` : summary}</span>
-        <span className="shrink-0 text-ink-3">{open ? '收起' : '展开过程'}</span>
-        <IconChevronDown size={13} className={`shrink-0 text-ink-3 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="border-t border-black/[0.05] px-3 py-2">
-          {items.map((a, i) => (
-            <div key={i} className="flex items-baseline gap-2.5 py-0.5 text-[12px] leading-5">
-              <span className="w-8 shrink-0 text-ink-3">{ACT[a.type].verb}</span>
-              <span className="min-w-0 font-mono break-all text-ink-2 select-text">{a.target}</span>
-            </div>
-          ))}
         </div>
       )}
     </div>

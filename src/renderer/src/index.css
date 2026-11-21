@@ -223,3 +223,12 @@ label {
 .hljs-attr, .hljs-property, .hljs-variable, .hljs-params { color: #3f6e74; }
 .hljs-meta, .hljs-subst { color: #643820; }
 .hljs-symbol, .hljs-bullet, .hljs-link { color: #0e0eff; }
+
+/* nested lists, math, mermaid */
+.md ul ul { list-style: circle; }
+.md ul ul ul { list-style: square; }
+.md li > ul, .md li > ol { margin: 2px 0 4px; }
+.md .katex { font-size: 1.06em; }
+.md .katex-display { margin: 10px 0 14px; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
+.md-mermaid { display: flex; justify-content: center; padding: 8px 14px 14px; overflow-x: auto; }
+.md-mermaid svg { max-width: 100%; max-height: 480px; height: auto; }

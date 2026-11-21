@@ -7,7 +7,8 @@ import { extname, isAbsolute, join, sep } from 'node:path'
  * `agentmux-file://f/<base64url(absolute path)>` — read-only access to images inside
  * project folders the user picked (or AgentMux workspaces). Every request is checked:
  *   GET only · realpath must stay inside an allowed root (no `..` / symlink escape) ·
- *   image extensions only (no SVG: it can carry script) · size cap · nosniff.
+ *   image extensions only · size cap · nosniff. SVG is served with a locked-down CSP
+ *   (no script, no external loads) so markup inside it can't run or phone home.
  */
 
 export const FILE_SCHEME = 'agentmux-file'
@@ -17,8 +18,10 @@ const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
-  '.webp': 'image/webp'
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml'
 }
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 const rootsFile = (): string => join(app.getPath('userData'), 'allowed-roots.json')
 let roots: string[] = []
@@ -87,9 +90,9 @@ export function handleFileProtocol(): void {
       const st = await stat(real)
       if (!st.isFile()) return reply(404)
       if (st.size > MAX_BYTES) return reply(413)
-      return new Response(await readFile(real), {
-        headers: { 'content-type': mime, 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' }
-      })
+      const headers: Record<string, string> = { 'content-type': mime, 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' }
+      if (mime === 'image/svg+xml') headers['content-security-policy'] = SVG_CSP
+      return new Response(await readFile(real), { headers })
     } catch {
       return reply(500)
     }

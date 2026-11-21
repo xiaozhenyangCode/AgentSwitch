@@ -13,10 +13,15 @@
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
+    "diff": "^9.0.0",
+    "katex": "^0.19.1",
+    "mermaid": "^12.3.0",
     "node-pty": "^1.1.0",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",

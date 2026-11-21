@@ -122,11 +122,47 @@ export interface RunRequest {
   transcript: string
 }
 
+export type ActivityType = 'read' | 'write' | 'run' | 'search' | 'tool'
+
+/** Full process data for one tool call (all strings already size-capped by the main process). */
+export interface ActivityDetail {
+  /** Tool name as the CLI reported it (Bash, run_command, mcp server.tool …). */
+  tool?: string
+  /** Input summary (command line, query, JSON params). */
+  input?: string
+  /** stdout / tool result text. */
+  output?: string
+  stderr?: string
+  exitCode?: number | null
+  /** Unified diff for file changes. */
+  diff?: string
+}
+
+export interface Usage {
+  /** Uncached input tokens. */
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  /** Thinking / reasoning tokens (part of output). */
+  reasoning?: number
+  costUsd?: number
+}
+
 /** Normalised event from any CLI adapter. */
 export type AgentEvent =
   | { t: 'session'; id: string; model: string | null }
   | { t: 'text'; delta: string }
-  | { t: 'activity'; type: 'read' | 'write' | 'run' | 'search'; target: string }
+  /** Thinking/reasoning text (may be '' when the provider hides it) and/or a running token estimate. */
+  | { t: 'thinking'; delta: string; tokens?: number }
+  /**
+   * Tool call. Events with the same `id` update one entry (running → done/error, output
+   * arriving later). Without an id each event is its own entry.
+   */
+  | { t: 'activity'; id?: string; type: ActivityType; target: string; status?: 'running' | 'done' | 'error'; detail?: ActivityDetail }
+  | { t: 'usage'; usage: Usage }
+  /** Structured CLI event no adapter rule handles yet: forwarded instead of dropped. */
+  | { t: 'other_event'; kind: string; payload: string }
   | { t: 'output'; path: string }
   | { t: 'rate_limited' }
   /** Non-fatal: e.g. tool calls auto-denied by the permission level. */
