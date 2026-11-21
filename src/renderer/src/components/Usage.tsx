@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AccountUsage, ProfileId, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import type { AccountUsage, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import { KIND_META } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import {
   effectiveQuota,
@@ -22,33 +23,55 @@ import { IconChevronDown, IconRefresh, Spinner } from './icons'
 
 const STALE = 6 * 3600_000
 
-/** Semantic fill: calm brand blue, amber ≥80%, coral ≥95%. */
-const fillFor = (pct: number) => (pct >= 95 ? 'bg-[#F0524F]' : pct >= 80 ? 'bg-[#F5A524]' : 'bg-accent')
+/**
+ * Fill in the brand's official colors; the gradient spans the whole track (background-size), so
+ * a short bar shows its start and a full one the whole ramp. Amber ≥80% and coral ≥95% still win.
+ */
+const fillStyle = (kind: ProfileKind, pct: number, width: number): CSSProperties => ({
+  width: `${width}%`,
+  background: pct >= 95 ? '#F0524F' : pct >= 80 ? '#F5A524' : KIND_META[kind].bar,
+  backgroundSize: `${10000 / Math.max(width, 1)}% 100%`
+})
 const pctOf = (w: QuotaWindow) => Math.min(100, Math.max(0, w.percent))
 
-/** One quota window: label / % on top, h-1.5 bar, reset time below. */
-function QuotaMeter({ label, w, stale }: { label: string; w: QuotaWindow | null; stale: boolean }) {
+const pad2 = (x: number) => String(x).padStart(2, '0')
+/** Compact reset label: 20:00 today · 明天 09:00 · 11-25 beyond. */
+function fmtResetShort(ts: number): string {
+  const d = new Date(ts)
+  const day = new Date()
+  day.setHours(0, 0, 0, 0)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (ts < day.getTime() + 86400_000) return hm
+  if (ts < day.getTime() + 2 * 86400_000) return `明天 ${hm}`
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+/** One quota window: label / % on top, h-1.5 bar, reset time below. A rounded 0% draws no fill. */
+export function QuotaMeter({ kind, label, w, stale, title }: { kind: ProfileKind; label: string; w: QuotaWindow | null; stale: boolean; title?: string }) {
   const pct = w ? pctOf(w) : 0
+  const shown = Math.round(pct)
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" title={title}>
       <div className="flex items-baseline justify-between text-[11.5px] leading-4">
         <span className="text-ink-3">{label}</span>
-        <span className={`tabular-nums ${!w ? 'text-ink-3' : pct >= 80 ? 'font-semibold text-ink' : 'font-medium text-ink-2'}`}>{w ? `${Math.round(pct)}%` : '—'}</span>
+        <span className={`tabular-nums ${!w ? 'text-ink-3' : pct >= 80 ? 'font-semibold text-ink' : 'font-medium text-ink-2'}`}>{w ? `${shown}%` : '—'}</span>
       </div>
       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
-        {w && <div className={`h-full rounded-full transition-[width] duration-500 ${fillFor(pct)} ${stale ? 'opacity-45' : ''}`} style={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }} />}
+        {w && shown > 0 && <div className={`h-full rounded-full transition-[width] duration-500 ${stale ? 'opacity-45' : ''}`} style={fillStyle(kind, pct, Math.max(pct, 3))} />}
       </div>
-      <div className="mt-1 text-[11px] leading-4 text-ink-3/80 tabular-nums">{w ? (w.resetsAt ? `${fmtReset(w.resetsAt)} 重置` : '滚动窗口') : '无此窗口'}</div>
+      <div className="mt-1 text-[11px] leading-4 text-ink-3/80 tabular-nums">{w ? (w.resetsAt ? `${fmtResetShort(w.resetsAt)} 重置` : '滚动窗口') : '无此窗口'}</div>
     </div>
   )
 }
 
 /** Two tiny stacked bars for dense tables. */
-function MiniBars({ five, seven }: { five: QuotaWindow | null; seven: QuotaWindow | null }) {
+function MiniBars({ kind, five, seven }: { kind: ProfileKind; five: QuotaWindow | null; seven: QuotaWindow | null }) {
   const row = (label: string, w: QuotaWindow | null) => (
     <div className="flex items-center gap-1.5 text-[11px] leading-[14px]">
       <span className="w-[18px] text-ink-3">{label}</span>
-      <div className="h-1 w-14 overflow-hidden rounded-full bg-black/[0.06]">{w && <div className={`h-full rounded-full ${fillFor(pctOf(w))}`} style={{ width: `${pctOf(w)}%` }} />}</div>
+      <div className="h-1 w-14 overflow-hidden rounded-full bg-black/[0.06]">
+        {w && Math.round(pctOf(w)) > 0 && <div className="h-full rounded-full" style={fillStyle(kind, pctOf(w), Math.max(pctOf(w), 4))} />}
+      </div>
       <span className="w-8 text-right text-ink-2 tabular-nums">{w ? `${Math.round(pctOf(w))}%` : '—'}</span>
     </div>
   )
@@ -111,8 +134,8 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
                   {g.models.join(' · ')}
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-3">
-                  <QuotaMeter label="5h" w={g.fiveHour ? five : null} stale={false} />
-                  <QuotaMeter label="7d" w={g.sevenDay ? seven : null} stale={false} />
+                  <QuotaMeter kind="gemini" label="5h" w={g.fiveHour ? five : null} stale={false} />
+                  <QuotaMeter kind="gemini" label="7d" w={g.sevenDay ? seven : null} stale={false} />
                 </div>
               </div>
             )
@@ -123,33 +146,25 @@ export function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; mode
   )
 }
 
-/** Account row dashboard: 5h | 7d meters + today's usage on the right. */
-export function AccountMeters({ u, model }: { u: AccountUsage | undefined; model?: string | null }) {
-  if (!u) return null
-  const q = u.quota
+/** "今日 61M · $0.186" (cost only when the CLI reported one). */
+export const todayBrief = (u: AccountUsage | undefined) => {
+  const t = u?.today
+  if (!t) return '今日 0'
+  return `今日 ${fmtTokens(tokenSum(t))}${t.costUsd > 0 ? ` · ${fmtCost(t.costUsd)}` : ''}`
+}
+
+/** The two fixed-width quota cells of an account row (5h | 7d); one spanning note when there is no data. */
+export function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null }) {
+  const q = u?.quota
+  if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">不提供额度数据</div>
   const eff = effectiveQuota(u, model)
-  const five = liveWindow(eff.fiveHour)
-  const seven = liveWindow(eff.sevenDay)
-  const stale = !!q && Date.now() - q.fetchedAt > STALE
-  const t = u.today
+  const stale = Date.now() - q.fetchedAt > STALE
+  const tip = `额度数据 ${fmtAgo(q.fetchedAt)}${q.limited && !stale ? ' · 已限流' : ''}`
   return (
-    <div className="grid grid-cols-[1fr_1fr_auto] items-start gap-x-6">
-      {q ? (
-        <>
-          <QuotaMeter label="5h 窗口" w={eff.fiveHour ? five : null} stale={stale} />
-          <QuotaMeter label="7d 窗口" w={eff.sevenDay ? seven : null} stale={stale} />
-        </>
-      ) : (
-        <div className="col-span-2 flex h-full items-center rounded-lg border border-dashed border-black/[0.08] px-3 py-2 text-[12px] text-ink-3">此账号不提供额度数据，仅统计本地用量</div>
-      )}
-      <div className="min-w-[96px] text-right" title={`本周 ${fmtTokens(tokenSum(u.week))} · 累计 ${fmtTokens(tokenSum(u.total))}`}>
-        <div className="text-[11.5px] leading-4 text-ink-3">今日</div>
-        <div className="text-[17px] leading-6 font-semibold tracking-tight text-ink tabular-nums">{fmtTokens(tokenSum(t))}</div>
-        <div className="text-[11px] leading-4 text-ink-3/80 tabular-nums">
-          {[t.costUsd > 0 && fmtCost(t.costUsd), q && fmtAgo(q.fetchedAt), q?.limited && !stale && '已限流'].filter(Boolean).join(' · ') || 'Token'}
-        </div>
-      </div>
-    </div>
+    <>
+      <QuotaMeter kind={kind} label="5h" w={eff.fiveHour ? liveWindow(eff.fiveHour) : null} stale={stale} title={tip} />
+      <QuotaMeter kind={kind} label="7d" w={eff.sevenDay ? liveWindow(eff.sevenDay) : null} stale={stale} title={tip} />
+    </>
   )
 }
 
@@ -170,8 +185,10 @@ export function RefreshUsage() {
     }
   }
   const seg = 'flex h-7 items-center text-[12.5px] font-medium text-ink transition-colors hover:bg-black/[0.035] active:bg-black/[0.06] disabled:opacity-60'
+  const at = snap?.updatedAt ? new Date(snap.updatedAt) : null
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative flex items-center gap-3">
+      {at && <span className="text-[11.5px] text-ink-3 tabular-nums">{snap?.backfill === 'running' ? '正在回填历史…' : `更新于 ${pad2(at.getHours())}:${pad2(at.getMinutes())}`}</span>}
       <div className="flex overflow-hidden rounded-lg border border-black/[0.09] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <button onClick={() => void run()} disabled={busy} className={`${seg} gap-1.5 pr-2.5 pl-2.5`} title={probe ? '刷新（含 Claude 额度探测）' : '刷新（不消耗额度）'}>
           {busy || snap?.backfill === 'running' ? <Spinner size={12} /> : <IconRefresh size={13} />}
@@ -277,7 +294,9 @@ export function UsageView() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3">{u?.quota ? <MiniBars five={liveWindow(eff.fiveHour)} seven={liveWindow(eff.sevenDay)} /> : <span className="text-[12px] text-ink-3">无额度数据</span>}</td>
+                  <td className="px-4 py-3">
+                    {u?.quota ? <MiniBars kind={p.kind} five={liveWindow(eff.fiveHour)} seven={liveWindow(eff.sevenDay)} /> : <span className="text-[12px] text-ink-3">无额度数据</span>}
+                  </td>
                   {cell(u?.today)}
                   {cell(u?.week)}
                   {cell(u?.total)}

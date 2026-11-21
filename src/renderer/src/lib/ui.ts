@@ -34,10 +34,14 @@ export function accountBadge(p: ProfileState): BadgeMeta {
   }
 }
 
-export const KIND_META: Record<ProfileKind, { name: string; cli: string; vendor: string; letter: string; color: string }> = {
-  claude: { name: 'Claude', cli: 'Claude Code', vendor: 'Anthropic', letter: 'C', color: '#D97757' },
-  gemini: { name: 'Gemini', cli: 'Gemini (agy)', vendor: 'Google', letter: 'G', color: '#4285F4' },
-  codex: { name: 'Codex', cli: 'Codex CLI', vendor: 'OpenAI', letter: 'X', color: '#10A37F' }
+/**
+ * color: the official mark's main color. bar: quota-bar fill taken from the official mark
+ * (Gemini: its yellow/red/green accents into the dominant blue; Codex: its violet-to-blue gradient).
+ */
+export const KIND_META: Record<ProfileKind, { name: string; cli: string; vendor: string; letter: string; color: string; bar: string }> = {
+  claude: { name: 'Claude', cli: 'Claude Code', vendor: 'Anthropic', letter: 'C', color: '#D97757', bar: 'linear-gradient(90deg, #E08A6D, #D97757)' },
+  gemini: { name: 'Gemini', cli: 'Gemini (agy)', vendor: 'Google', letter: 'G', color: '#3186FF', bar: 'linear-gradient(90deg, #FABC12 0%, #F94543 14%, #08B962 28%, #3186FF 46%, #3186FF 100%)' },
+  codex: { name: 'Codex', cli: 'Codex CLI', vendor: 'OpenAI', letter: 'X', color: '#7A9DFF', bar: 'linear-gradient(90deg, #B1A7FF 0%, #7A9DFF 50%, #3941FF 100%)' }
 }
 
 /** Ready to be used by a workflow node. */
