@@ -1,0 +1,81 @@
+import type { ReactNode } from 'react'
+import type { ProfileKind, ProfileState } from '@shared/types'
+import { KIND_META, accountBadge, type BadgeMeta } from '../lib/ui'
+
+export function Pill({ meta, size = 'md' }: { meta: Pick<BadgeMeta, 'label' | 'cls' | 'dot'>; size?: 'sm' | 'md' }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full font-medium ${meta.cls} ${
+        size === 'md' ? 'h-6 px-2.5 text-[12px]' : 'h-5 px-2 text-[12px]'
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+      {meta.label}
+    </span>
+  )
+}
+
+export function StatusBadge({ profile }: { profile: ProfileState }) {
+  return <Pill meta={accountBadge(profile)} />
+}
+
+/** Brand-tinted app-icon style avatar. */
+export function KindAvatar({ kind, size = 32 }: { kind: ProfileKind; size?: number }) {
+  const k = KIND_META[kind]
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25),0_1px_2px_rgba(0,0,0,0.12)]"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size * 0.27,
+        fontSize: size * 0.44,
+        background: `linear-gradient(180deg, ${k.color}EE, ${k.color})`
+      }}
+    >
+      {k.letter}
+    </div>
+  )
+}
+
+/** macOS segmented control. */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange
+}: {
+  value: T
+  options: { value: T; label: string }[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="inline-flex rounded-[9px] bg-black/[0.05] p-[2px]">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onChange(o.value)}
+          className={`h-7 rounded-[7px] px-3.5 text-[13px] font-medium transition-all duration-150 ${
+            value === o.value ? 'bg-white text-ink shadow-[0_1px_3px_rgba(0,0,0,0.12),0_0_0_0.5px_rgba(0,0,0,0.06)]' : 'text-ink-2 hover:text-ink'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Centered sheet over a frosted backdrop. */
+export function Modal({ children, onClose, width = 500 }: { children: ReactNode; onClose: () => void; width?: number }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-md" onMouseDown={onClose}>
+      <div
+        className="max-h-[88vh] overflow-y-auto rounded-2xl bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
+        style={{ width }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}

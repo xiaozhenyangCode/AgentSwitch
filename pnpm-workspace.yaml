@@ -1,0 +1,9 @@
+# Makes this repo its own pnpm workspace root, so a pnpm-workspace.yaml in a
+# parent directory (e.g. ~) does not adopt it and override build-script settings.
+packages:
+  - '.'
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - node-pty
