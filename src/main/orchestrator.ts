@@ -483,7 +483,7 @@ export class Orchestrator {
       parts.push('## 你的任务', handoffPrompt(to))
       return { prompt: parts.join('\n'), system: sys.join('\n') }
     }
-    if (turn.req.handoffDoc && fresh) {
+    if (turn.req.handoffDoc) {
       let doc = ''
       try {
         doc = readFileSync(turn.req.handoffDoc, 'utf8')

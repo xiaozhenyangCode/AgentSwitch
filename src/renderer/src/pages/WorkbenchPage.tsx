@@ -32,7 +32,6 @@ import {
   lastSpeaker,
   loadHistory,
   newThread,
-  sessionAccounts,
   skipHandoff,
   threadMessages,
   onExternalSync,
@@ -248,24 +247,20 @@ export function WorkbenchPage() {
     void loadHistory(thread.id, { profileId: p.id, name: p.name, kind: p.kind, model: null })
   }, [thread?.id, thread?.imported, thread?.history, thread?.historyState, byId])
 
-  // ---- cross-model handoff: the driver changed to an account with no session in this thread
+  // ---- cross-model handoff: the driver switched away from the latest speaker's native session
   const speaker = thread ? lastSpeaker(thread) : null
   const srcP = speaker ? byId(speaker.profileId) : undefined
-  const hasSharedSession =
-    !!thread &&
+  const sameNativeSession =
     !!driverP &&
-    [...sessionAccounts(thread)].some((id) => {
-      const peer = byId(id)
-      return !!peer && peer.kind === driverP.kind && peer.sessionStoreKey === driverP.sessionStoreKey
-    })
+    !!speaker &&
+    (speaker.profileId === driverP.id ||
+      (!!srcP && srcP.kind === driverP.kind && !!srcP.sessionStoreKey && srcP.sessionStoreKey === driverP.sessionStoreKey))
   const handoffNeeded =
     !!thread &&
     !!driverP &&
     !!speaker &&
     !isThreadBusy(thread) &&
-    speaker.profileId !== driverP.id &&
-    !sessionAccounts(thread).has(driverP.id) &&
-    !hasSharedSession &&
+    !sameNativeSession &&
     thread.handoff?.to !== driverP.id &&
     !(thread.handoffSkip ?? []).includes(driverP.id)
   const handoffReady = !!thread?.handoff && !!driverP && thread.handoff.to === driverP.id && !isThreadBusy(thread)

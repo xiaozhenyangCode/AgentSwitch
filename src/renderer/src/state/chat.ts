@@ -464,6 +464,7 @@ function sendNow(threadId: string, input: SendInput): void {
     unread: null,
     handoff: doc ? null : t.handoff,
     handoffFailed: mode === 'handoff' ? null : t.handoffFailed,
+    ...(mode === 'chat' ? { handoffSkip: [] } : {}),
     updatedAt: now()
   }))
   const attachments: RunAttachment[] = input.attachments.filter((a) => a.path).map((a) => ({ name: a.name, path: a.path!, isImage: a.isImage }))
