@@ -106,16 +106,55 @@ export function SlashMenu({
 
 const STATE_DOT: Record<McpServer['state'], string> = { on: 'bg-ok', off: 'bg-ink-3/40', pending: 'bg-warn' }
 
-function McpRow({ s }: { s: McpServer }) {
+function McpRow({ s, expanded, onToggle, onInsert }: { s: McpServer; expanded: boolean; onToggle: () => void; onInsert: (token: string) => void }) {
   const note = s.state === 'off' ? t('ext.mcpOff') : s.state === 'pending' ? t('ext.mcpPending') : s.local ? t('ext.mcpLocal') : s.managed ? t('ext.mcpManaged') : ''
+  const phrase = t('ext.mcpPhrase', { name: s.name })
+  const rows: { label: string; value: string }[] = [
+    ...(s.command ? [{ label: t('ext.mcpCmd'), value: s.command }] : []),
+    ...(s.url ? [{ label: t('ext.mcpUrl'), value: s.url }] : []),
+    ...(s.cwd ? [{ label: t('ext.mcpCwd'), value: s.cwd }] : []),
+    ...(s.envKeys?.length ? [{ label: t('ext.mcpEnv'), value: s.envKeys.join(', ') }] : []),
+    ...(s.headerKeys?.length ? [{ label: t('ext.mcpHeaders'), value: s.headerKeys.join(', ') }] : [])
+  ]
   return (
-    <div className="flex h-8 items-center gap-2.5 rounded-[10px] px-2.5">
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[s.state]}`} />
-      <span className={`min-w-0 truncate text-[13px] ${s.state === 'on' ? 'text-ink' : 'text-ink-3'}`}>{s.name}</span>
-      {s.plugin && <span className="min-w-0 truncate text-[11px] text-ink-3">{s.plugin}</span>}
-      <span className="flex-1" />
-      {note && <span className="shrink-0 text-[11px] text-ink-3">{note}</span>}
-      <span className="shrink-0 font-mono text-[10.5px] text-ink-3">{s.transport}</span>
+    <div>
+      <div className="flex items-center gap-2 rounded-[10px] px-2.5 py-1 hover:bg-black/[0.035]">
+        <button className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left" onClick={onToggle}>
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[s.state]}`} />
+          <span className={`min-w-0 truncate text-[13px] leading-5 ${s.state === 'on' ? 'text-ink' : 'text-ink-3'}`}>{s.name}</span>
+          {s.plugin && <span className="min-w-0 truncate text-[11px] text-ink-3">{s.plugin}</span>}
+          <span className="flex-1" />
+          {note && <span className="shrink-0 text-[11px] text-ink-3">{note}</span>}
+          <span className="shrink-0 font-mono text-[10.5px] text-ink-3">{s.transport}</span>
+          <Chevron open={expanded} />
+        </button>
+        {s.state !== 'off' && (
+          <button className={rowBtn} onClick={() => onInsert(phrase)} title={phrase}>
+            {t('ext.use')}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="mx-2.5 mt-0.5 mb-2 space-y-1 rounded-[10px] bg-black/[0.035] px-2.5 py-2 text-[12px] shadow-[inset_0_0_0_1px_var(--ring)]">
+          {rows.map((r) => (
+            <div key={r.label} className="flex gap-2">
+              <span className="w-16 shrink-0 text-[11.5px] text-ink-3">{r.label}</span>
+              <span className="min-w-0 flex-1 font-mono text-[11.5px] break-all text-ink-2 select-text">{r.value}</span>
+            </div>
+          ))}
+          {!rows.length && !s.configPath && <div className="text-[11.5px] text-ink-3">{t('ext.mcpNoDetail')}</div>}
+          {s.configPath && (
+            <div className="flex items-center gap-2 pt-0.5 text-[11px] text-ink-3">
+              <span className="min-w-0 flex-1 truncate font-mono" title={s.configPath}>
+                {s.configPath}
+              </span>
+              <button onClick={() => void window.agentswitch.ext.reveal(s.configPath!)} className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.06] hover:text-ink">
+                <IconFolder size={11} /> {t('common.showInFinder')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -383,17 +422,19 @@ function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
   )
 }
 
-function McpTab({ data, q }: { data: ExtOverview; q: string }) {
-  const servers = data.mcp.filter((s) => has(q, s.name, s.plugin))
+function McpTab({ data, q, onInsert }: { data: ExtOverview; q: string; onInsert: (token: string) => void }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const servers = data.mcp.filter((s) => has(q, s.name, s.plugin, s.command, s.url, s.configPath))
   const groups = (['project', 'global', 'plugin', 'builtin'] as const).map((src) => ({ src, list: servers.filter((s) => s.source === src) })).filter((g) => g.list.length)
   return (
     <>
       {groups.map((g) => (
         <div key={g.src} className="pb-1">
           <Section n={g.list.length}>{sourceLabel(g.src)}</Section>
-          {g.list.map((s) => (
-            <McpRow key={g.src + s.name + (s.plugin ?? '')} s={s} />
-          ))}
+          {g.list.map((s) => {
+            const id = g.src + s.name + (s.plugin ?? '') + (s.configPath ?? '')
+            return <McpRow key={id} s={s} expanded={open === id} onToggle={() => setOpen(open === id ? null : id)} onInsert={onInsert} />
+          })}
         </div>
       ))}
       {!servers.length && <Empty>{data.mcp.length ? t('ext.noMatchAny') : t('ext.mcpEmpty')}</Empty>}
@@ -551,7 +592,7 @@ export function ExtensionsPanel({
         ) : tab === 'plugins' ? (
           <PluginsTab data={data} q={q} />
         ) : tab === 'mcp' ? (
-          <McpTab data={data} q={q} />
+          <McpTab data={data} q={q} onInsert={onInsert} />
         ) : (
           <ContextTab data={data} q={q} />
         )}

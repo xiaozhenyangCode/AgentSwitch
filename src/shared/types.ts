@@ -549,6 +549,18 @@ export interface McpServer {
   local?: boolean
   /** Claude managed (system-wide) config. */
   managed?: boolean
+  /** Redacted command + args for stdio transport. */
+  command?: string
+  /** Redacted endpoint URL for http/sse transport. */
+  url?: string
+  /** Working directory if configured. */
+  cwd?: string
+  /** Environment variable names (values omitted for safety). */
+  envKeys?: string[]
+  /** HTTP header names (values omitted for safety). */
+  headerKeys?: string[]
+  /** Source config file path (allow-listed for Finder reveal). */
+  configPath?: string
 }
 
 export interface McpList {

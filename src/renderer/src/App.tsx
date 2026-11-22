@@ -11,9 +11,9 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { useOnboarding } from './state/onboarding'
 import { useEffect } from 'react'
-import { useI18n } from './state/i18n'
+import { useI18n, t } from './state/i18n'
 import { useStartThread } from './state/threads'
-import { activeThread, useChat } from './state/chat'
+import { activeThread, clearUnread, onTurnFinished, selectThread, useChat } from './state/chat'
 
 /** Native menu bar → navigation (About / Settings… ⌘, / New Chat ⌘N / Search ⌘K). */
 function MenuBridge() {
@@ -43,6 +43,91 @@ function MenuBridge() {
       }),
     [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen, start, chat]
   )
+  return null
+}
+
+/** Subtle two-note completion chime synthesized via Web Audio (no external audio assets). */
+function playChime(outcome: 'done' | 'error' | 'paused') {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const now = ctx.currentTime
+    const notes = outcome === 'done' ? [587.33, 880] : outcome === 'paused' ? [523.25, 659.25] : [392, 311.13]
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(freq, now + i * 0.09)
+      gain.gain.setValueAtTime(0.0001, now + i * 0.09)
+      gain.gain.exponentialRampToValueAtTime(0.055, now + i * 0.09 + 0.015)
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.09 + 0.24)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now + i * 0.09)
+      osc.stop(now + i * 0.09 + 0.26)
+    })
+    setTimeout(() => void ctx.close().catch(() => {}), 700)
+  } catch {
+    // audio may be blocked before first user gesture
+  }
+}
+
+/** Notifies when a turn finishes: in-app toast for background chats, native OS notification when unfocused, and a gentle chime. */
+function TurnNotifier() {
+  const { toast, navigate } = useApp()
+  const chat = useChat()
+  const activeId = chat.activeId
+
+  useEffect(
+    () =>
+      onTurnFinished(({ threadId, title, outcome, background }) => {
+        playChime(outcome)
+        const label =
+          outcome === 'done'
+            ? t('nav.notifyDone', { title })
+            : outcome === 'paused'
+              ? t('nav.notifyPaused', { title })
+              : t('nav.notifyFailed', { title })
+        if (background) {
+          toast({
+            kind: outcome === 'done' ? 'success' : outcome === 'paused' ? 'warn' : 'error',
+            title: label,
+            action: {
+              label: t('nav.viewChat'),
+              run: () => {
+                selectThread(threadId)
+                navigate('workbench')
+              }
+            }
+          })
+        }
+        if (typeof Notification !== 'undefined' && !document.hasFocus()) {
+          const show = () => {
+            const n = new Notification('AgentSwitch', { body: label, silent: true })
+            n.onclick = () => {
+              window.focus()
+              selectThread(threadId)
+              navigate('workbench')
+            }
+          }
+          if (Notification.permission === 'granted') show()
+          else if (Notification.permission === 'default') void Notification.requestPermission().then((p) => p === 'granted' && show())
+        }
+      }),
+    [toast, navigate]
+  )
+
+  // clear the active thread's unread badge shortly after returning focus to the window
+  useEffect(() => {
+    const onFocus = () => {
+      if (!activeId) return
+      setTimeout(() => clearUnread(activeId), 1200)
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [activeId])
+
   return null
 }
 
@@ -89,6 +174,7 @@ function Shell() {
       {addRequest && <AddAccountModal key={addRequest.kind} />}
       {confirmState && <ConfirmDialog />}
       <Toasts />
+      <TurnNotifier />
       <MenuBridge />
     </div>
   )

@@ -12,6 +12,7 @@ import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
+import { fmtTokens } from '../state/usage'
 import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
@@ -25,6 +26,7 @@ import { findModel, getModelList, loadModels, useModels, useModelsVersion } from
 import {
   activeThread,
   clearSuggestion,
+  dismissContextWarn,
   exportHandoff,
   isThreadBusy,
   lastSpeaker,
@@ -165,6 +167,16 @@ function mirrorSegments(text: string, spans: { index: number; length: number }[]
   return out
 }
 
+/**
+ * Context window when the CLI doesn't report one (tokens). Claude: 200k, or 1M for `[1m]`
+ * variants; Codex: 272k (its runs normally report the real window); Gemini: 1M.
+ */
+function contextWindow(kind: ProfileState['kind'], model: string | null): number {
+  if (kind === 'claude') return /\[1m\]|-1m\b/i.test(model ?? '') ? 1_000_000 : 200_000
+  if (kind === 'codex') return 272_000
+  return 1_000_000
+}
+
 export function WorkbenchPage() {
   const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
   const { showDebugTerminal } = useSettings()
@@ -246,14 +258,62 @@ export function WorkbenchPage() {
       handoffTo: ref(driverP, driverModel)
     })
   }
-  const doExport = async () => {
+  const doExport = async (toNewThread = false) => {
     if (!thread || !driverP) return
     setExporting(true)
     try {
-      await exportHandoff(thread.id, ref(driverP, driverModel))
+      await exportHandoff(thread.id, ref(driverP, driverModel), toNewThread)
     } finally {
       setExporting(false)
     }
+  }
+
+  // ---- long-context warning: suggest generating a handoff and moving to a fresh thread
+  // Only the current account's own context counts (its CLI session is what the next message
+  // continues), measured on its latest reply against that model's window.
+  const CTX_WARN_RATIO = 0.7
+  const CTX_REDISPLAY_TURNS = 10
+  const contextStats = useMemo(() => {
+    let userTurns = 0
+    let lastTokens = 0
+    let model: string | null = null
+    let reported = 0
+    for (const m of messages) {
+      if (m.role === 'user' && m.kind !== 'handoff') userTurns++
+      if (m.role === 'assistant' && m.agent.profileId === driverP?.id && m.usage?.context) {
+        lastTokens = m.usage.context
+        model = m.actualModel ?? m.agent.model
+        reported = m.usage.contextWindow ?? 0
+      }
+    }
+    // the window the CLI reported (codex) wins; otherwise it follows from the model
+    const window = reported || (driverP ? contextWindow(driverP.kind, driverModel ?? model) : 0)
+    return { userTurns, lastTokens, window }
+  }, [messages, driverP, driverModel])
+  const contextLong =
+    !!thread &&
+    !!driverP &&
+    !isThreadBusy(thread) &&
+    !handoffNeeded &&
+    !handoffReady &&
+    !thread.pause &&
+    contextStats.window > 0 &&
+    contextStats.lastTokens >= contextStats.window * CTX_WARN_RATIO &&
+    (thread.contextWarnDismissedAt === undefined || contextStats.userTurns >= thread.contextWarnDismissedAt + CTX_REDISPLAY_TURNS)
+  const ctxHandoffSrc = srcP && isReady(srcP) ? srcP : driverP && isReady(driverP) ? driverP : null
+  const startHandoffToNew = () => {
+    if (!thread || !driverP || !ctxHandoffSrc) return
+    stick.current = true
+    void send(thread.id, {
+      text: t('wb.handoffNewText', { name: driverP.name }),
+      attachments: [],
+      driver: { ...ref(ctxHandoffSrc, null), model: speaker?.profileId === ctxHandoffSrc.id ? speaker.model : driverModel },
+      mentions: [],
+      participants,
+      projectDir: ctx.projectDir,
+      handoffTo: ref(driverP, driverModel),
+      newThreadOnHandoff: true
+    })
   }
   useLayoutEffect(() => {
     const el = scroller.current
@@ -463,7 +523,7 @@ export function WorkbenchPage() {
                     {t('wb.letHandoff', { name: srcP!.name })}
                   </button>
                 ) : (
-                  <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport()}>
+                  <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport(false)}>
                     {exporting ? t('wb.exporting') : t('wb.exportHandoff')}
                   </button>
                 )}
@@ -472,6 +532,48 @@ export function WorkbenchPage() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+        {contextLong && thread && driverP && (
+          <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+              <button
+                onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}
+                className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                title={t('common.close')}
+                aria-label={t('common.close')}
+              >
+                <IconX size={14} />
+              </button>
+              <span className="min-w-0 flex-1">
+                {t('wb.ctxLongTokens', {
+                  name: driverP.name,
+                  tokens: fmtTokens(contextStats.lastTokens),
+                  window: fmtTokens(contextStats.window),
+                  pct: Math.round((contextStats.lastTokens / contextStats.window) * 100)
+                })}
+                {handoffFailed && (
+                  <span className="block text-[12px] text-warn">
+                    {t('wb.handoffFailed', { name: ctxHandoffSrc?.name ?? t('wb.origAccount'), suffix: thread.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}
+                  </span>
+                )}
+              </span>
+              {ctxHandoffSrc && !handoffFailed ? (
+                <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startHandoffToNew}>
+                  {t('wb.ctxHandoffNew', { name: ctxHandoffSrc.name })}
+                </button>
+              ) : (
+                <button disabled={exporting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={() => void doExport(true)}>
+                  {exporting ? t('wb.exporting') : t('wb.ctxExportNew')}
+                </button>
+              )}
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => startThread(ctx.projectDir)}>
+                {t('wb.ctxNewDirect')}
+              </button>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}>
+                {t('wb.ctxContinue')}
+              </button>
+            </div>
           </div>
         )}
         {thread?.pause && (

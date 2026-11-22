@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { HistoryEntry } from '@shared/types'
+import type { HistoryEntry, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
-import { activeThread, chatMarkdown, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, useChat, type Thread } from '../state/chat'
+import { activeThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, useChat, type Thread } from '../state/chat'
 import { useEscape } from '../lib/escStack'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
+import { IconCheck, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
@@ -368,7 +368,7 @@ function HistoryList({ query }: { query: string }) {
 }
 
 function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; active: boolean; onOpen: () => void; onDelete: () => void; onNewHere: () => void }) {
-  const { toast } = useApp()
+  const { byId, toast } = useApp()
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(th.title)
   /** Open menu: under the ··· button, or at the cursor for a right-click. */
@@ -376,6 +376,11 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
   const more = useRef<HTMLButtonElement>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
   const busy = isThreadBusy(th)
+  const kind: ProfileKind | null =
+    (th.driver.profileId ? byId(th.driver.profileId)?.kind : undefined) ??
+    th.imported?.kind ??
+    [...th.messages].reverse().find((m) => m.role === 'assistant')?.agent.kind ??
+    null
   useEffect(() => setName(th.title), [th.title])
 
   const commit = () => {
@@ -412,17 +417,59 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
         <button
           onClick={onOpen}
           onDoubleClick={() => setEditing(true)}
-          className={`flex h-[46px] w-full flex-col justify-center rounded-lg pr-8 pl-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
+          className={`flex h-[46px] w-full items-center gap-2 rounded-lg pr-8 pl-2.5 text-left transition-colors ${
+            active
+              ? 'bg-black/[0.07]'
+              : th.unread === 'done'
+                ? 'bg-ok-soft/45 hover:bg-ok-soft/70'
+                : th.unread === 'error'
+                  ? 'bg-danger-soft/45 hover:bg-danger-soft/70'
+                  : th.unread === 'paused'
+                    ? 'bg-warn-soft/45 hover:bg-warn-soft/70'
+                    : 'hover:bg-black/[0.035]'
+          }`}
         >
-          <span className={`flex w-full items-center gap-1 text-[13px] leading-[18px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>
-            {th.pinned && <IconPin size={11} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
-            <span className="truncate">{th.title}</span>
-          </span>
-          <span className="flex items-center gap-1 text-[11px] leading-4 text-ink-3">
-            {busy && <Spinner size={10} className="text-accent" />}
-            {busy ? t('nav.replying') : ago(th.updatedAt)}
+          {kind && <KindAvatar kind={kind} size={16} />}
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className={`flex items-center gap-1 text-[13px] leading-[18px] ${active || th.unread ? 'font-medium text-ink' : 'text-ink/85'}`}>
+              {th.pinned && <IconPin size={11} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
+              <span className="truncate">{th.title}</span>
+            </span>
+            <span className="flex items-center gap-1 text-[11px] leading-4 text-ink-3">
+              {busy ? (
+                <>
+                  <Spinner size={10} className="text-accent" />
+                  {t('nav.replying')}
+                </>
+              ) : th.unread === 'done' ? (
+                <>
+                  <IconCheck size={10} className="shrink-0 text-ok" />
+                  <span className="font-medium text-ok">{t('nav.done')}</span>
+                  <span>· {ago(th.updatedAt)}</span>
+                </>
+              ) : th.unread === 'error' ? (
+                <>
+                  <span className="font-medium text-danger">{t('nav.failed')}</span>
+                  <span>· {ago(th.updatedAt)}</span>
+                </>
+              ) : th.unread === 'paused' ? (
+                <>
+                  <span className="font-medium text-warn">{t('nav.paused')}</span>
+                  <span>· {ago(th.updatedAt)}</span>
+                </>
+              ) : (
+                ago(th.updatedAt)
+              )}
+            </span>
           </span>
         </button>
+      )}
+      {!editing && !busy && th.unread && (
+        <span
+          className={`pointer-events-none absolute top-1/2 right-3 h-2 w-2 -translate-y-1/2 rounded-full transition-opacity group-hover:opacity-0 ${menu ? 'opacity-0' : 'opacity-100'} ${
+            th.unread === 'done' ? 'bg-green' : th.unread === 'error' ? 'bg-red' : 'bg-orange'
+          }`}
+        />
       )}
       {!editing && (
         <button
@@ -450,6 +497,7 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
         <RowMenu at={menu} onClose={closeMenu}>
           <MenuItem onClick={() => setEditing(true)}>{t('common.rename')}</MenuItem>
           <MenuItem onClick={() => togglePin(th.id)}>{th.pinned ? t('nav.unpin') : t('nav.pin')}</MenuItem>
+          {th.unread && <MenuItem onClick={() => clearUnread(th.id)}>{t('nav.markRead')}</MenuItem>}
           <MenuItem
             onClick={() => {
               void window.agentswitch.sys.copy(chatMarkdown(th))

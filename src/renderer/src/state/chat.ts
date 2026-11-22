@@ -136,6 +136,10 @@ export interface Thread {
   titleTurn?: string | null
   /** Next input the model suggested at the end of its last reply (ghost text in the composer). */
   suggestedInput?: string | null
+  /** User turn count when the user dismissed the long-context warning. */
+  contextWarnDismissedAt?: number
+  /** Unread completion badge for turns that finished in the background (or while unfocused). */
+  unread?: 'done' | 'error' | 'paused' | null
   /** Kept at the top of its project group in the sidebar. */
   pinned?: boolean
 }
@@ -256,15 +260,34 @@ export function lastSpeaker(t: Thread): AgentRef | null {
 
 // ---- thread management -----------------------------------------------------------------
 
-export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'>): string {
+export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'> & { handoff?: Thread['handoff'] }): string {
   const t: Thread = { id: uid(), title: tr('chat.newThread'), workdir: init.projectDir, messages: [], activeTurn: null, pause: null, createdAt: now(), updatedAt: now(), ...init }
   set({ threads: [t, ...state.threads], activeId: t.id })
   return t.id
 }
 
 export const selectThread = (id: string) => {
-  set({ ...state, activeId: id })
+  const hasUnread = state.threads.some((t) => t.id === id && t.unread)
+  set({
+    ...state,
+    activeId: id,
+    ...(hasUnread ? { threads: state.threads.map((t) => (t.id === id ? { ...t, unread: null } : t)) } : {})
+  })
   void syncExternal(id)
+}
+
+export type TurnFinishedInfo = { threadId: string; title: string; outcome: 'done' | 'error' | 'paused'; background: boolean }
+const turnFinishedListeners = new Set<(info: TurnFinishedInfo) => void>()
+export function onTurnFinished(fn: (info: TurnFinishedInfo) => void): () => void {
+  turnFinishedListeners.add(fn)
+  return () => void turnFinishedListeners.delete(fn)
+}
+const notifyTurnDone = (info: TurnFinishedInfo) => {
+  for (const fn of turnFinishedListeners) fn(info)
+}
+
+export const clearUnread = (id: string) => {
+  if (state.threads.some((t) => t.id === id && t.unread)) patchThread(id, (t) => ({ ...t, unread: null }))
 }
 export const togglePin = (id: string) => patchThread(id, (t) => ({ ...t, pinned: !t.pinned }))
 
@@ -366,8 +389,19 @@ const errorMessage = (turnId: string, agent: AgentRef, error: string): Assistant
   endedAt: now()
 })
 
-type SendInput = { text: string; attachments: Attachment[]; driver: AgentRef; mentions: AgentRef[]; participants: ProfileId[]; projectDir: string | null; handoffTo?: AgentRef }
+type SendInput = {
+  text: string
+  attachments: Attachment[]
+  driver: AgentRef
+  mentions: AgentRef[]
+  participants: ProfileId[]
+  projectDir: string | null
+  handoffTo?: AgentRef
+  /** When true, once the handoff document is ready, open a fresh thread carrying it. */
+  newThreadOnHandoff?: boolean
+}
 const gating = new Set<string>()
+const handoffToNewThread = new Set<string>()
 
 /**
  * Sends a message. A chat bound to a CLI session first catches up with turns written elsewhere,
@@ -396,6 +430,8 @@ function sendNow(threadId: string, input: SendInput): void {
   if (!thread || thread.activeTurn) return
   const turnId = uid() + uid()
   const mode = input.handoffTo ? 'handoff' : 'chat'
+  if (input.handoffTo && input.newThreadOnHandoff) handoffToNewThread.add(threadId)
+  else if (input.handoffTo) handoffToNewThread.delete(threadId)
   // a pending handoff document goes to the first message of its target account
   const doc = mode === 'chat' && thread.handoff && [input.driver, ...input.mentions].some((a) => a.profileId === thread.handoff!.to) ? thread.handoff : null
   const user: UserMessage = {
@@ -425,6 +461,7 @@ function sendNow(threadId: string, input: SendInput): void {
     messages: [...t.messages, user],
     activeTurn: turnId,
     pause: null,
+    unread: null,
     handoff: doc ? null : t.handoff,
     handoffFailed: mode === 'handoff' ? null : t.handoffFailed,
     updatedAt: now()
@@ -568,22 +605,58 @@ function onEvent(e: ChatEvent) {
         }))
       return
     }
-    case 'handoff':
+    case 'handoff': {
+      const toNew = handoffToNewThread.delete(e.threadId)
+      if (e.ok && toNew) {
+        const src = state.threads.find((t) => t.id === e.threadId)
+        if (src) {
+          patchThread(e.threadId, (t) => ({ ...t, handoffFailed: null }))
+          newThread({
+            projectDir: src.projectDir,
+            participants: src.participants,
+            driver: { profileId: e.to, model: src.driver.profileId === e.to ? src.driver.model : null },
+            handoff: { to: e.to, path: e.path, from: lastSpeaker(src)?.name ?? src.title }
+          })
+          return
+        }
+      }
       return patchThread(e.threadId, (t) =>
         e.ok ? { ...t, handoff: { to: e.to, path: e.path, from: lastSpeaker(t)?.name ?? '' }, handoffFailed: null } : { ...t, handoffFailed: { to: e.to, error: e.error ?? tr('chat.genFailed') } }
       )
-    case 'paused':
-      return patchThread(e.threadId, (t) => ({ ...t, pause: { turnId: e.turnId, reason: e.reason } }))
-    case 'turn-end':
-      return patchThread(e.threadId, (t) => ({
+    }
+    case 'paused': {
+      const th = state.threads.find((t) => t.id === e.threadId)
+      const bg = state.activeId !== e.threadId
+      const unfocused = typeof document !== 'undefined' && !document.hasFocus()
+      patchThread(e.threadId, (t) => ({
+        ...t,
+        pause: { turnId: e.turnId, reason: e.reason },
+        ...(bg || unfocused ? { unread: 'paused' as const } : {})
+      }))
+      if (th) notifyTurnDone({ threadId: e.threadId, title: th.title, outcome: 'paused', background: bg })
+      return
+    }
+    case 'turn-end': {
+      const prev = state.threads.find((t) => t.id === e.threadId)
+      const turnSteps = prev ? prev.messages.filter((m): m is AssistantMessage => m.role === 'assistant' && m.turnId === e.turnId) : []
+      const hadError = turnSteps.some((m) => m.status === 'error' || !!m.error)
+      const hadDone = turnSteps.some((m) => m.status === 'done')
+      const outcome: 'done' | 'error' | null = hadError ? 'error' : hadDone ? 'done' : null
+      const bg = state.activeId !== e.threadId
+      const unfocused = typeof document !== 'undefined' && !document.hasFocus()
+      patchThread(e.threadId, (t) => ({
         ...t,
         activeTurn: t.activeTurn === e.turnId ? null : t.activeTurn,
         pause: t.pause?.turnId === e.turnId ? null : t.pause,
         updatedAt: now(),
+        ...(outcome && (bg || unfocused) ? { unread: outcome } : {}),
         messages: t.messages.map((m) =>
           m.role === 'assistant' && m.turnId === e.turnId && (m.status === 'queued' || m.status === 'streaming') ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null } : m
         )
       }))
+      if (prev && outcome) notifyTurnDone({ threadId: e.threadId, title: prev.title, outcome, background: bg })
+      return
+    }
   }
 }
 
@@ -682,7 +755,7 @@ export async function toAttachment(file: File): Promise<Attachment> {
 // ---- handoff ---------------------------------------------------------------------------------
 
 /** Fallback when the source account can't write one: the recent conversation, as a document. */
-export async function exportHandoff(threadId: string, to: AgentRef): Promise<void> {
+export async function exportHandoff(threadId: string, to: AgentRef, toNewThread = false): Promise<void> {
   const t = state.threads.find((x) => x.id === threadId)
   if (!t) return
   const lines: string[] = [`# 交接文档（AgentSwitch 从最近对话导出）`, '', `> 原模型暂不可用，以下是这个对话最近的记录，交给 ${to.name} 继续。`, '']
@@ -700,10 +773,22 @@ export async function exportHandoff(threadId: string, to: AgentRef): Promise<voi
     }
   }
   const path = await window.agentswitch.chat.exportHandoff(threadId, uid() + uid(), t.projectDir, lines.join('\n'))
+  if (toNewThread) {
+    patchThread(threadId, (x) => ({ ...x, handoffFailed: null }))
+    newThread({
+      projectDir: t.projectDir,
+      participants: t.participants,
+      driver: { profileId: to.profileId, model: t.driver.profileId === to.profileId ? t.driver.model : null },
+      handoff: { to: to.profileId, path, from: tr('chat.exportedFrom') }
+    })
+    return
+  }
   patchThread(threadId, (x) => ({ ...x, handoff: { to: to.profileId, path, from: tr('chat.exportedFrom') }, handoffFailed: null }))
 }
 
 export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(threadId, (t) => ({ ...t, handoffSkip: [...new Set([...(t.handoffSkip ?? []), to])], handoffFailed: null }))
+
+export const dismissContextWarn = (threadId: string, turns: number) => patchThread(threadId, (t) => ({ ...t, contextWarnDismissedAt: turns }))
 
 // ---- imported CLI history ----------------------------------------------------------------------
 

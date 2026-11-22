@@ -224,6 +224,35 @@ const serverMap = (j: any): Record<string, any> => {
   return Object.fromEntries(Object.entries(m).filter(([, v]) => v && typeof v === 'object'))
 }
 
+/** Safe, redacted config details for an MCP server entry (no secret values). */
+function mcpDetails(v: any, configPath?: string): Partial<McpServer> {
+  const out: Partial<McpServer> = {}
+  if (typeof v?.command === 'string' && v.command.trim()) {
+    const args = Array.isArray(v.args) ? v.args.map((a: unknown) => String(a)) : []
+    out.command = redactCommand([v.command, ...args].join(' '))
+  } else if (Array.isArray(v?.command) && v.command.length) {
+    out.command = redactCommand(v.command.map((a: unknown) => String(a)).join(' '))
+  }
+  const rawUrl = v?.url ?? v?.serverUrl ?? v?.httpUrl
+  if (typeof rawUrl === 'string' && rawUrl.trim()) {
+    out.url = redactCommand(rawUrl.trim())
+  }
+  if (typeof v?.cwd === 'string' && v.cwd.trim()) out.cwd = v.cwd.trim()
+  if (v?.env && typeof v.env === 'object' && !Array.isArray(v.env)) {
+    const keys = Object.keys(v.env)
+    if (keys.length) out.envKeys = keys
+  }
+  if (v?.headers && typeof v.headers === 'object' && !Array.isArray(v.headers)) {
+    const keys = Object.keys(v.headers)
+    if (keys.length) out.headerKeys = keys
+  }
+  if (configPath && isFile(configPath)) {
+    allow(configPath)
+    out.configPath = configPath
+  }
+  return out
+}
+
 // ---- per CLI ------------------------------------------------------------------------------
 
 interface Scan {
@@ -612,25 +641,27 @@ function scanClaude(dir: string, cwd: string | null, ctx: Ctx): Scan {
   const g = readJson(globalFile, ctx) ?? {}
   const proj = (root && g.projects?.[root]) || {}
   const off = new Set<string>(Array.isArray(proj.disabledMcpServers) ? proj.disabledMcpServers : [])
-  const addMcp = (name: string, v: any, source: ExtSource, state: McpState, extra: Partial<McpServer> = {}) =>
-    mcp.push({ name, source, transport: transportOf(v), state: off.has(name) ? 'off' : state, ...extra })
-  for (const [n, v] of Object.entries(serverMap(readJson(join(MANAGED, 'managed-mcp.json'), ctx)))) addMcp(n, v, 'global', 'on', { managed: true })
-  for (const [n, v] of Object.entries(serverMap(g))) addMcp(n, v, 'global', v.disabled ? 'off' : 'on')
-  for (const [n, v] of Object.entries(serverMap(proj))) addMcp(n, v, 'project', v.disabled ? 'off' : 'on', { local: true })
+  const addMcp = (name: string, v: any, source: ExtSource, state: McpState, extra: Partial<McpServer> = {}, configPath?: string) =>
+    mcp.push({ name, source, transport: transportOf(v), state: off.has(name) ? 'off' : state, ...mcpDetails(v, configPath), ...extra })
+  const managedMcpFile = join(MANAGED, 'managed-mcp.json')
+  for (const [n, v] of Object.entries(serverMap(readJson(managedMcpFile, ctx)))) addMcp(n, v, 'global', 'on', { managed: true }, managedMcpFile)
+  for (const [n, v] of Object.entries(serverMap(g))) addMcp(n, v, 'global', v.disabled ? 'off' : 'on', {}, globalFile)
+  for (const [n, v] of Object.entries(serverMap(proj))) addMcp(n, v, 'project', v.disabled ? 'off' : 'on', { local: true }, globalFile)
   const mcpJsonDir = chain.find((p) => isFile(join(p, '.mcp.json')))
   if (mcpJsonDir) {
     const allSettings = [settings, ...projSettings, proj]
     const approvedAll = allSettings.some((s) => s?.enableAllProjectMcpServers === true)
     const approved = new Set<string>(allSettings.flatMap((s) => (Array.isArray(s?.enabledMcpjsonServers) ? s.enabledMcpjsonServers : [])))
     const rejected = new Set<string>(allSettings.flatMap((s) => (Array.isArray(s?.disabledMcpjsonServers) ? s.disabledMcpjsonServers : [])))
-    for (const [n, v] of Object.entries(serverMap(readJson(join(mcpJsonDir, '.mcp.json'), ctx)))) addMcp(n, v, 'project', rejected.has(n) ? 'off' : approvedAll || approved.has(n) ? 'on' : 'pending')
+    const projMcpFile = join(mcpJsonDir, '.mcp.json')
+    for (const [n, v] of Object.entries(serverMap(readJson(projMcpFile, ctx)))) addMcp(n, v, 'project', rejected.has(n) ? 'off' : approvedAll || approved.has(n) ? 'on' : 'pending', {}, projMcpFile)
   }
   for (const pl of active) {
     const files = [join(pl.path, '.mcp.json')]
     const m = pl.manifest.mcpServers
     if (typeof m === 'string') files.push(isAbsolute(m) ? m : join(pl.path, m))
-    else if (m && typeof m === 'object') for (const [n, v] of Object.entries(serverMap(m))) addMcp(n, v, 'plugin', 'on', { plugin: pl.name })
-    for (const f of files) for (const [n, v] of Object.entries(serverMap(readJson(f, ctx)))) addMcp(n, v, 'plugin', 'on', { plugin: pl.name })
+    else if (m && typeof m === 'object') for (const [n, v] of Object.entries(serverMap(m))) addMcp(n, v, 'plugin', 'on', { plugin: pl.name }, join(pl.path, '.claude-plugin', 'plugin.json'))
+    for (const f of files) for (const [n, v] of Object.entries(serverMap(readJson(f, ctx)))) addMcp(n, v, 'plugin', 'on', { plugin: pl.name }, f)
   }
   return { skills, mcp, agents, plugins, rules, hooks, configDir: dir, remoteNote: g.claudeAiMcpEverConnected === true, agentsDynamic: false }
 }
@@ -695,8 +726,8 @@ function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
   scanSkillDir(join(realHome, '.agents', 'skills'), push, 'global', { skip })
 
   const mcp: McpServer[] = []
-  const addMcp = (name: string, v: any, source: ExtSource, extra: Partial<McpServer> = {}) =>
-    mcp.push({ name, source, transport: transportOf(v), state: v?.enabled === false || v?.disabled === true ? 'off' : 'on', ...extra })
+  const addMcp = (name: string, v: any, source: ExtSource, extra: Partial<McpServer> = {}, configPath?: string) =>
+    mcp.push({ name, source, transport: transportOf(v), state: v?.enabled === false || v?.disabled === true ? 'off' : 'on', ...mcpDetails(v, configPath), ...extra })
   const hooksOn = cfg.features?.hooks !== false
   const hooks: HookItem[] = []
 
@@ -729,21 +760,26 @@ function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
       for (const d of relPaths(path, manifest.skills, 'skills')) scanSkillDir(d, namesOf(item.skills, on ? push : undefined), 'plugin', { plugin: name, skip })
       const m = manifest.mcpServers
       const files = typeof m === 'string' ? [isAbsolute(m) ? m : join(path, m)] : [join(path, '.mcp.json')]
-      const servers: [string, any][] = [...(m && typeof m === 'object' ? Object.entries(serverMap(m)) : []), ...files.flatMap((f) => Object.entries(serverMap(readJson(f, ctx))))]
+      const servers: [string, any, string][] = [
+        ...(m && typeof m === 'object' ? Object.entries(serverMap(m)).map(([n, s]): [string, any, string] => [n, s, mfFile]) : []),
+        ...files.flatMap((f) => Object.entries(serverMap(readJson(f, ctx))).map(([n, s]): [string, any, string] => [n, s, f]))
+      ]
       item.mcp = [...new Set(servers.map(([n]) => n))]
       // plugin hooks may call MCP tools (type: mcp_tool) instead of shell commands
       const ph = pluginHooks(path, manifest.hooks, ctx, { source: 'plugin', plugin: name, file: tilde(mfFile) })
       item.hooks = ph.map(hookLabel)
       plugins.push(item)
       if (!on) continue
-      for (const [n, s] of servers) addMcp(n, s, 'plugin', { plugin: name })
+      for (const [n, s, f] of servers) addMcp(n, s, 'plugin', { plugin: name }, f)
       if (hooksOn) hooks.push(...ph)
     }
   }
-  for (const [n, v] of Object.entries<any>(cfg.mcp_servers ?? {})) if (v && typeof v === 'object') addMcp(n, v, 'global')
+  const codexCfgFile = join(dir, 'config.toml')
+  for (const [n, v] of Object.entries<any>(cfg.mcp_servers ?? {})) if (v && typeof v === 'object') addMcp(n, v, 'global', {}, codexCfgFile)
   for (const p of chain) {
-    const pc = readToml(join(p, '.codex', 'config.toml'), ctx)
-    for (const [n, v] of Object.entries<any>(pc?.mcp_servers ?? {})) if (v && typeof v === 'object') addMcp(n, v, 'project')
+    const projCfgFile = join(p, '.codex', 'config.toml')
+    const pc = readToml(projCfgFile, ctx)
+    for (const [n, v] of Object.entries<any>(pc?.mcp_servers ?? {})) if (v && typeof v === 'object') addMcp(n, v, 'project', {}, projCfgFile)
   }
   // project / global / plugin order in the list
   const rank: Record<ExtSource, number> = { project: 0, global: 1, plugin: 2, builtin: 3 }
@@ -797,8 +833,8 @@ function scanAgy(home: string, cwd: string | null, ctx: Ctx): Scan {
   const g = join(home, '.gemini')
   const cfgRoot = join(g, 'config')
   const mcp: McpServer[] = []
-  const addMcp = (name: string, v: any, source: ExtSource, extra: Partial<McpServer> = {}) =>
-    mcp.push({ name, source, transport: transportOf(v), state: v?.disabled === true || v?.enabled === false ? 'off' : 'on', ...extra })
+  const addMcp = (name: string, v: any, source: ExtSource, extra: Partial<McpServer> = {}, configPath?: string) =>
+    mcp.push({ name, source, transport: transportOf(v), state: v?.disabled === true || v?.enabled === false ? 'off' : 'on', ...mcpDetails(v, configPath), ...extra })
   const hooks: HookItem[] = []
   const { rules, add: addRule } = ruleList()
 
@@ -840,10 +876,12 @@ function scanAgy(home: string, cwd: string | null, ctx: Ctx): Scan {
   scanSkillDir(join(cfgRoot, 'skills'), push, 'global')
   for (const pl of active) {
     scanSkillDir(join(pl.path, 'skills'), push, 'plugin', { plugin: pl.name })
-    for (const [n, v] of Object.entries(serverMap(readJson(join(pl.path, 'mcp_config.json'), ctx)))) addMcp(n, v, 'plugin', { plugin: pl.name })
+    const plMcpFile = join(pl.path, 'mcp_config.json')
+    for (const [n, v] of Object.entries(serverMap(readJson(plMcpFile, ctx)))) addMcp(n, v, 'plugin', { plugin: pl.name }, plMcpFile)
   }
   scanSkillDir(join(g, 'antigravity-cli', 'builtin', 'skills'), push, 'builtin')
-  for (const [n, v] of Object.entries(serverMap(readJson(join(cfgRoot, 'mcp_config.json'), ctx)))) addMcp(n, v, 'global')
+  const agyMcpFile = join(cfgRoot, 'mcp_config.json')
+  for (const [n, v] of Object.entries(serverMap(readJson(agyMcpFile, ctx)))) addMcp(n, v, 'global', {}, agyMcpFile)
   mcp.sort((a, b) => Number(a.source === 'plugin') - Number(b.source === 'plugin'))
 
   // rules: global GEMINI.md and the customization root; project GEMINI.md / AGENTS.md and

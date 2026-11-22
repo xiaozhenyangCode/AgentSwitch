@@ -175,6 +175,10 @@ label {
 
 .xterm-host,
 .xterm-host .xterm-viewport {
+  background: #fafafa !important;
+}
+.dark .xterm-host,
+.dark .xterm-host .xterm-viewport {
   background: #0b0d10 !important;
 }
 .xterm-host .xterm {
