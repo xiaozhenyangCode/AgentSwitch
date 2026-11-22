@@ -1,12 +1,12 @@
 <!--
-DRAFT: adapted from the Apache Individual Contributor License Agreement v2.0.
-Have it reviewed by someone qualified before relying on it.
+Adapted from the Apache Individual Contributor License Agreement v2.0.
+Have it reviewed by qualified legal counsel before relying on it commercially.
 -->
 
 # AgentSwitch Individual Contributor License Agreement
 
-Thank you for your interest in contributing to AgentSwitch (the "Project"), maintained by
-xiaozhenyang (the "Maintainer").
+Thank you for your interest in contributing to AgentSwitch (the "Project"), currently maintained by
+xiaozhenyang (GitHub: @xiaozhenyangCode).
 
 This Agreement sets out the terms under which You make Contributions to the Project. You keep
 full ownership of the copyright in Your Contributions. Please read it carefully. You accept it by
@@ -15,6 +15,9 @@ commenting on a pull request with the sentence the CLA bot asks for.
 ## 1. Definitions
 
 - **"You"** means the individual who submits a Contribution to the Project.
+- **"Maintainer"** means xiaozhenyang (GitHub: @xiaozhenyangCode), and any corporate entity,
+  affiliate, successor, or assignee to which the Project or the Maintainer's rights under this
+  Agreement are transferred.
 - **"Contribution"** means any original work of authorship, including any changes or additions
   to existing work, that You intentionally submit to the Project for inclusion. This includes
   pull requests, patches, and code or documentation in issues. It does not include anything
@@ -22,8 +25,8 @@ commenting on a pull request with the sentence the CLA bot asks for.
 
 ## 2. Copyright license
 
-You grant the Maintainer, and recipients of software distributed by the Maintainer, a
-license to Your Contributions with these properties:
+You grant the Maintainer (including its successors and assigns), and recipients of software
+distributed by the Maintainer, a license to Your Contributions with these properties:
 
 - perpetual, worldwide, non-exclusive, free of charge, royalty-free and irrevocable;
 - it covers reproducing, preparing derivative works of, publicly displaying, publicly
@@ -33,8 +36,8 @@ license to Your Contributions with these properties:
 
 ## 3. Patent license
 
-You grant the Maintainer, and recipients of software distributed by the Maintainer, a patent
-license with these properties:
+You grant the Maintainer (including its successors and assigns), and recipients of software
+distributed by the Maintainer, a patent license with these properties:
 
 - perpetual, worldwide, non-exclusive, free of charge, royalty-free and irrevocable, except
   as stated in this section;
@@ -67,7 +70,13 @@ You represent all of the following:
   "AS IS", without warranties or conditions of any kind.
 - You are not expected to provide support for Your Contributions.
 
-## 6. Notification
+## 6. Assignment
+
+The Maintainer may assign or transfer this Agreement, and any rights or licenses granted under
+it, to any corporate entity, affiliate, or successor that assumes ownership or stewardship of the
+Project, without requiring Your separate consent or re-execution of this Agreement.
+
+## 7. Notification
 
 You agree to notify the Maintainer if You become aware of any facts or circumstances that make
 these representations inaccurate in any respect.

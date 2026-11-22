@@ -551,6 +551,8 @@ export const zhTW: Dict = {
   'about.tagline': '在本機 Claude Code、Codex 與 agy 帳號之間切換和協作的對話應用',
   'about.version': '版本 {v}',
   'about.website': '官網',
+  'about.source': 'GitHub 原始碼',
+  'about.license': 'AGPL-3.0 開源授權',
   'about.env': '執行環境',
   'about.copyEnv': '複製環境資訊',
   'about.envCopied': '已複製環境資訊',

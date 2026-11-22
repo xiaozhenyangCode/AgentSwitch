@@ -531,6 +531,8 @@ export const ja: Dict = {
   'about.tagline': 'ローカルの Claude Code、Codex、agy アカウントを切り替えて連携させるチャットアプリ',
   'about.version': 'バージョン {v}',
   'about.website': 'Web サイト',
+  'about.source': 'GitHub ソース',
+  'about.license': 'AGPL-3.0 ライセンス',
   'about.env': '実行環境',
   'about.copyEnv': '環境情報をコピー',
   'about.envCopied': '環境情報をコピーしました',

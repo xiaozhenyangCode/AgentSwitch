@@ -32,6 +32,8 @@ import {
 } from './icons'
 
 const WEBSITE = 'https://agentswitch.app'
+const GITHUB_REPO = 'https://github.com/xiaozhenyangCode/AgentSwitch'
+const LICENSE_URL = `${GITHUB_REPO}/blob/main/LICENSE`
 
 const SECTIONS: { id: SettingsSection; Icon: (p: { size?: number }) => ReactElement }[] = [
   { id: 'general', Icon: IconSliders },
@@ -183,8 +185,8 @@ const ITEMS: Item[] = [
     section: 'about',
     title: 'set.about',
     hint: 'about.tagline',
-    keys: ['about.env', 'about.copyEnv', 'about.website'],
-    words: 'about version website electron chromium node macos environment 关于 版本 官网 环境 バージョン 情報',
+    keys: ['about.env', 'about.copyEnv', 'about.website', 'about.source', 'about.license'],
+    words: 'about version website electron chromium node macos environment license agpl gpl github source copyright 关于 版本 官网 环境 协议 许可 开源 授權 原始碼 バージョン 情報 ライセンス ソース',
     Body: AboutRow
   }
 ]
@@ -804,9 +806,14 @@ function About() {
         <div className="mt-4 text-[22px] font-semibold tracking-tight text-ink">AgentSwitch</div>
         <div className="mt-1 text-[13px] text-ink-3 tabular-nums">{info ? t('about.version', { v: info.version }) : ''}</div>
         <div className="mt-2 max-w-[420px] text-[13px] leading-relaxed text-ink-2">{t('about.tagline')}</div>
-        <button className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-accent hover:text-accent-hover" onClick={() => void window.agentswitch.sys.openExternal(WEBSITE)}>
-          {t('about.website')} agentswitch.app <IconExternal size={13} />
-        </button>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5">
+          <button className="inline-flex items-center gap-1 text-[13px] font-medium text-accent hover:text-accent-hover" onClick={() => void window.agentswitch.sys.openExternal(WEBSITE)}>
+            {t('about.website')} agentswitch.app <IconExternal size={13} />
+          </button>
+          <button className="inline-flex items-center gap-1 text-[13px] font-medium text-accent hover:text-accent-hover" onClick={() => void window.agentswitch.sys.openExternal(GITHUB_REPO)}>
+            {t('about.source')} <IconExternal size={13} />
+          </button>
+        </div>
       </div>
       <div className="mt-8 overflow-hidden rounded-xl border border-black/[0.07] bg-surface-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <div className="flex h-10 items-center border-b border-black/[0.06] pr-2 pl-4">
@@ -826,6 +833,15 @@ function About() {
             </div>
           ))}
         </div>
+      </div>
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-2 px-1 text-[12px] text-ink-3">
+        <span>© 2026 xiaozhenyang</span>
+        <button
+          className="inline-flex items-center gap-1 text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+          onClick={() => void window.agentswitch.sys.openExternal(LICENSE_URL)}
+        >
+          {t('about.license')} <IconExternal size={12} />
+        </button>
       </div>
     </div>
   )

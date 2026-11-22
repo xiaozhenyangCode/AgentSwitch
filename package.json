@@ -52,7 +52,11 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE"
+    ],
+    "extraResources": [
+      "LICENSE"
     ],
     "asarUnpack": [
       "node_modules/node-pty/**"

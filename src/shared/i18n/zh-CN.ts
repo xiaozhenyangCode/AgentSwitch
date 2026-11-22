@@ -553,6 +553,8 @@ export const zhCN = {
   'about.tagline': '在本机 Claude Code、Codex 与 agy 账号之间切换和协作的对话应用',
   'about.version': '版本 {v}',
   'about.website': '官网',
+  'about.source': 'GitHub 源码',
+  'about.license': 'AGPL-3.0 开源协议',
   'about.env': '运行环境',
   'about.copyEnv': '复制环境信息',
   'about.envCopied': '已复制环境信息',

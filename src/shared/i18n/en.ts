@@ -531,6 +531,8 @@ export const en: Dict = {
   'about.tagline': 'A chat app that switches between and combines your local Claude Code, Codex and agy accounts',
   'about.version': 'Version {v}',
   'about.website': 'Website',
+  'about.source': 'GitHub Source',
+  'about.license': 'AGPL-3.0 License',
   'about.env': 'Environment',
   'about.copyEnv': 'Copy Environment Info',
   'about.envCopied': 'Environment info copied',
