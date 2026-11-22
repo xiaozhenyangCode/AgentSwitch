@@ -13,7 +13,7 @@
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" />
 </p>
 
-<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><a href="https://agentswitch.app">Website</a> · English · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center"><img src="docs/demo.gif" width="900" alt="Claude writes slugify.js, Codex reviews and fixes edge cases, Gemini adds and runs tests" /></p>
 

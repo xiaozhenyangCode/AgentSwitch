@@ -1,7 +1,15 @@
 {
   "name": "agentswitch",
   "version": "0.1.0",
-  "description": "Orchestrate local AI CLI agents (Claude Code / Gemini CLI / Codex CLI)",
+  "description": "One desktop chat for Claude Code, Codex CLI and Gemini (Antigravity CLI)",
+  "homepage": "https://agentswitch.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaozhenyangCode/AgentSwitch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaozhenyangCode/AgentSwitch/issues"
+  },
   "main": "./out/main/index.js",
   "private": true,
   "license": "AGPL-3.0-only",
