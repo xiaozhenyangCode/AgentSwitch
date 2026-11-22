@@ -49,7 +49,7 @@ export function useDrawerLayout(): DrawerLayout {
  * folder (or the system home directory when no project is selected).
  */
 export function DebugDrawer() {
-  const { drawer, closeDrawer, setDrawerSession, toast } = useApp()
+  const { drawer, closeDrawer, setDrawerSession, toast, info } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loaded, setLoaded] = useState(false)
   const known = useRef(new Set<SessionId>())
@@ -58,6 +58,7 @@ export function DebugDrawer() {
   const chat = useChat()
   const draft = useDraft()
   const projectDir = (activeThread(chat) ?? draft).projectDir ?? null
+  const expectedCwd = (projectDir ?? info?.realHome ?? '').replace(/\/+$/, '')
 
   const load = useCallback(() => {
     void window.agentswitch.pty.sessions().then((list) => {
@@ -104,18 +105,29 @@ export function DebugDrawer() {
     }
   }, [projectDir, setDrawerSession, load, toast])
 
-  // Auto-open 1 default terminal window in the current project cwd (or system home) when drawer opens empty
-  const autoOpened = useRef(false)
+  // Sync drawer terminal to the current project's cwd whenever opened or switched to another project:
+  // reuse an existing alive terminal for that project, or spawn a fresh one if none matches.
+  const syncedCwd = useRef<string | null>(null)
   useEffect(() => {
     if (!drawer.open) {
-      autoOpened.current = false
+      syncedCwd.current = null
       return
     }
-    if (loaded && sessions.length === 0 && !autoOpened.current) {
-      autoOpened.current = true
+    if (!loaded || !expectedCwd) return
+    // If opened explicitly for a non-terminal session (e.g. install log), don't hijack it
+    if (syncedCwd.current === null && drawer.session && !drawer.session.startsWith('term:')) {
+      syncedCwd.current = expectedCwd
+      return
+    }
+    if (syncedCwd.current === expectedCwd) return
+    syncedCwd.current = expectedCwd
+    const match = sessions.find((s) => s.sessionId.startsWith('term:') && s.alive && (s.cwd ?? '').replace(/\/+$/, '') === expectedCwd)
+    if (match) {
+      setDrawerSession(match.sessionId)
+    } else {
       void openShell()
     }
-  }, [drawer.open, loaded, sessions.length, openShell])
+  }, [drawer.open, drawer.session, loaded, expectedCwd, sessions, setDrawerSession, openShell])
 
   useEffect(() => {
     if (drawer.open && active) requestAnimationFrame(() => terminals.get(active)?.focus())

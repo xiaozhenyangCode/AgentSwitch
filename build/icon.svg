@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <!-- Soft silver-white metallic squircle gradient -->
+    <linearGradient id="tileGrad" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F7F8FA" />
+      <stop offset="52%" stop-color="#E6E8EC" />
+      <stop offset="100%" stop-color="#C0C3C8" />
+    </linearGradient>
+    <!-- Subtle top specular highlight -->
+    <linearGradient id="rimGrad" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95" />
+      <stop offset="28%" stop-color="#FFFFFF" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.12" />
+    </linearGradient>
+    <!-- macOS Dock drop shadow -->
+    <filter id="dockShadow" x="50" y="60" width="924" height="924" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.24" />
+    </filter>
+  </defs>
+
+  <!-- macOS standard 824x824 squircle centered on 1024x1024 canvas -->
+  <g filter="url(#dockShadow)">
+    <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tileGrad)" />
+    <rect x="104" y="104" width="816" height="816" rx="182" stroke="url(#rimGrad)" stroke-width="8" />
+  </g>
+
+  <!-- Centered dark slate circular medallion + 3-orbit ice-cyan atom -->
+  <g transform="translate(100, 100) scale(8.24)">
+    <circle cx="50" cy="50" r="36.5" fill="#272A36" />
+
+    <!-- Under-pass: outer petal loops -->
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(-12 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(108 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(228 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+
+    <!-- Over-pass: main orbital arms with dark halo for crisp weave -->
+    <g transform="rotate(-12 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+    <g transform="rotate(108 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+    <g transform="rotate(228 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+
+    <!-- Three orbital nodes -->
+    <circle cx="50" cy="25" r="4.1" transform="rotate(-12 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+    <circle cx="50" cy="25" r="4.1" transform="rotate(108 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+    <circle cx="50" cy="25" r="4.1" transform="rotate(228 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+
+    <!-- Center core -->
+    <circle cx="50" cy="50" r="3.6" fill="#D4F6FF" />
+  </g>
+</svg>

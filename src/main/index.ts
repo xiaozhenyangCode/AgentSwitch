@@ -1,5 +1,6 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { initProfiles } from './profiles'
 import { registerIpc } from './ipc'
@@ -53,6 +54,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    const devIcon = join(__dirname, '../../build/icon.png')
+    if (existsSync(devIcon)) app.dock?.setIcon(nativeImage.createFromPath(devIcon))
+  }
   // appearance (system / light / dark): window chrome, vibrancy and menus follow nativeTheme
   initTheme()
   // UI language (system / pinned): the menu is rebuilt when it changes

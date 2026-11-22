@@ -53,7 +53,7 @@ import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
 import { closeSync, mkdirSync, openSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
@@ -111,10 +111,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }, 30)
   }
 
+  const termDirs = new Map<SessionId, string>()
   const sessionLabel = (id: SessionId): string => {
     const k = kindOfInstallSession(id)
     if (k) return t('main.installSession', { name: KIND_LABEL[k] })
-    if (id.startsWith('term:')) return t('dbg.shellTab', { n: id.slice(5) })
+    if (id.startsWith('term:')) {
+      const d = termDirs.get(id)
+      if (!d || d === realHome) return '~'
+      return basename(d) || d
+    }
     if (id.startsWith('run:')) {
       const pid = id.slice(4)
       return t('main.runSession', { name: hasProfile(pid) ? getConfig(pid).name : pid })
@@ -236,6 +241,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }
     const shell = process.env.SHELL || '/bin/zsh'
     const env = { ...getBaseEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+    termDirs.set(id, dir)
     ptys.start(id, 'shell', { shell, args: ['-i'], cwd: dir, env, injected: {} }, cols, rows)
     return id
   })
@@ -249,7 +255,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown) => gitChanges(dir))
   /** Closes a drawer tab: kills the process (if any) and drops its scrollback. */
   ipcMain.handle(IPC.ptyForget, (_e, id: unknown) => {
-    if (typeof id === 'string' && id) ptys.forget(id)
+    if (typeof id === 'string' && id) {
+      termDirs.delete(id)
+      ptys.forget(id)
+    }
   })
 
   // ---- models / chat ------------------------------------------------------------------
