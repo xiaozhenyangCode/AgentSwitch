@@ -75,7 +75,7 @@ export const ja: Dict = {
 
   'hist.loadFailed': 'ローカル履歴を読み込めませんでした',
   'hist.openFailed': '履歴を開けませんでした',
-  'hist.count': '{n} 件のセッション · 読み取り専用',
+  'hist.count': '{n} 件のセッション',
   'hist.scanning': 'スキャン中…',
   'hist.rescan': '再スキャン',
   'hist.noMatch': '一致する履歴はありません',

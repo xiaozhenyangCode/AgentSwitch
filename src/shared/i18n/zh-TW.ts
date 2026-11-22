@@ -81,7 +81,7 @@ export const zhTW: Dict = {
   // ---- local CLI history (sidebar)
   'hist.loadFailed': '讀取本機歷史失敗',
   'hist.openFailed': '開啟歷史失敗',
-  'hist.count': '{n} 個會話 · 唯讀',
+  'hist.count': '{n} 個會話',
   'hist.scanning': '正在掃描…',
   'hist.rescan': '重新掃描',
   'hist.noMatch': '沒有匹配的歷史',

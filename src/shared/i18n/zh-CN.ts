@@ -83,7 +83,7 @@ export const zhCN = {
   // ---- local CLI history (sidebar)
   'hist.loadFailed': '读取本机历史失败',
   'hist.openFailed': '打开历史失败',
-  'hist.count': '{n} 个会话 · 只读',
+  'hist.count': '{n} 个会话',
   'hist.scanning': '正在扫描…',
   'hist.rescan': '重新扫描',
   'hist.noMatch': '没有匹配的历史',

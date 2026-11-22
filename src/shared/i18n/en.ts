@@ -75,7 +75,7 @@ export const en: Dict = {
 
   'hist.loadFailed': 'Could not read local history',
   'hist.openFailed': 'Could not open history',
-  'hist.count': '{n} sessions · read-only',
+  'hist.count': '{n} sessions',
   'hist.scanning': 'Scanning…',
   'hist.rescan': 'Rescan',
   'hist.noMatch': 'No matching history',
