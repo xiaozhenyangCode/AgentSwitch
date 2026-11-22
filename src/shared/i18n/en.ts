@@ -779,5 +779,6 @@ export const en: Dict = {
   'nav.copyChat': 'Copy conversation',
   'nav.copiedChat': 'Conversation copied (Markdown)',
   'nav.stopReply': 'Stop reply',
-  'chat.mdYou': 'Me'
+  'chat.mdYou': 'Me',
+  'usage.okShort': 'Usage OK'
 }

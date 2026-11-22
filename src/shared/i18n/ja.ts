@@ -133,7 +133,7 @@ export const ja: Dict = {
   'usage.noWindow': 'この枠はありません',
   'usage.currentModel': '現在のモデル',
   'usage.today': '今日 {n}',
-  'usage.noQuota': '使用枠のデータなし',
+  'usage.noQuota': 'クォータ情報なし',
   'usage.quotaAge': '使用枠データ {ago}',
   'usage.limitedSuffix': ' · レート制限中',
   'usage.refresh': '使用量を更新',
@@ -779,5 +779,6 @@ export const ja: Dict = {
   'nav.copyChat': '会話をコピー',
   'nav.copiedChat': '会話をコピーしました（Markdown）',
   'nav.stopReply': '返信を停止',
-  'chat.mdYou': '自分'
+  'chat.mdYou': '自分',
+  'usage.okShort': '使用量は正常'
 }

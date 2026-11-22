@@ -365,6 +365,9 @@ export function UsageView() {
 }
 
 /** Amber / red dot beside the driver picker when its quota runs low; click to switch. */
+/** Level each account's usage popover was last auto-opened at (so closing it sticks). */
+const autoShown = new Map<ProfileId, 'warn' | 'danger'>()
+
 export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | null; model?: string | null; onSwitch: (id: ProfileId) => void }) {
   const { profiles } = useApp()
   const snap = useUsage()
@@ -377,32 +380,54 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
     window.addEventListener('mousedown', close)
     return () => window.removeEventListener('mousedown', close)
   }, [open])
+  // reaching the warning threshold (or escalating to danger) opens the popover once by itself
+  const driverId = driver?.id ?? null
+  const autoLevel = driver ? quotaLevel(driver, snap?.accounts[driver.id], model).level : 'ok'
+  useEffect(() => {
+    if (!driverId) return
+    if (autoLevel === 'ok') return void autoShown.delete(driverId)
+    if (autoShown.get(driverId) === autoLevel) return
+    autoShown.set(driverId, autoLevel)
+    // an outside mousedown closes whichever composer popover is open (model, 扩展…): stay exclusive
+    window.dispatchEvent(new MouseEvent('mousedown'))
+    setOpen(true)
+  }, [driverId, autoLevel])
   if (!driver) return null
   const u = snap?.accounts[driver.id]
   const { level, reason } = quotaLevel(driver, u, model)
-  if (level === 'ok') return null
-  const alt = recommendSwitch(driver, profiles, snap, model)
+  // always shown: green = fine, gray = no quota data (e.g. API key), orange / red = running low
+  const alt = level === 'ok' ? null : recommendSwitch(driver, profiles, snap, model)
   const eff = effectiveQuota(u, model ?? driver.defaultModel)
   const five = liveWindow(eff.fiveHour)
   const seven = liveWindow(eff.sevenDay)
   const line = (which: string, w: QuotaWindow | null) =>
     w && t('usage.remaining', { which, pct: Math.max(0, 100 - Math.round(w.percent)) }) + (w.resetsAt ? t('usage.remainingReset', { time: fmtReset(w.resetsAt) }) : '')
   const detail = [line('5h', five), line('7d', seven)].filter(Boolean) as string[]
-  const color = level === 'danger' ? 'bg-red' : 'bg-orange'
+  const known = !!(five || seven) || level !== 'ok'
+  const status = reason ?? (known ? t('usage.okShort') : t('usage.noQuota'))
+  const dot =
+    level === 'danger'
+      ? 'bg-red shadow-[0_0_0_3px_rgba(255,59,48,0.18)]'
+      : level === 'warn'
+        ? 'bg-orange shadow-[0_0_0_3px_rgba(255,159,10,0.18)]'
+        : known
+          ? 'bg-green shadow-[0_0_0_3px_rgba(52,199,89,0.16)]'
+          : 'bg-ink-3/45'
   return (
     <div ref={ref} className="relative">
       <button
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((o) => !o)}
         className="flex h-8 w-6 items-center justify-center rounded-full hover:bg-fill"
-        title={[`${driver.name}: ${reason}`, ...detail, alt ? t('usage.canSwitch', { name: alt.name }) : ''].filter(Boolean).join('\n')}
+        title={[`${driver.name}: ${status}`, ...detail, alt ? t('usage.canSwitch', { name: alt.name }) : ''].filter(Boolean).join('\n')}
+        aria-label={`${driver.name}: ${status}`}
       >
-        <span className={`h-2 w-2 rounded-full ${color} shadow-[0_0_0_3px_rgba(255,159,10,0.18)]`} />
+        <span className={`h-2 w-2 rounded-full ${dot}`} />
       </button>
       {open && (
         <div className="absolute bottom-10 left-0 z-30 w-64 rounded-2xl bg-surface/95 p-3 text-[12.5px] shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
-          <div className={`font-medium ${level === 'danger' ? 'text-danger' : 'text-warn'}`}>
-            {driver.name} · {reason}
+          <div className={`font-medium ${level === 'danger' ? 'text-danger' : level === 'warn' ? 'text-warn' : known ? 'text-ok' : 'text-ink-2'}`}>
+            {driver.name} · {status}
           </div>
           {eff.group && <div className="mt-0.5 text-ink-3">{t('usage.group', { name: eff.group.name })}</div>}
           {detail.map((d) => (
@@ -410,7 +435,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
               {d}
             </div>
           ))}
-          {alt ? (
+          {level === 'ok' ? null : alt ? (
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
