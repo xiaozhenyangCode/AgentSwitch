@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, net } from 'electron'
 import { createHash } from 'node:crypto'
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -395,6 +395,46 @@ function readClaudeOauthToken(configDir: string): Promise<string | null> {
   })
 }
 
+function fetchClaudeUsageJson(
+  token: string,
+  env: NodeJS.ProcessEnv
+): Promise<{ status: number; text: string }> {
+  const url = 'https://api.anthropic.com/api/oauth/usage'
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    'anthropic-beta': 'oauth-2025-04-20',
+    'User-Agent': 'claude-code/2.1.0',
+    Accept: 'application/json'
+  }
+  const hasEnvProxy = !!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy)
+  if (hasEnvProxy && process.platform !== 'win32') {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '-sS',
+        '--max-time',
+        '12',
+        '-w',
+        '\n%{http_code}',
+        ...Object.entries(headers).flatMap(([k, v]) => ['-H', `${k}: ${v}`]),
+        url
+      ]
+      execFile('/usr/bin/curl', args, { env, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message).trim()))
+        const s = String(stdout)
+        const idx = s.lastIndexOf('\n')
+        const status = Number(idx >= 0 ? s.slice(idx + 1).trim() : '') || 0
+        const text = idx >= 0 ? s.slice(0, idx) : s
+        resolve({ status, text })
+      })
+    })
+  }
+  // No explicit proxy env: use Electron's net.fetch so macOS system proxy settings are honoured.
+  return net.fetch(url, { headers, signal: AbortSignal.timeout(12_000) }).then(async (res) => ({
+    status: res.status,
+    text: await res.text()
+  }))
+}
+
 export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
   const running = claudePending.get(profileId)
   if (running) return running
@@ -403,20 +443,18 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
     const cfg = getConfig(profileId)
     const token = await readClaudeOauthToken(cfg.configDir)
     if (!token) return false
+    let env: NodeJS.ProcessEnv = process.env
     try {
-      const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-          'User-Agent': 'claude-code/2.1.0',
-          Accept: 'application/json'
-        },
-        signal: AbortSignal.timeout(12_000)
-      })
-      if (!res.ok) {
+      env = buildSpawnSpec(profileId, 'run').env
+    } catch {
+      /* fallback to process.env */
+    }
+    try {
+      const res = await fetchClaudeUsageJson(token, env)
+      if (res.status < 200 || res.status >= 300) {
         let detail = `HTTP ${res.status}`
         try {
-          const body: any = await res.json()
+          const body: any = JSON.parse(res.text)
           const m = body?.error?.message || body?.message
           if (typeof m === 'string' && m.trim()) detail = `${detail}: ${m.trim()}`
         } catch {
@@ -425,7 +463,7 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
         setQuotaError(profileId, detail)
         return false
       }
-      const d: any = await res.json()
+      const d: any = JSON.parse(res.text)
       const parseWin = (w: any, minutes: number): QuotaWindow | null => {
         if (!w || typeof w.utilization !== 'number') return null
         const t = w.resets_at ? Date.parse(String(w.resets_at)) : NaN
