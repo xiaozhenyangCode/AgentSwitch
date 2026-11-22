@@ -207,8 +207,9 @@ export function ExtensionsButton({ data, open, onToggle }: { data: ExtOverview |
     : t('ext.title')
   return (
     <button
-      // the panel closes on outside mousedown: keep this one from counting as outside
-      onMouseDown={(e) => e.stopPropagation()}
+      // the panel ignores this button on outside mousedown (it toggles itself); the mousedown
+      // still propagates, so the composer's other popovers (model, account…) close as it opens
+      data-ext-toggle
       onClick={onToggle}
       className={`flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : 'bg-black/[0.045]'}`}
       title={tip}
@@ -757,7 +758,10 @@ export function ExtensionsPanel({
 
   useEffect(() => {
     input.current?.focus()
-    const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose()
+    const h = (e: MouseEvent) => {
+      const el = e.target as Element
+      if (!ref.current?.contains(el) && !el.closest?.('[data-ext-toggle]')) onClose()
+    }
     window.addEventListener('mousedown', h)
     return () => window.removeEventListener('mousedown', h)
   }, [onClose])
