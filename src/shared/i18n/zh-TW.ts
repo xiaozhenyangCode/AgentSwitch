@@ -142,7 +142,7 @@ export const zhTW: Dict = {
   'usage.noWindow': '無此視窗',
   'usage.currentModel': '當前模型',
   'usage.today': '今日 {n}',
-  'usage.noQuota': '暫無額度資料',
+  'usage.noQuota': '不提供額度資料',
   'usage.quotaAge': '額度資料 {ago}',
   'usage.limitedSuffix': ' · 已限流',
   'usage.refresh': '重新整理用量',
@@ -802,5 +802,6 @@ export const zhTW: Dict = {
   'nav.copiedChat': '已複製對話（Markdown）',
   'nav.stopReply': '停止回覆',
   'chat.mdYou': '我',
-  'usage.okShort': '用量正常'
+  'usage.okShort': '用量正常',
+  'usage.noQuotaShort': '暫無額度資料'
 }

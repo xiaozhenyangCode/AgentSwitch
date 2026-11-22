@@ -404,7 +404,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
     w && t('usage.remaining', { which, pct: Math.max(0, 100 - Math.round(w.percent)) }) + (w.resetsAt ? t('usage.remainingReset', { time: fmtReset(w.resetsAt) }) : '')
   const detail = [line('5h', five), line('7d', seven)].filter(Boolean) as string[]
   const known = !!(five || seven) || level !== 'ok'
-  const status = reason ?? (known ? t('usage.okShort') : t('usage.noQuota'))
+  const status = reason ?? (known ? t('usage.okShort') : t('usage.noQuotaShort'))
   const dot =
     level === 'danger'
       ? 'bg-red shadow-[0_0_0_3px_rgba(255,59,48,0.18)]'

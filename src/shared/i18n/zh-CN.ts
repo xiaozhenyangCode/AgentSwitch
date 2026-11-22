@@ -144,7 +144,7 @@ export const zhCN = {
   'usage.noWindow': '无此窗口',
   'usage.currentModel': '当前模型',
   'usage.today': '今日 {n}',
-  'usage.noQuota': '暂无额度数据',
+  'usage.noQuota': '不提供额度数据',
   'usage.quotaAge': '额度数据 {ago}',
   'usage.limitedSuffix': ' · 已限流',
   'usage.refresh': '刷新用量',
@@ -804,5 +804,6 @@ export const zhCN = {
   'nav.copiedChat': '已复制对话（Markdown）',
   'nav.stopReply': '停止回复',
   'chat.mdYou': '我',
-  'usage.okShort': '用量正常'
+  'usage.okShort': '用量正常',
+  'usage.noQuotaShort': '暂无额度数据'
 } as const
