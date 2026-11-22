@@ -225,6 +225,12 @@ export interface Usage {
   /** Thinking / reasoning tokens (part of output). */
   reasoning?: number
   costUsd?: number
+  /**
+   * Tokens in the model's context on the turn's last request (prompt incl. cache). The other
+   * fields add up every request of the turn (each tool round re-reads the context), so they
+   * say nothing about how full the context is.
+   */
+  context?: number
 }
 
 /** Normalised event from any CLI adapter. */

@@ -164,6 +164,8 @@ function claudeAdapter(s: RunSpec): Adapter {
   let textSoFar = ''
   let sawDelta = false
   let sawThinkingDelta = false
+  /** Context size of the latest API request (result.usage sums all requests of the turn). */
+  let lastContext = 0
   const tools = new Map<string, { name: string; input: Record<string, any>; activity: Extract<AgentEvent, { t: 'activity' }> | null }>()
   const args = [
     '-p',
@@ -247,7 +249,12 @@ function claudeAdapter(s: RunSpec): Adapter {
           emit(other(`stream/${ev.type}`, ev))
           break
         }
-        case 'assistant':
+        case 'assistant': {
+          const mu = d.message?.usage
+          if (mu) {
+            const n = (Number(mu.input_tokens) || 0) + (Number(mu.cache_read_input_tokens) || 0) + (Number(mu.cache_creation_input_tokens) || 0)
+            if (n > 0) lastContext = n + (Number(mu.output_tokens) || 0)
+          }
           for (const c of d.message?.content ?? []) {
             if (c.type === 'tool_use' || c.type === 'server_tool_use') {
               const a = claudeTool(c.id, c.name, c.input ?? {})
@@ -260,6 +267,7 @@ function claudeAdapter(s: RunSpec): Adapter {
             } else if (c.type !== 'redacted_thinking') emit(other(`assistant/${c.type}`, c))
           }
           break
+        }
         case 'user':
           for (const c of d.message?.content ?? []) {
             if (c?.type !== 'tool_result') continue
@@ -290,7 +298,8 @@ function claudeAdapter(s: RunSpec): Adapter {
               cacheRead: u.cache_read_input_tokens,
               cacheWrite: u.cache_creation_input_tokens,
               reasoning: u.output_tokens_details?.thinking_tokens,
-              costUsd: typeof d.total_cost_usd === 'number' ? d.total_cost_usd : undefined
+              costUsd: typeof d.total_cost_usd === 'number' ? d.total_cost_usd : undefined,
+              context: lastContext || undefined
             }
           })
           session = d.session_id ?? session
