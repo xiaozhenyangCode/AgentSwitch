@@ -325,6 +325,8 @@ export interface ProfileState extends ProfileConfig {
   loggedIn: boolean
   /** configDir with `~` expanded. */
   resolvedConfigDir: string
+  /** Canonical key (`${kind}:${realpath(sessionsDir)}`) for detecting accounts that share native CLI sessions. */
+  sessionStoreKey: string
   /** Mode of the live pty session, if any. */
   sessionMode: PtyMode | null
   /** A silent install of this account's CLI kind is running. */

@@ -8,7 +8,7 @@ import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
 import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuota } from './usage'
 import { allowRoot } from './fileProtocol'
-import { KIND_LABEL, getConfig, hasProfile } from './profiles'
+import { KIND_LABEL, getConfig, hasProfile, sessionStoreKeyOf } from './profiles'
 import { t } from './i18n'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
@@ -86,6 +86,17 @@ function loadSessions(threadId: string): Record<string, string> {
     return {}
   }
 }
+function resolveResumeSession(sessions: Record<string, string>, cfg: ProfileConfig): string | null {
+  if (sessions[cfg.id]) return sessions[cfg.id]
+  const myKey = sessionStoreKeyOf(cfg)
+  for (const [otherId, sid] of Object.entries(sessions)) {
+    if (!sid || !hasProfile(otherId)) continue
+    const other = getConfig(otherId)
+    if (other.kind === cfg.kind && sessionStoreKeyOf(other) === myKey) return sid
+  }
+  return null
+}
+
 function saveSession(threadId: string, profileId: ProfileId, sid: string, imported = false): void {
   const f = sessionsFile(threadId)
   mkdirSync(join(f, '..'), { recursive: true })
@@ -96,6 +107,16 @@ function saveSession(threadId: string, profileId: ProfileId, sid: string, import
     /* new */
   }
   const sessions = { ...(prev.sessions ?? {}), [profileId]: sid }
+  // Keep peer accounts that share the same physical session store in sync.
+  if (hasProfile(profileId)) {
+    const me = getConfig(profileId)
+    const myKey = sessionStoreKeyOf(me)
+    for (const otherId of Object.keys(sessions)) {
+      if (otherId === profileId || !hasProfile(otherId)) continue
+      const other = getConfig(otherId)
+      if (other.kind === me.kind && sessionStoreKeyOf(other) === myKey) sessions[otherId] = sid
+    }
+  }
   const imp = new Set(prev.imported ?? [])
   if (imported) imp.add(sid)
   const importedAt = { ...(prev.importedAt ?? {}) }
@@ -455,7 +476,7 @@ export class Orchestrator {
     }
 
     const parts: string[] = []
-    const fresh = !loadSessions(turn.req.threadId)[step.profileId]
+    const fresh = !resolveResumeSession(loadSessions(turn.req.threadId), cfg)
     if (turn.req.transcript.trim() && (fresh || turn.req.mode !== 'handoff')) parts.push('## 之前的对话（节选）', turn.req.transcript.trim(), '')
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
@@ -593,7 +614,7 @@ export class Orchestrator {
         system,
         cwd: turn.cwd,
         images: turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)),
-        resume: sessions[cfg.id] ?? null,
+        resume: resolveResumeSession(sessions, cfg),
         outDir: turn.outDir
       },
       emit,

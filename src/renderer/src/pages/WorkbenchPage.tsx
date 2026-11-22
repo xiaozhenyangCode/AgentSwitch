@@ -251,6 +251,13 @@ export function WorkbenchPage() {
   // ---- cross-model handoff: the driver changed to an account with no session in this thread
   const speaker = thread ? lastSpeaker(thread) : null
   const srcP = speaker ? byId(speaker.profileId) : undefined
+  const hasSharedSession =
+    !!thread &&
+    !!driverP &&
+    [...sessionAccounts(thread)].some((id) => {
+      const peer = byId(id)
+      return !!peer && peer.kind === driverP.kind && peer.sessionStoreKey === driverP.sessionStoreKey
+    })
   const handoffNeeded =
     !!thread &&
     !!driverP &&
@@ -258,6 +265,7 @@ export function WorkbenchPage() {
     !isThreadBusy(thread) &&
     speaker.profileId !== driverP.id &&
     !sessionAccounts(thread).has(driverP.id) &&
+    !hasSharedSession &&
     thread.handoff?.to !== driverP.id &&
     !(thread.handoffSkip ?? []).includes(driverP.id)
   const handoffReady = !!thread?.handoff && !!driverP && thread.handoff.to === driverP.id && !isThreadBusy(thread)

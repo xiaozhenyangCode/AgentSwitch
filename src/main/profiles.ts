@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
   KINDS,
@@ -535,6 +535,28 @@ export function envPreview(id: ProfileId, mode: PtyMode): EnvPreview {
   return { injected: s.injected, removed: strippedVarNames(), shell: s.shell, args: s.args, cwd: s.cwd }
 }
 
+/**
+ * Canonical session-storage key for an account (`${kind}:${realpath(sessionsDir)}`).
+ * Two accounts of the same CLI vendor with the same key (e.g. symlinked `projects/`,
+ * `sessions/`, or `conversations/`) can natively `--resume` each other's sessions.
+ */
+export function sessionStoreKeyOf(cfg: ProfileConfig): string {
+  const dir = expandHome(cfg.configDir)
+  const sub =
+    cfg.kind === 'claude'
+      ? join(dir, 'projects')
+      : cfg.kind === 'codex'
+        ? join(dir, 'sessions')
+        : join(dir, '.gemini', 'antigravity-cli', 'conversations')
+  let real: string
+  try {
+    real = realpathSync(sub)
+  } catch {
+    real = resolve(sub)
+  }
+  return `${cfg.kind}:${real}`
+}
+
 export function getState(
   cfg: ProfileConfig,
   binaryPath: string | null,
@@ -550,5 +572,5 @@ export function getState(
   else if (rateLimited) status = 'rate_limited'
   else if (!loggedIn) status = 'not_logged_in'
   else status = 'idle'
-  return { ...cfg, status, binaryPath, loggedIn, resolvedConfigDir: dir, sessionMode, installing }
+  return { ...cfg, status, binaryPath, loggedIn, resolvedConfigDir: dir, sessionStoreKey: sessionStoreKeyOf(cfg), sessionMode, installing }
 }
