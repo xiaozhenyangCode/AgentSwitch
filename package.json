@@ -82,7 +82,8 @@
       "gatekeeperAssess": false
     },
     "dmg": {
-      "title": "AgentSwitch ${version}"
+      "title": "AgentSwitch ${version}",
+      "artifactName": "${productName}-${arch}.${ext}"
     },
     "afterPack": "scripts/afterPack.cjs"
   }
