@@ -231,6 +231,8 @@ export interface Usage {
    * say nothing about how full the context is.
    */
   context?: number
+  /** The model's context window as reported by the CLI (codex); otherwise derived from the model. */
+  contextWindow?: number
 }
 
 /** Normalised event from any CLI adapter. */

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
@@ -375,6 +375,61 @@ export function claudeResult(name: string, input: Record<string, any>, a: Extrac
 
 // ---- codex ---------------------------------------------------------------------------------
 
+/** The rollout log of a codex session: sessions/YYYY/MM/DD/rollout-…-<id>.jsonl (newest days first). */
+function codexRollout(codexHome: string, session: string): string | null {
+  const root = join(codexHome, 'sessions')
+  const desc = (dir: string) => {
+    try {
+      return readdirSync(dir).sort().reverse()
+    } catch {
+      return []
+    }
+  }
+  for (const y of desc(root))
+    for (const m of desc(join(root, y)))
+      for (const d of desc(join(root, y, m))) {
+        const f = desc(join(root, y, m, d)).find((n) => n.endsWith(`${session}.jsonl`))
+        if (f) return join(root, y, m, d, f)
+      }
+  return null
+}
+
+/**
+ * Context of the session's last request and the model's window, from the last `token_count`
+ * event of the rollout log (only its tail is read).
+ */
+function codexContext(codexHome: string, session: string): { context: number; window: number | undefined } | null {
+  const file = codexRollout(codexHome, session)
+  if (!file) return null
+  let fd: number | null = null
+  try {
+    const size = statSync(file).size
+    const len = Math.min(size, 512 * 1024)
+    const buf = Buffer.alloc(len)
+    fd = openSync(file, 'r')
+    readSync(fd, buf, 0, len, size - len)
+    const lines = buf.toString('utf8').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"token_count"')) continue
+      try {
+        const info = JSON.parse(lines[i])?.payload?.info
+        const last = info?.last_token_usage
+        if (!last) continue
+        const context = (Number(last.input_tokens) || 0) + (Number(last.output_tokens) || 0)
+        const window = Number(info.model_context_window) || undefined
+        return context > 0 ? { context, window } : null
+      } catch {
+        /* a line cut by the tail window */
+      }
+    }
+  } catch {
+    /* no log, unreadable */
+  } finally {
+    if (fd !== null) closeSync(fd)
+  }
+  return null
+}
+
 function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter {
   let session: string | null = s.resume
   let result: { ok: boolean; error: string | null } | null = null
@@ -529,6 +584,9 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
     // Built-in image generation lands in $CODEX_HOME/generated_images/<thread>/: copy new files into the project.
     finish: (emit) => {
       if (!session) return
+      // `exec --json` only reports the turn's summed usage; the session log has the last request
+      const ctx = codexContext(codexHome, session)
+      if (ctx) emit({ t: 'usage', usage: { context: ctx.context, contextWindow: ctx.window } })
       const dir = join(codexHome, 'generated_images', session)
       if (!existsSync(dir)) return
       for (const f of readdirSync(dir)) {
@@ -557,6 +615,8 @@ function agyAdapter(s: RunSpec): Adapter {
   let textSoFar = ''
   let lastTextStep = -1
   let thinkingTokens = 0
+  /** Context of the latest finished step (result.usage sums the whole turn). */
+  let lastContext = 0
   const args = ['--output-format', 'stream-json']
   // cli: agy's own default mode (runs commands in -p, measured 1.5.13)
   if (s.cfg.autoApprove === 'full') args.push('--dangerously-skip-permissions')
@@ -596,6 +656,9 @@ function agyAdapter(s: RunSpec): Adapter {
                 textSoFar += u.text_delta
                 emit({ t: 'text', delta: u.text_delta })
               }
+              // each finished step is one request: its input is the context at that point
+              const stepCtx = (Number(u.usage?.input_tokens) || 0) + (Number(u.usage?.output_tokens) || 0)
+              if (u.state === 'DONE' && stepCtx > 0) lastContext = stepCtx
               const tk = Number(u.usage?.thinking_tokens) || 0
               if (u.state === 'DONE' && tk > 0) {
                 thinkingTokens += tk
@@ -618,7 +681,7 @@ function agyAdapter(s: RunSpec): Adapter {
           if (Array.isArray(r.denied_actions) && r.denied_actions.length)
             emit({ t: 'notice', message: deniedText(r.denied_actions.map((x: any) => x?.display_name ?? x?.action ?? 'tool'), s.cfg.autoApprove) })
           const u = r.usage ?? {}
-          emit({ t: 'usage', usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_tokens || undefined, reasoning: u.thinking_tokens } })
+          emit({ t: 'usage', usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_tokens || undefined, reasoning: u.thinking_tokens, context: lastContext || undefined } })
           session = r.conversation_id ?? session
           result = r.status === 'SUCCESS' ? { ok: true, error: null } : { ok: false, error: String(r.error ?? r.status ?? 'error') }
           break
