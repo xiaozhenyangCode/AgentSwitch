@@ -113,6 +113,23 @@ export function onUsageChange(cb: (s: UsageSnapshot) => void): void {
 
 // ---- snapshot ---------------------------------------------------------------------------------
 
+const quotaErrors: Record<ProfileId, string> = {}
+
+function setQuotaError(profileId: ProfileId, msg: string | null): void {
+  const clean = msg ? msg.replace(/^error:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 260) : null
+  if (!clean) {
+    if (profileId in quotaErrors) {
+      delete quotaErrors[profileId]
+      changed()
+    }
+    return
+  }
+  if (quotaErrors[profileId] !== clean) {
+    quotaErrors[profileId] = clean
+    changed()
+  }
+}
+
 export function snapshot(): UsageSnapshot {
   const now = new Date()
   const today = dayKey(now.getTime())
@@ -125,7 +142,14 @@ export function snapshot(): UsageSnapshot {
   for (const [id, days] of Object.entries(stats.runs)) per.set(id, [...(per.get(id) ?? []), days])
   for (const f of Object.values(stats.files)) per.set(f.profileId, [...(per.get(f.profileId) ?? []), f.days])
   for (const c of listConfigs()) {
-    const a: AccountUsage = { today: zero(), week: zero(), total: zero(), quota: quotas[c.id] ?? null, limitedAt: stats.limitedAt[c.id] ?? null }
+    const a: AccountUsage = {
+      today: zero(),
+      week: zero(),
+      total: zero(),
+      quota: quotas[c.id] ?? null,
+      quotaError: quotaErrors[c.id] ?? null,
+      limitedAt: stats.limitedAt[c.id] ?? null
+    }
     for (const days of per.get(c.id) ?? [])
       for (const [k, v] of Object.entries(days)) {
         a.total = add(a.total, v)
@@ -151,6 +175,7 @@ export function recordQuota(profileId: ProfileId, q: QuotaReport & { groups?: Qu
   const prev = quotas[profileId]
   if (prev && prev.fetchedAt > at) return
   quotas[profileId] = { ...q, fetchedAt: at, source }
+  delete quotaErrors[profileId]
   if (q.limited) stats.limitedAt[profileId] = at
   changed()
 }
@@ -292,6 +317,10 @@ export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
         return
       }
       if (msg.id !== 2) return
+      if (msg.error?.message) {
+        setQuotaError(profileId, String(msg.error.message))
+        return finish(false)
+      }
       const r = msg.result?.rateLimits
       if (!r || typeof r !== 'object') return finish(false)
       const parseWin = (w: any): QuotaWindow | null => {
@@ -384,7 +413,18 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
         },
         signal: AbortSignal.timeout(12_000)
       })
-      if (!res.ok) return false
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const body: any = await res.json()
+          const m = body?.error?.message || body?.message
+          if (typeof m === 'string' && m.trim()) detail = `${detail}: ${m.trim()}`
+        } catch {
+          /* keep HTTP status */
+        }
+        setQuotaError(profileId, detail)
+        return false
+      }
       const d: any = await res.json()
       const parseWin = (w: any, minutes: number): QuotaWindow | null => {
         if (!w || typeof w.utilization !== 'number') return null
@@ -397,7 +437,8 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
       const limited = [five, seven].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
       recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: null }, 'claude-oauth')
       return true
-    } catch {
+    } catch (e) {
+      setQuotaError(profileId, e instanceof Error ? e.message : String(e))
       return false
     }
   })().finally(() => claudePending.delete(profileId))
@@ -424,9 +465,10 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
     }
     const cwd = join(app.getPath('userData'), 'usage-probe')
     mkdirSync(cwd, { recursive: true })
-    execFile(bin, ['-p', '/usage', '--output-format', 'json'], { env, cwd, timeout: 45_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    execFile(bin, ['-p', '/usage', '--output-format', 'json'], { env, cwd, timeout: 45_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && (err as { code?: unknown }).code === 2) {
         // GEMINI_API_KEY: no account quota exists; keep local stats only
+        setQuotaError(profileId, null)
         if (quotas[profileId]?.source === 'agy-usage') {
           delete quotas[profileId]
           changed()
@@ -434,7 +476,12 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
         return resolve(false)
       }
       try {
-        const d = JSON.parse(String(stdout).trim().split('\n').filter((l) => l.startsWith('{')).pop() ?? '')
+        const jsonLine = String(stdout).trim().split('\n').filter((l) => l.startsWith('{')).pop()
+        const d = jsonLine ? JSON.parse(jsonLine) : null
+        if (d?.error) {
+          setQuotaError(profileId, String(d.error))
+          return resolve(false)
+        }
         const groups: QuotaGroup[] = (d?.command?.data?.groups ?? []).map((g: any): QuotaGroup => {
           const buckets: any[] = Array.isArray(g.buckets) ? g.buckets : []
           const win = (w: string, minutes: number): QuotaWindow | null => {
@@ -453,12 +500,18 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
             sevenDay: win('weekly', 10080)
           }
         })
-        if (!groups.length) return resolve(false)
+        if (!groups.length) {
+          const fallback = String(stderr || '').trim().split('\n').find((l) => l.trim()) || (err ? err.message : null)
+          if (fallback) setQuotaError(profileId, fallback)
+          return resolve(false)
+        }
         const main = groups.find((g) => g.key === 'gemini') ?? groups[0]
         const limited = [main.fiveHour, main.sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
         recordQuota(profileId, { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan: null, groups }, 'agy-usage')
         resolve(true)
-      } catch {
+      } catch (e) {
+        const fallback = String(stderr || '').trim().split('\n').find((l) => l.trim()) || (err ? err.message : e instanceof Error ? e.message : String(e))
+        if (fallback) setQuotaError(profileId, fallback)
         resolve(false)
       }
     })

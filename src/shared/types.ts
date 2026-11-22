@@ -204,6 +204,8 @@ export interface AccountUsage {
   week: UsageTotals
   total: UsageTotals
   quota: AccountQuota | null
+  /** Last quota probe error message, if any (cleared on next successful fetch). */
+  quotaError?: string | null
   /** Last time a run hit a rate limit (ms). */
   limitedAt: number | null
 }

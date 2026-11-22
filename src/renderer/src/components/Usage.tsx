@@ -244,6 +244,11 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
           <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
             {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}
           </div>
+          {u.quotaError && (
+            <div className="mt-1.5 truncate rounded-md bg-warn-soft/70 px-2 py-1 text-[11px] text-warn select-text" title={u.quotaError}>
+              {u.quotaError}
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -257,7 +262,13 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
               <div className="mt-0.5 text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.week) : 0)}</div>
             </div>
           </div>
-          <div className="mt-2 text-[11px] text-ink-3">{t('usage.noQuotaNote')}</div>
+          {u?.quotaError ? (
+            <div className="mt-2 rounded-lg bg-warn-soft/70 px-2.5 py-1.5 text-[11.5px] leading-[17px] break-words text-warn select-text">
+              {u.quotaError}
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-ink-3">{t('usage.noQuotaNote')}</div>
+          )}
         </>
       )}
     </div>
