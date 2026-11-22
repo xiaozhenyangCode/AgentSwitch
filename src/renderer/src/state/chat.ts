@@ -721,7 +721,14 @@ export const plainExcerpt = (md: string): string =>
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|heic|svg)$/i
 
-/** Thumbnail as a data: URL (CSP allows img-src data: but not blob:). */
+/** Edge of the stored square thumbnail: 2× the largest tile it fills (96px bubble), so Retina stays sharp. */
+const THUMB = 240
+
+/**
+ * Thumbnail as a data: URL (CSP allows img-src data: but not blob:). Every place shows it as an
+ * object-cover square, so it is the centre square crop at THUMB px: a wide screenshot keeps its
+ * full resolution on the short side instead of being shrunk by its long side and blown up again.
+ */
 function thumbnail(file: File): Promise<string | null> {
   return new Promise((resolve) => {
     const reader = new FileReader()
@@ -729,12 +736,17 @@ function thumbnail(file: File): Promise<string | null> {
     reader.onload = () => {
       const img = new Image()
       img.onload = () => {
-        const k = Math.min(1, 160 / Math.max(img.width, img.height))
+        const side = Math.min(img.width, img.height)
+        if (!side) return resolve(null)
+        const out = Math.max(1, Math.min(THUMB, side))
         const c = document.createElement('canvas')
-        c.width = Math.max(1, Math.round(img.width * k))
-        c.height = Math.max(1, Math.round(img.height * k))
-        c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
-        resolve(c.toDataURL('image/jpeg', 0.8))
+        c.width = c.height = out
+        const g = c.getContext('2d')!
+        g.fillStyle = '#fff' // transparent PNGs: JPEG would otherwise turn them black
+        g.fillRect(0, 0, out, out)
+        g.imageSmoothingQuality = 'high'
+        g.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, out, out)
+        resolve(c.toDataURL('image/jpeg', 0.9))
       }
       img.onerror = () => resolve(null)
       img.src = String(reader.result)

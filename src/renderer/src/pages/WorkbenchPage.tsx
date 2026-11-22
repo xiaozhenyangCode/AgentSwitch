@@ -875,13 +875,14 @@ function UserBubble({ msg }: { msg: UserMessage }) {
   )
 }
 
-/** Thumbnail in a sent bubble: the stored small JPEG, or the original file when there is none. */
+/** Thumbnail in a sent bubble: the original file (sharp), or the stored small JPEG once it is gone. */
 function BubbleThumb({ a }: { a: Attachment }) {
-  const [broken, setBroken] = useState(false)
-  const src = a.thumb ?? (a.path ? fileUrl(a.path) : null)
-  if (!src || broken)
+  const [failed, setFailed] = useState(0)
+  const srcs = [a.path ? fileUrl(a.path) : null, a.thumb].filter((s): s is string => !!s)
+  const src = srcs[failed]
+  if (!src)
     return <span className="flex h-24 w-24 items-center justify-center rounded-2xl bg-black/[0.05] px-2 text-center text-[11px] text-ink-3 shadow-[0_0_0_1px_var(--ring)]">{t('att.missingShort')}</span>
-  return <img src={src} onError={() => setBroken(true)} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+  return <img src={src} decoding="async" onError={() => setFailed((n) => n + 1)} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
 }
 
 function FileChip({ a, onRemove, onOpen }: { a: Attachment; onRemove?: () => void; onOpen?: () => void }) {
@@ -1780,7 +1781,12 @@ function Composer({
               {atts.map((a) =>
                 a.isImage && a.thumb ? (
                   <span key={a.id} className="group relative" title={a.path ?? a.name}>
-                    <img src={a.thumb} className="h-16 w-16 rounded-xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+                    <img
+                      src={a.path ? fileUrl(a.path) : a.thumb}
+                      decoding="async"
+                      onError={(e) => a.thumb && e.currentTarget.src !== a.thumb && (e.currentTarget.src = a.thumb)}
+                      className="h-16 w-16 rounded-xl object-cover shadow-[0_0_0_1px_var(--ring)]"
+                    />
                     <button
                       onClick={() => setAtts((x) => x.filter((y) => y.id !== a.id))}
                       className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-canvas opacity-0 shadow transition-opacity group-hover:opacity-100"
