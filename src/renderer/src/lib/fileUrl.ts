@@ -22,13 +22,14 @@ const join = (base: string, rel: string): string => {
 /** Absolute local path for a markdown src (relative to baseDir, absolute, ~ or file://); null for remote/data URLs. */
 export function localPath(src: string, baseDir: string | null, home: string | null): string | null {
   if (/^(https?:|data:|agentswitch-file:|agentmux-file:|blob:)/i.test(src)) return null
-  let p = src
+  let p = src.replace(/[?#].*$/, '')
   try {
-    p = decodeURI(src)
+    p = decodeURI(p)
   } catch {
     /* keep raw */
   }
-  if (p.startsWith('file://')) p = p.slice(7)
+  if (p.startsWith('file://localhost/')) p = p.slice(16)
+  else if (p.startsWith('file://')) p = p.slice(7)
   if (p.startsWith('~/') && home) return join(home, p.slice(2))
   if (p.startsWith('/')) return p
   return baseDir ? join(baseDir, p) : null

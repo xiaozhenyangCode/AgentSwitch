@@ -131,7 +131,18 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
   useEscape(() => setOpen(false), open)
   return (
     <>
-      <span className={`md-figure${broken ? ' md-figure-broken' : ''}`} onClick={() => !broken && setOpen(true)} title={broken ? t('md.cannotPreview', { path: path ?? src }) : t('md.clickZoom')}>
+      <span
+        className={`md-figure${broken ? ' md-figure-broken' : ''}`}
+        onClick={(e) => {
+          if ((e.metaKey || e.ctrlKey) && path) {
+            e.preventDefault()
+            void window.agentswitch.sys.showInFolder(path)
+            return
+          }
+          if (!broken) setOpen(true)
+        }}
+        title={broken ? t('md.cannotPreview', { path: path ?? src }) : t('md.clickZoom')}
+      >
         {broken ? <span className="md-broken">{t('md.imageBroken')}</span> : <img src={src} alt={alt} loading="lazy" onError={() => setBroken(true)} />}
         {(alt || path) && <span className="md-caption">{alt || path!.split('/').pop()}</span>}
       </span>
@@ -195,9 +206,12 @@ const components: Components = {
   )
 }
 
-/** Links keep react-markdown's safe default; images additionally allow inline data and demo images. */
+/** Links allow file:// in addition to react-markdown's safe default; images allow inline data and local file URLs. */
 const urlTransform = (url: string, key: string) =>
-  key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url) ? url : defaultUrlTransform(url)
+  (key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url)) ||
+  (key === 'href' && /^file:\/\//i.test(url))
+    ? url
+    : defaultUrlTransform(url)
 
 /** Driver's machine-readable dispatch block is shown as tags on the dispatched replies instead. */
 const visible = (text: string) => stripMarks(text.replace(/```(?:agentswitch|agentmux):dispatch[\s\S]*?(```|$)/g, '')).trimEnd()

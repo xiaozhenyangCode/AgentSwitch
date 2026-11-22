@@ -52,7 +52,7 @@ import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } fr
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
-import { closeSync, mkdirSync, openSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
@@ -443,7 +443,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
   ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
-    if (typeof p === 'string' && isAllowedPath(p)) shell.showItemInFolder(p)
+    if (typeof p !== 'string' || !p.trim()) return
+    const target = expandHome(p.trim())
+    if (isAbsolute(target) && existsSync(target)) shell.showItemInFolder(target)
   })
   ipcMain.handle(IPC.appInfo, (): AppInfo => {
     const s = shellEnvStatus()
