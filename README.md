@@ -15,7 +15,7 @@
 
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
-<!-- TODO: demo GIF — three models taking turns on one task -->
+<p align="center"><img src="docs/demo.gif" width="900" alt="Claude writes slugify.js, Codex reviews and fixes edge cases, Gemini adds and runs tests" /></p>
 
 ## Why
 

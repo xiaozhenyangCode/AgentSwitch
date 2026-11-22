@@ -124,6 +124,36 @@ function saveSession(threadId: string, profileId: ProfileId, sid: string, import
   writeFileSync(f, JSON.stringify({ sessions, imported: [...imp], importedAt }, null, 2))
 }
 
+/**
+ * The user's language, from their message. The prompts AgentSwitch sends are Chinese, so "match the
+ * user" alone lets some models (Codex especially) answer an English message in Chinese.
+ */
+function userLanguage(text: string): 'ja' | 'zh' | 'en' | null {
+  const body = text.replace(/```[\s\S]*?```|`[^`]*`|https?:\/\/\S+|@\S+/g, ' ')
+  if (/[\u3040-\u30ff]/.test(body)) return 'ja'
+  if (/[\u4e00-\u9fff]/.test(body)) return 'zh'
+  if (/[a-z]{2,}/i.test(body)) return 'en'
+  return null
+}
+
+/** Reply-language rule for the system prompt. */
+function replyLanguage(text: string): string {
+  const lang = userLanguage(text)
+  if (lang === 'en') return 'Reply in Markdown. The user writes in English: write your whole reply in English, including summaries and any review reason.'
+  if (lang === 'ja') return '回复使用 Markdown，用日语回复（用户使用日语）。'
+  if (lang === 'zh') return '回复使用 Markdown，用中文回复。'
+  return '回复使用 Markdown，语言与用户一致。'
+}
+
+/** Language rule for the generated chat title. */
+function titleLanguage(text: string): string {
+  const lang = userLanguage(text)
+  if (lang === 'en') return 'the user wrote in English: the title MUST be English, 3–7 words'
+  if (lang === 'ja') return '用日语，8–20 个字'
+  if (lang === 'zh') return '用中文，6–18 个字'
+  return '与用户消息的语言一致，6–18 个字'
+}
+
 /** Imported CLI history: the thread continues that native session (--resume / exec resume / --conversation). */
 export const importSession = (threadId: string, profileId: ProfileId, sid: string): void => saveSession(threadId, profileId, sid, true)
 export const threadSessions = (threadId: string): Record<string, string> => loadSessions(threadId)
@@ -450,7 +480,7 @@ export class Orchestrator {
       `项目目录（当前工作目录）：${turn.cwd}`,
       `本轮交接目录：${rel(turn.runDir)}/（task.json、用户附件、前序步骤的完整输出都在这里，可按需读取）。`,
       `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
-      '回复使用 Markdown，语言与用户一致。',
+      replyLanguage(turn.req.text),
       cfg.autoApprove === 'full'
         ? '当前授权：完全放行，可以执行命令。'
         : cfg.autoApprove === 'cli'
@@ -534,7 +564,7 @@ export class Orchestrator {
         '',
         '## 回复末尾的隐藏标记（界面会自动隐藏，正文中不要提及）',
         '在回复的最后另起一行输出（如果本条回复输出了 agentswitch:dispatch 调度代码块，则不要输出这些标记）：',
-        ...(turn.req.wantTitle ? ['<!-- agentswitch:title:对话标题 -->（概括本次对话主题，6–18 个字，与用户语言一致，不加引号）'] : []),
+        ...(turn.req.wantTitle ? [`<!-- agentswitch:title:对话标题 -->（概括本次对话主题，不加引号；${titleLanguage(turn.req.text)}）`] : []),
         '<!-- agentswitch:next:建议用户下一步发送的一句话 -->（可选：站在用户角度，结合任务完成情况给出自然、简洁、可直接发送的下一步指令或追问；没有合适建议就省略这一行）'
       )
     if (step.review)
@@ -546,6 +576,8 @@ export class Orchestrator {
         '{"status": "PASS 或 REJECT", "reason": "简短理由"}',
         '```'
       )
+    // the prompt above is Chinese: restate the language last, where models weigh it most
+    if (userLanguage(turn.req.text) === 'en') parts.push('', 'Language: the user writes in English. Reply in English.')
     return { prompt: parts.join('\n'), system: sys.join('\n') }
   }
 

@@ -15,7 +15,7 @@
 
 <p align="center"><a href="README.md">English</a> · 简体中文</p>
 
-<!-- TODO: 演示动图：三个模型接力完成一个需求 -->
+<p align="center"><img src="docs/demo.gif" width="900" alt="Claude 写出 slugify.js，Codex 审查并修复边界情况，Gemini 补测试并运行" /></p>
 
 ## 为什么做它
 
