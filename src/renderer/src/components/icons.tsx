@@ -60,6 +60,12 @@ export const IconAlert = (p: P) => (
     <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
   </svg>
 )
+export const IconPin = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6z" />
+    <path d="M12 15v6" />
+  </svg>
+)
 export const IconCopy = (p: P) => (
   <svg {...base(p)}>
     <rect x="9" y="9" width="12" height="12" rx="2" />

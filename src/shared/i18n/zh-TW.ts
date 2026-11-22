@@ -727,5 +727,13 @@ export const zhTW: Dict = {
   'menu.toggleSidebar': '切換側邊欄',
   'set.scToggleSidebar': '隱藏 / 顯示側邊欄',
   'dbg.shellTab': '終端機 {n}',
-  'dbg.newShell': '新增終端機'
+  'dbg.newShell': '新增終端機',
+  'nav.pin': '置頂',
+  'nav.unpin': '取消置頂',
+  'nav.pinned': '已置頂',
+  'nav.markRead': '標為已讀',
+  'nav.copyChat': '複製對話內容',
+  'nav.copiedChat': '已複製對話（Markdown）',
+  'nav.stopReply': '停止回覆',
+  'chat.mdYou': '我'
 }

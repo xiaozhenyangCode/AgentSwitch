@@ -136,6 +136,8 @@ export interface Thread {
   titleTurn?: string | null
   /** Next input the model suggested at the end of its last reply (ghost text in the composer). */
   suggestedInput?: string | null
+  /** Kept at the top of its project group in the sidebar. */
+  pinned?: boolean
 }
 
 interface ChatState {
@@ -263,6 +265,24 @@ export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'dr
 export const selectThread = (id: string) => {
   set({ ...state, activeId: id })
   void syncExternal(id)
+}
+export const togglePin = (id: string) => patchThread(id, (t) => ({ ...t, pinned: !t.pinned }))
+
+/** The visible conversation as Markdown (hidden markers stripped, handoff notes skipped). */
+export function chatMarkdown(t: Thread): string {
+  const out = [`# ${t.title}`]
+  for (const m of threadMessages(t)) {
+    if (m.role === 'user') {
+      if (m.kind === 'handoff') continue
+      const files = m.attachments.map((a) => `- ${a.path ?? a.name}`)
+      out.push('', `## ${tr('chat.mdYou')}`, '', m.text, ...(files.length ? ['', ...files] : []))
+    } else {
+      const body = stripMarks(m.content).trim()
+      if (!body) continue
+      out.push('', `## ${m.agent.name}${m.agent.model ? ` · ${m.agent.model}` : ''}`, '', body)
+    }
+  }
+  return out.join('\n').trim() + '\n'
 }
 export const patchThreadState = (id: string, patch: Partial<Thread>) => patchThread(id, (t) => ({ ...t, ...patch }))
 export const renameThread = (id: string, title: string) => title.trim() && patchThread(id, (t) => ({ ...t, title: title.trim(), titleLocked: true, titleTurn: null }))

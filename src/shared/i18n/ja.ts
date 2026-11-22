@@ -705,5 +705,13 @@ export const ja: Dict = {
   'menu.toggleSidebar': 'サイドバーを切り替え',
   'set.scToggleSidebar': 'サイドバーを表示 / 非表示',
   'dbg.shellTab': 'ターミナル {n}',
-  'dbg.newShell': '新しいターミナル'
+  'dbg.newShell': '新しいターミナル',
+  'nav.pin': 'ピン留め',
+  'nav.unpin': 'ピン留めを解除',
+  'nav.pinned': 'ピン留め中',
+  'nav.markRead': '既読にする',
+  'nav.copyChat': '会話をコピー',
+  'nav.copiedChat': '会話をコピーしました（Markdown）',
+  'nav.stopReply': '返信を停止',
+  'chat.mdYou': '自分'
 }

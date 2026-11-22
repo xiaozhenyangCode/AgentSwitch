@@ -705,5 +705,13 @@ export const en: Dict = {
   'menu.toggleSidebar': 'Toggle Sidebar',
   'set.scToggleSidebar': 'Hide / show sidebar',
   'dbg.shellTab': 'Terminal {n}',
-  'dbg.newShell': 'New terminal'
+  'dbg.newShell': 'New terminal',
+  'nav.pin': 'Pin',
+  'nav.unpin': 'Unpin',
+  'nav.pinned': 'Pinned',
+  'nav.markRead': 'Mark as read',
+  'nav.copyChat': 'Copy conversation',
+  'nav.copiedChat': 'Conversation copied (Markdown)',
+  'nav.stopReply': 'Stop reply',
+  'chat.mdYou': 'Me'
 }

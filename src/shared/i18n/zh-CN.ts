@@ -729,5 +729,13 @@ export const zhCN = {
   'menu.toggleSidebar': '切换侧边栏',
   'set.scToggleSidebar': '隐藏 / 显示侧边栏',
   'dbg.shellTab': '终端 {n}',
-  'dbg.newShell': '新建终端'
+  'dbg.newShell': '新建终端',
+  'nav.pin': '置顶',
+  'nav.unpin': '取消置顶',
+  'nav.pinned': '已置顶',
+  'nav.markRead': '标为已读',
+  'nav.copyChat': '复制对话内容',
+  'nav.copiedChat': '已复制对话（Markdown）',
+  'nav.stopReply': '停止回复',
+  'chat.mdYou': '我'
 } as const

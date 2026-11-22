@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { HistoryEntry } from '@shared/types'
 import { useApp } from '../state/AppContext'
-import { activeThread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, useChat, type Thread } from '../state/chat'
+import { activeThread, chatMarkdown, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, useChat, type Thread } from '../state/chat'
+import { useEscape } from '../lib/escStack'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { IconEngine, IconFolder, IconGauge, IconGear, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
+import { IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
@@ -99,7 +101,8 @@ export function NavRail() {
   // group by project; groups ordered by their most recent thread
   const groups = useMemo(() => {
     const map = new Map<string, Thread[]>()
-    for (const t of [...chat.threads].sort((a, b) => b.updatedAt - a.updatedAt)) {
+    // pinned chats lead their project group (and bring the group up with them)
+    for (const t of [...chat.threads].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt)) {
       if (t.preview) continue
       if (q && !t.title.toLowerCase().includes(q) && !(t.projectDir ?? '').toLowerCase().includes(q)) continue
       const k = t.projectDir ?? ''
@@ -232,6 +235,7 @@ export function NavRail() {
                   navigate('workbench')
                 }}
                 onDelete={() => void remove(th)}
+                onNewHere={() => start(th.projectDir ?? null)}
               />
             ))}
           </div>
@@ -363,19 +367,16 @@ function HistoryList({ query }: { query: string }) {
   )
 }
 
-function ThreadRow({ t: th, active, onOpen, onDelete }: { t: Thread; active: boolean; onOpen: () => void; onDelete: () => void }) {
+function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; active: boolean; onOpen: () => void; onDelete: () => void; onNewHere: () => void }) {
+  const { toast } = useApp()
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(th.title)
-  const [menu, setMenu] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  /** Open menu: under the ··· button, or at the cursor for a right-click. */
+  const [menu, setMenu] = useState<MenuAt | null>(null)
+  const more = useRef<HTMLButtonElement>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
   const busy = isThreadBusy(th)
   useEffect(() => setName(th.title), [th.title])
-  useEffect(() => {
-    if (!menu) return
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setMenu(false)
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [menu])
 
   const commit = () => {
     setEditing(false)
@@ -384,7 +385,14 @@ function ThreadRow({ t: th, active, onOpen, onDelete }: { t: Thread; active: boo
   }
 
   return (
-    <div ref={ref} className="group relative">
+    <div
+      className="group relative"
+      onContextMenu={(e) => {
+        if (editing) return
+        e.preventDefault()
+        setMenu({ x: e.clientX, y: e.clientY })
+      }}
+    >
       {editing ? (
         <input
           autoFocus
@@ -406,7 +414,10 @@ function ThreadRow({ t: th, active, onOpen, onDelete }: { t: Thread; active: boo
           onDoubleClick={() => setEditing(true)}
           className={`flex h-[46px] w-full flex-col justify-center rounded-lg pr-8 pl-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
         >
-          <span className={`w-full truncate text-[13px] leading-[18px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>{th.title}</span>
+          <span className={`flex w-full items-center gap-1 text-[13px] leading-[18px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>
+            {th.pinned && <IconPin size={11} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
+            <span className="truncate">{th.title}</span>
+          </span>
           <span className="flex items-center gap-1 text-[11px] leading-4 text-ink-3">
             {busy && <Spinner size={10} className="text-accent" />}
             {busy ? t('nav.replying') : ago(th.updatedAt)}
@@ -415,7 +426,14 @@ function ThreadRow({ t: th, active, onOpen, onDelete }: { t: Thread; active: boo
       )}
       {!editing && (
         <button
-          onClick={() => setMenu((m) => !m)}
+          ref={more}
+          // keep the outside-click handler from closing the menu this click toggles
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            if (menu) return setMenu(null)
+            const r = more.current!.getBoundingClientRect()
+            setMenu({ x: r.right, y: r.bottom + 4, alignRight: true, flipY: r.top - 4 })
+          }}
           className={`absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-3 transition-opacity hover:bg-black/[0.06] hover:text-ink ${
             menu ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
           }`}
@@ -429,31 +447,119 @@ function ThreadRow({ t: th, active, onOpen, onDelete }: { t: Thread; active: boo
         </button>
       )}
       {menu && (
-        <div className="absolute top-9 right-0 z-30 w-36 rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl">
-          <button
-            className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink hover:bg-accent hover:text-white"
+        <RowMenu at={menu} onClose={closeMenu}>
+          <MenuItem onClick={() => setEditing(true)}>{t('common.rename')}</MenuItem>
+          <MenuItem onClick={() => togglePin(th.id)}>{th.pinned ? t('nav.unpin') : t('nav.pin')}</MenuItem>
+          <MenuItem
             onClick={() => {
-              setMenu(false)
-              setEditing(true)
+              void window.agentswitch.sys.copy(chatMarkdown(th))
+              toast({ kind: 'success', title: t('nav.copiedChat') })
             }}
           >
-            {t('common.rename')}
-          </button>
-          <div className="mx-2 my-1 h-px bg-hairline" />
-          <button
-            className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-danger hover:bg-danger-soft"
-            onClick={() => {
-              setMenu(false)
-              onDelete()
-            }}
-          >
+            {t('nav.copyChat')}
+          </MenuItem>
+          <MenuSep />
+          <MenuItem onClick={onNewHere}>{th.projectDir ? t('nav.newInProject', { name: baseName(th.projectDir) }) : t('nav.newNoProject')}</MenuItem>
+          {th.projectDir && (
+            <>
+              <MenuItem onClick={() => void window.agentswitch.sys.showInFolder(th.projectDir!)}>{t('common.showInFinder')}</MenuItem>
+              <MenuItem
+                onClick={() => {
+                  void window.agentswitch.sys.copy(th.projectDir!)
+                  toast({ kind: 'success', title: t('common.copied') })
+                }}
+              >
+                {t('proj.copyPath')}
+              </MenuItem>
+            </>
+          )}
+          {busy && (
+            <>
+              <MenuSep />
+              <MenuItem onClick={() => stop(th.id)}>{t('nav.stopReply')}</MenuItem>
+            </>
+          )}
+          <MenuSep />
+          <MenuItem danger onClick={onDelete}>
             {t('nav.deleteChat')}
-          </button>
-        </div>
+          </MenuItem>
+        </RowMenu>
       )}
     </div>
   )
 }
+
+type MenuAt = { x: number; y: number; alignRight?: boolean; flipY?: number }
+/** Closes the open row menu (an item was chosen). */
+const MenuClose = createContext<() => void>(() => {})
+
+/**
+ * A chat row's menu, in a portal at a fixed position (the sidebar clips and scrolls, and its
+ * backdrop-filter would trap a fixed child). Kept inside the window; flips above the ··· button
+ * when there is no room below. Closes on outside click, Esc, scroll, resize or window blur.
+ */
+function RowMenu({ at, onClose, children }: { at: MenuAt; onClose: () => void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  useEscape(onClose)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const m = 8
+    const w = el.offsetWidth
+    const h = el.offsetHeight
+    let left = at.alignRight ? at.x - w : at.x
+    let top = at.y
+    if (top + h > window.innerHeight - m) top = at.flipY !== undefined ? at.flipY - h : at.y - h
+    left = Math.min(Math.max(m, left), window.innerWidth - w - m)
+    top = Math.min(Math.max(m, top), window.innerHeight - h - m)
+    setPos({ left, top })
+  }, [at])
+  useEffect(() => {
+    const down = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose()
+    const off = () => onClose()
+    window.addEventListener('mousedown', down)
+    window.addEventListener('resize', off)
+    window.addEventListener('blur', off)
+    document.addEventListener('scroll', off, true)
+    return () => {
+      window.removeEventListener('mousedown', down)
+      window.removeEventListener('resize', off)
+      window.removeEventListener('blur', off)
+      document.removeEventListener('scroll', off, true)
+    }
+  }, [onClose])
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      onContextMenu={(e) => e.preventDefault()}
+      style={{ position: 'fixed', left: pos?.left ?? at.x, top: pos?.top ?? at.y, visibility: pos ? 'visible' : 'hidden' }}
+      className="no-drag z-50 w-56 rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl"
+    >
+      <MenuClose.Provider value={onClose}>{children}</MenuClose.Provider>
+    </div>,
+    document.body
+  )
+}
+
+function MenuItem({ onClick, danger = false, children }: { onClick: () => void; danger?: boolean; children: ReactNode }) {
+  const close = useContext(MenuClose)
+  return (
+    <button
+      role="menuitem"
+      className={`flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] ${danger ? 'text-danger hover:bg-danger-soft' : 'text-ink hover:bg-accent hover:text-white'}`}
+      onClick={() => {
+        close()
+        onClick()
+      }}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+    </button>
+  )
+}
+
+const MenuSep = () => <div className="mx-2 my-1 h-px bg-hairline" />
 
 function NavItem({ active, icon, label, onClick, trailing }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void; trailing?: React.ReactNode }) {
   return (
