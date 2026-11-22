@@ -41,7 +41,7 @@ import {
   updateKindConfig,
   updateProfile
 } from './profiles'
-import { canRevealExtFile, extOverview, listMcp, listSkills, readExtFile } from './extensions'
+import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, readExtFile, writeRuleFile } from './extensions'
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { PtyManager } from './ptyManager'
@@ -412,6 +412,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.extReveal, (_e, p: unknown) => {
     if (typeof p === 'string' && canRevealExtFile(p)) shell.showItemInFolder(p)
+  })
+  ipcMain.handle(IPC.extPrepareRule, (_e, id: unknown, cwd: unknown, scope: unknown) => {
+    if (scope !== 'global' && scope !== 'project') throw new Error('bad scope')
+    return prepareRuleTarget(assertId(id), cwdArg(cwd), scope)
+  })
+  ipcMain.handle(IPC.extWriteRule, (_e, p: unknown, content: unknown) => {
+    if (typeof p !== 'string' || typeof content !== 'string') throw new Error('bad request')
+    return writeRuleFile(p, content)
   })
   // pinned skills per CLI kind (names), shared by the panel and the / menu
   const pinKind = (k: unknown): ProfileKind => {

@@ -443,42 +443,263 @@ function McpTab({ data, q, onInsert }: { data: ExtOverview; q: string; onInsert:
   )
 }
 
-function ContextTab({ data, q }: { data: ExtOverview; q: string }) {
+/** Inline editor for global/project rule markdown files. */
+function RuleEditor({
+  path,
+  display,
+  exists,
+  onSaved,
+  onCancel
+}: {
+  path: string
+  display: string
+  exists: boolean
+  onSaved: () => void
+  onCancel: () => void
+}) {
+  const [draft, setDraft] = useState('')
+  const [initial, setInitial] = useState('')
+  const [loading, setLoading] = useState(exists)
+  const [tooLarge, setTooLarge] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const areaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    let live = true
+    setError(null)
+    setTooLarge(false)
+    if (!exists) {
+      setDraft('')
+      setInitial('')
+      setLoading(false)
+      setTimeout(() => areaRef.current?.focus(), 0)
+      return
+    }
+    setLoading(true)
+    window.agentswitch.ext.read(path).then(
+      (res) => {
+        if (!live) return
+        setLoading(false)
+        if (res.truncated) {
+          setTooLarge(true)
+          return
+        }
+        setDraft(res.text)
+        setInitial(res.text)
+        setTimeout(() => areaRef.current?.focus(), 0)
+      },
+      () => {
+        if (!live) return
+        setLoading(false)
+        setError(t('ext.previewFailed'))
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [path, exists])
+
+  const dirty = !exists ? draft.length > 0 : draft !== initial
+  const lines = draft ? draft.split('\n').length - (draft.endsWith('\n') ? 1 : 0) : 0
+
+  const save = async () => {
+    if (saving || tooLarge) return
+    setSaving(true)
+    setError(null)
+    try {
+      await window.agentswitch.ext.writeRule(path, draft)
+      onSaved()
+    } catch {
+      setError(t('ext.ruleSaveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mx-2.5 mt-1 mb-2 rounded-[10px] bg-black/[0.035] p-2.5 shadow-[inset_0_0_0_1px_var(--ring)]">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] text-ink-3">
+        <span className="min-w-0 flex-1 truncate font-mono" title={path}>
+          {display}
+        </span>
+        {exists && (
+          <button onClick={() => void window.agentswitch.ext.reveal(path)} className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.06] hover:text-ink">
+            <IconFolder size={11} /> {t('common.showInFinder')}
+          </button>
+        )}
+      </div>
+      {loading ? (
+        <div className="py-3 text-[12px] text-ink-3">{t('ext.loading')}</div>
+      ) : tooLarge ? (
+        <div className="py-2 text-[12px] text-warn">{t('ext.ruleTooLarge')}</div>
+      ) : (
+        <>
+          <textarea
+            ref={areaRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+                e.preventDefault()
+                void save()
+              } else if (e.key === 'Escape') {
+                e.stopPropagation()
+                onCancel()
+              }
+            }}
+            placeholder={t('ext.rulePlaceholder')}
+            className="min-h-[160px] max-h-[280px] w-full resize-y rounded-lg bg-surface px-2.5 py-2 font-mono text-[12px] leading-[18px] text-ink shadow-[inset_0_0_0_1px_var(--ring)] outline-none placeholder:text-ink-3 focus:shadow-[inset_0_0_0_1.5px_var(--accent)]"
+          />
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-ink-3">
+            <span className="tabular-nums">{t('ext.ruleMeta', { size: fmtBytes(new Blob([draft]).size), lines })}</span>
+            <span>·</span>
+            <span>{t('ext.ruleSaveHint')}</span>
+            {error && <span className="text-danger">{error}</span>}
+            <span className="flex-1" />
+            <button onClick={onCancel} className="rounded-md px-2.5 py-1 text-[11.5px] font-medium text-ink-2 hover:bg-black/[0.06] hover:text-ink">
+              {t('ext.ruleCancel')}
+            </button>
+            <button
+              onClick={() => void save()}
+              disabled={saving || (!dirty && exists)}
+              className="rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-45"
+            >
+              {saving ? '…' : t('ext.ruleSave')}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ContextTab({
+  account,
+  projectDir,
+  data,
+  q,
+  onReload
+}: {
+  account: ProfileState
+  projectDir: string | null
+  data: ExtOverview
+  q: string
+  onReload: () => void
+}) {
   const [open, setOpen] = useState<string | null>(null)
+  const [editing, setEditing] = useState<{ path: string; display: string; exists: boolean; isNew?: boolean } | null>(null)
+  const [savedPath, setSavedPath] = useState<string | null>(null)
   const rules = data.rules.filter((r) => has(q, r.display, r.path, r.plugin))
   const hooks = data.hooks.filter((h) => has(q, h.event, h.matcher, h.summary, h.plugin, h.name, h.file, h.type))
   const events = [...new Set(hooks.map((h) => h.event))]
+  const hasGlobal = data.rules.some((r) => r.scope === 'global')
+  const hasProject = data.rules.some((r) => r.scope === 'project')
+
+  const startCreate = async (scope: 'global' | 'project') => {
+    try {
+      const target = await window.agentswitch.ext.prepareRule(account.id, projectDir, scope)
+      setOpen(target.path)
+      setEditing({ ...target, isNew: !target.exists })
+    } catch {
+      /* ignore if projectDir invalid */
+    }
+  }
+
+  const handleSaved = (path: string) => {
+    setEditing(null)
+    setOpen(path)
+    setSavedPath(path)
+    onReload()
+    setTimeout(() => setSavedPath((cur) => (cur === path ? null : cur)), 2000)
+  }
+
   return (
     <>
-      <Section n={rules.length}>{t('ext.rules')}</Section>
+      <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
+        <span className="text-[11px] font-medium text-ink-3">{t('ext.rules')}</span>
+        <span className="text-[11px] font-medium text-ink-3 tabular-nums">{rules.length}</span>
+        <span className="flex-1" />
+        {!hasGlobal && (
+          <button onClick={() => void startCreate('global')} className={rowBtn}>
+            {t('ext.newGlobalRule')}
+          </button>
+        )}
+        {projectDir && !hasProject && (
+          <button onClick={() => void startCreate('project')} className={rowBtn}>
+            {t('ext.newProjectRule')}
+          </button>
+        )}
+      </div>
+      {editing?.isNew && (
+        <RuleEditor
+          path={editing.path}
+          display={editing.display}
+          exists={false}
+          onSaved={() => handleSaved(editing.path)}
+          onCancel={() => setEditing(null)}
+        />
+      )}
       {rules.map((r) => {
-        const expanded = open === r.path
+        const isEditing = editing?.path === r.path && !editing.isNew
+        const expanded = open === r.path || isEditing
+        const editable = r.scope === 'global' || r.scope === 'project'
         return (
           <div key={r.path}>
-            <button className="flex w-full cursor-default items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-black/[0.035]" onClick={() => setOpen(expanded ? null : r.path)}>
-              <IconFile size={13} className="shrink-0 text-ink-3" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-mono text-[12.5px] leading-5 text-ink" title={r.path}>
-                  {r.display}
+            <div className="flex items-center gap-2 rounded-[10px] px-2.5 py-1.5 hover:bg-black/[0.035]">
+              <button
+                className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left"
+                onClick={() => {
+                  if (isEditing) setEditing(null)
+                  setOpen(expanded ? null : r.path)
+                }}
+              >
+                <IconFile size={13} className="shrink-0 text-ink-3" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[12.5px] leading-5 text-ink" title={r.path}>
+                    {r.display}
+                  </span>
+                  <span className="block truncate text-[11px] leading-4 text-ink-3">
+                    {t('ext.ruleMeta', {
+                      size: fmtBytes(r.bytes),
+                      lines: r.lines
+                    })}
+                    {r.importedBy ? ` · ${t('ext.importedBy', { file: r.importedBy })}` : ''}
+                    {r.truncated ? ` · ${t('ext.ruleTruncated')}` : ''}
+                    {savedPath === r.path ? ` · ${t('ext.ruleSaved')}` : ''}
+                  </span>
                 </span>
-                <span className="block truncate text-[11px] leading-4 text-ink-3">
-                  {t('ext.ruleMeta', {
-                    size: fmtBytes(r.bytes),
-                    lines: r.lines
-                  })}
-                  {r.importedBy ? ` · ${t('ext.importedBy', { file: r.importedBy })}` : ''}
-                  {r.truncated ? ` · ${t('ext.ruleTruncated')}` : ''}
-                </span>
-              </span>
-              {r.truncated && <span className="shrink-0 text-[11px] text-warn">{t('ext.partial')}</span>}
-              <Tag title={r.plugin}>{r.plugin ? `${t(SCOPE_KEY[r.scope])} · ${r.plugin}` : t(SCOPE_KEY[r.scope])}</Tag>
-              <Chevron open={expanded} />
-            </button>
-            {expanded && <FilePreview path={r.path} />}
+                {r.truncated && <span className="shrink-0 text-[11px] text-warn">{t('ext.partial')}</span>}
+                <Tag title={r.plugin}>{r.plugin ? `${t(SCOPE_KEY[r.scope])} · ${r.plugin}` : t(SCOPE_KEY[r.scope])}</Tag>
+                <Chevron open={expanded} />
+              </button>
+              {editable && !isEditing && (
+                <button
+                  className={rowBtn}
+                  onClick={() => {
+                    setOpen(r.path)
+                    setEditing({ path: r.path, display: r.display, exists: true })
+                  }}
+                >
+                  {t('ext.ruleEdit')}
+                </button>
+              )}
+            </div>
+            {isEditing ? (
+              <RuleEditor
+                path={r.path}
+                display={r.display}
+                exists={true}
+                onSaved={() => handleSaved(r.path)}
+                onCancel={() => setEditing(null)}
+              />
+            ) : (
+              expanded && <FilePreview path={r.path} />
+            )}
           </div>
         )
       })}
-      {!rules.length && <div className="px-2.5 py-2 text-[12.5px] text-ink-3">{data.rules.length ? t('ext.noMatchAny') : t('ext.noRules')}</div>}
+      {!rules.length && !editing?.isNew && <div className="px-2.5 py-2 text-[12.5px] text-ink-3">{data.rules.length ? t('ext.noMatchAny') : t('ext.noRules')}</div>}
 
       <Section n={hooks.filter((h) => !h.off).length}>{t('ext.hooks')}</Section>
       {events.map((ev) => (
@@ -513,6 +734,7 @@ function ContextTab({ data, q }: { data: ExtOverview; q: string }) {
  */
 export function ExtensionsPanel({
   account,
+  projectDir = null,
   data,
   loading,
   onReload,
@@ -520,6 +742,7 @@ export function ExtensionsPanel({
   onClose
 }: {
   account: ProfileState | null
+  projectDir?: string | null
   data: ExtOverview | null
   loading: boolean
   onReload: () => void
@@ -594,7 +817,7 @@ export function ExtensionsPanel({
         ) : tab === 'mcp' ? (
           <McpTab data={data} q={q} onInsert={onInsert} />
         ) : (
-          <ContextTab data={data} q={q} />
+          <ContextTab account={account} projectDir={projectDir} data={data} q={q} onReload={onReload} />
         )}
       </div>
       <div className="flex items-center gap-2 border-t border-hairline px-3.5 py-2 text-[11px] text-ink-3">

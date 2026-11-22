@@ -442,6 +442,8 @@ export const IPC = {
   extOverview: 'ext:overview',
   extRead: 'ext:read',
   extReveal: 'ext:reveal',
+  extPrepareRule: 'ext:prepare-rule',
+  extWriteRule: 'ext:write-rule',
   extPinsGet: 'ext:pins-get',
   extPinsSet: 'ext:pins-set',
   onboardingGet: 'onboarding:get',
@@ -659,6 +661,12 @@ export interface ExtFileText {
   text: string
   bytes: number
   truncated: boolean
+}
+
+export interface RuleTarget {
+  path: string
+  display: string
+  exists: boolean
 }
 
 /** One changed file in the project (git working tree vs HEAD, untracked included). */

@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import type {
@@ -15,6 +15,7 @@ import type {
   ProfileId,
   RuleFile,
   RuleScope,
+  RuleTarget,
   SkillItem,
   SkillList
 } from '@shared/types'
@@ -303,7 +304,15 @@ const allow = (p: string): void => {
   allowed.add(resolve(p))
 }
 
+/** Only global/project rule files (scanned or explicitly prepared) may be written from the UI. */
+const editableRules = new Set<string>()
+const allowWriteRule = (p: string): void => {
+  if (editableRules.size > 5_000) editableRules.clear()
+  editableRules.add(resolve(p))
+}
+
 const PREVIEW_MAX = 64 * 1024
+const RULE_WRITE_MAX = 512 * 1024
 
 export function readExtFile(path: string): ExtFileText {
   const p = resolve(path)
@@ -321,6 +330,43 @@ export function readExtFile(path: string): ExtFileText {
 }
 
 export const canRevealExtFile = (path: string): boolean => allowed.has(resolve(path)) && existsSync(resolve(path))
+
+/** Resolves and allow-lists the canonical global or project rule file for an account. */
+export function prepareRuleTarget(id: ProfileId, cwd: string | null, scope: 'global' | 'project'): RuleTarget {
+  const cfg = getConfig(id)
+  const dir = expandHome(cfg.configDir)
+  let target: string
+  if (scope === 'project') {
+    if (!cwd || !isDir(cwd)) throw new Error('no project directory')
+    const root = resolve(cwd)
+    if (cfg.kind === 'claude') target = join(root, 'CLAUDE.md')
+    else if (cfg.kind === 'codex') target = isFile(join(root, 'AGENTS.override.md')) ? join(root, 'AGENTS.override.md') : join(root, 'AGENTS.md')
+    else target = join(root, 'GEMINI.md')
+  } else {
+    if (cfg.kind === 'claude') target = join(dir, 'CLAUDE.md')
+    else if (cfg.kind === 'codex') target = isFile(join(dir, 'AGENTS.override.md')) ? join(dir, 'AGENTS.override.md') : join(dir, 'AGENTS.md')
+    else target = join(dir, '.gemini', 'GEMINI.md')
+  }
+  const p = resolve(target)
+  allowWriteRule(p)
+  const exists = isFile(p)
+  if (exists) allow(p)
+  return { path: p, display: tilde(p), exists }
+}
+
+/** Saves an allow-listed global or project rule file and invalidates the scan cache. */
+export function writeRuleFile(path: string, content: string): { bytes: number; lines: number } {
+  const p = resolve(path)
+  if (!editableRules.has(p)) throw new Error('not editable')
+  if (Buffer.byteLength(content, 'utf8') > RULE_WRITE_MAX) throw new Error('rule file too large')
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, content, 'utf8')
+  allow(p)
+  cache.clear()
+  const bytes = Buffer.byteLength(content, 'utf8')
+  const lines = content ? content.split('\n').length - (content.endsWith('\n') ? 1 : 0) : 0
+  return { bytes, lines }
+}
 
 // ---- shared parsing ---------------------------------------------------------------------------
 
@@ -385,6 +431,7 @@ function ruleFile(p: string, scope: RuleScope, extra: Partial<RuleFile> = {}): R
     }
   }
   allow(p)
+  if (scope === 'global' || scope === 'project') allowWriteRule(p)
   return { path: p, display: tilde(p), scope, bytes, lines, ...extra }
 }
 

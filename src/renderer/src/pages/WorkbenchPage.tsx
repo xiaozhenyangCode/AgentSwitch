@@ -1599,7 +1599,7 @@ function Composer({
       <div className="pointer-events-auto relative mx-auto max-w-[820px]">
         {extOpen && (
           <div className="absolute bottom-full left-0 z-30 mb-2">
-            <ExtensionsPanel account={driver} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
+            <ExtensionsPanel account={driver} projectDir={projectDir} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
           </div>
         )}
         {!extOpen && !mention && slash && (
