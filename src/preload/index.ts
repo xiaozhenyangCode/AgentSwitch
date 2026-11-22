@@ -108,7 +108,9 @@ const api = {
     open: (key: string): Promise<HistoryThread & { cwdExists: boolean }> => ipcRenderer.invoke(IPC.historyOpen, key),
     /** Links an AgentSwitch thread to the native session so the same account resumes it. */
     import: (threadId: string, profileId: ProfileId, nativeId: string): Promise<void> => ipcRenderer.invoke(IPC.historyImport, threadId, profileId, nativeId),
-    stat: (key: string): Promise<HistoryStat | null> => ipcRenderer.invoke(IPC.historyStat, key)
+    stat: (key: string): Promise<HistoryStat | null> => ipcRenderer.invoke(IPC.historyStat, key),
+    /** Moves one CLI session's files to the Trash. */
+    trash: (key: string): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.historyTrash, key)
   },
   attach: {
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */

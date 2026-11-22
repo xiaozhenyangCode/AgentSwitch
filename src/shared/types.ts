@@ -471,6 +471,7 @@ export const IPC = {
   historyOpen: 'history:open',
   historyImport: 'history:import',
   historyStat: 'history:stat',
+  historyTrash: 'history:trash',
   appInfo: 'app:info'
 } as const
 

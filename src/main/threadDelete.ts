@@ -82,6 +82,31 @@ function nativeFiles(cfg: ProfileConfig, sid: string): { root: string; files: st
   return { root, files }
 }
 
+/**
+ * 「本机历史」› 删除: moves one CLI session's own files (key = `${profileId}:${nativeId}`) to the
+ * Trash. Once nothing is left behind, the id is tombstoned so a stale index never lists it again.
+ */
+export async function trashHistorySession(key: string): Promise<DeleteThreadResult> {
+  const result: DeleteThreadResult = { removed: 0, trashed: [], failed: [] }
+  const at = key.indexOf(':')
+  const profileId = key.slice(0, at)
+  const sid = key.slice(at + 1)
+  if (at <= 0 || !hasProfile(profileId)) throw new Error('bad key')
+  const { root, files } = nativeFiles(getConfig(profileId), sid)
+  for (const f of files) {
+    if (!inside(f, root)) continue
+    try {
+      await shell.trashItem(f)
+      result.trashed.push(f)
+    } catch {
+      result.failed.push(f)
+    }
+  }
+  if (!result.failed.length) addTombstones([sid])
+  listHistory(true)
+  return result
+}
+
 export async function deleteThreadData(req: DeleteThreadRequest): Promise<DeleteThreadResult> {
   const id = safeId(req.threadId)
   if (!id) throw new Error('bad thread id')

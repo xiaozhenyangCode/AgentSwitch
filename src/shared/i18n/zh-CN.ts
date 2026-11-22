@@ -805,5 +805,12 @@ export const zhCN = {
   'nav.stopReply': '停止回复',
   'chat.mdYou': '我',
   'usage.okShort': '用量正常',
-  'usage.noQuotaShort': '暂无额度数据'
+  'usage.noQuotaShort': '暂无额度数据',
+  'hist.open': '打开对话',
+  'hist.copyId': '复制会话 ID',
+  'hist.delMessage': '会把这条会话在 CLI 里的原始文件移到废纸篓（可从废纸篓恢复），CLI 里将无法再 resume。',
+  'hist.delLinked': '在 AgentSwitch 里继续过的那条对话也会一起删除。',
+  'hist.delConfirm': '移到废纸篓',
+  'hist.removed': '已从本机历史中移除',
+  'hist.delFailed': '删除失败'
 } as const

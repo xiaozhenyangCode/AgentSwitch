@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { HistoryEntry, ProfileKind } from '@shared/types'
+import type { HistoryEntry, HistoryThread, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { activeThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, useChat, type Thread } from '../state/chat'
 import { useEscape } from '../lib/escStack'
@@ -275,13 +275,52 @@ export function NavRail() {
 
 let historyCache: HistoryEntry[] | null = null
 
+/** The user's own name / pin for a history row (the CLI's files stay read-only). */
+type HistoryMeta = Record<string, { title?: string; pinned?: boolean }>
+const HISTORY_META_KEY = 'agentswitch.history.meta'
+function loadHistoryMeta(): HistoryMeta {
+  try {
+    const j = JSON.parse(localStorage.getItem(HISTORY_META_KEY) ?? '{}')
+    return j && typeof j === 'object' ? j : {}
+  } catch {
+    return {}
+  }
+}
+
+/** A CLI session as Markdown, like 复制对话内容 on a chat. */
+function historyMarkdown(title: string, h: HistoryThread, agentName: string): string {
+  const out = [`# ${title}`]
+  for (const m of h.messages) {
+    const body = m.text.trim()
+    if (!body) continue
+    if (m.role === 'user') out.push('', `## ${t('chat.mdYou')}`, '', body)
+    else out.push('', `## ${agentName}${m.model ? ` · ${m.model}` : ''}`, '', body)
+  }
+  return out.join('\n').trim() + '\n'
+}
+
+const errText = (err: unknown) => String(err instanceof Error ? err.message : err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+
 function HistoryList({ query }: { query: string }) {
-  const { profiles, byId, navigate, toast } = useApp()
+  const { profiles, byId, navigate, toast, confirm } = useApp()
   const chat = useChat()
+  const start = useStartThread()
   const current = activeThread(chat)
   const [items, setItems] = useState<HistoryEntry[] | null>(historyCache)
   const [loading, setLoading] = useState(false)
   const [opening, setOpening] = useState<string | null>(null)
+  const [meta, setMeta] = useState<HistoryMeta>(loadHistoryMeta)
+  const patchMeta = (key: string, patch: { title?: string; pinned?: boolean }) =>
+    setMeta((m) => {
+      const v = { ...m[key], ...patch }
+      if (!v.title) delete v.title
+      if (!v.pinned) delete v.pinned
+      const next = { ...m }
+      if (Object.keys(v).length) next[key] = v
+      else delete next[key]
+      localStorage.setItem(HISTORY_META_KEY, JSON.stringify(next))
+      return next
+    })
 
   const load = useCallback(async (force: boolean) => {
     setLoading(true)
@@ -298,28 +337,76 @@ function HistoryList({ query }: { query: string }) {
     void load(false)
   }, [load])
 
+  const titleOf = (e: HistoryEntry) => meta[e.key]?.title ?? e.title
+
   const groups = useMemo(() => {
     const map = new Map<string, HistoryEntry[]>()
-    for (const e of items ?? []) {
+    // pinned sessions lead their project group (and bring the group up with them)
+    const sorted = [...(items ?? [])].sort((a, b) => Number(!!meta[b.key]?.pinned) - Number(!!meta[a.key]?.pinned))
+    for (const e of sorted) {
       if (!byId(e.profileId)) continue
-      if (query && !e.title.toLowerCase().includes(query) && !(e.cwd ?? '').toLowerCase().includes(query)) continue
+      const title = meta[e.key]?.title ?? e.title
+      if (query && !title.toLowerCase().includes(query) && !e.title.toLowerCase().includes(query) && !(e.cwd ?? '').toLowerCase().includes(query)) continue
       const k = e.cwd ?? ''
       map.set(k, [...(map.get(k) ?? []), e])
     }
     return [...map.entries()]
-  }, [items, query, byId])
+  }, [items, query, byId, meta])
 
   const open = async (e: HistoryEntry) => {
     const p = byId(e.profileId)
     if (!p || opening) return
     setOpening(e.key)
     try {
-      await openHistory(e, { profileId: p.id, name: p.name, kind: p.kind, model: null }, profiles.filter(isReady).map((x) => x.id))
+      const fresh = !importedThreadOf(e.key)
+      const id = await openHistory(e, { profileId: p.id, name: p.name, kind: p.kind, model: null }, profiles.filter(isReady).map((x) => x.id))
+      const alias = meta[e.key]?.title
+      if (fresh && alias) renameThread(id, alias)
       navigate('workbench')
     } catch (err) {
-      toast({ kind: 'error', title: t('hist.openFailed'), desc: String(err instanceof Error ? err.message : err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') })
+      toast({ kind: 'error', title: t('hist.openFailed'), desc: errText(err) })
     } finally {
       setOpening(null)
+    }
+  }
+
+  const rename = (e: HistoryEntry, title: string) => {
+    const name = title.trim()
+    if (!name || name === titleOf(e)) return
+    patchMeta(e.key, { title: name === e.title ? undefined : name })
+    const linked = importedThreadOf(e.key)
+    if (linked) renameThread(linked.id, name)
+  }
+
+  const copyChat = async (e: HistoryEntry) => {
+    try {
+      const h = await window.agentswitch.history.open(e.key)
+      await window.agentswitch.sys.copy(historyMarkdown(titleOf(e), h, byId(e.profileId)?.name ?? e.kind))
+      toast({ kind: 'success', title: t('nav.copiedChat') })
+    } catch (err) {
+      toast({ kind: 'error', title: t('hist.openFailed'), desc: errText(err) })
+    }
+  }
+
+  const remove = async (e: HistoryEntry) => {
+    const linked = importedThreadOf(e.key)
+    const ok = await confirm({
+      title: t('del.title', { title: titleOf(e) }),
+      message: t('hist.delMessage') + (linked && !linked.preview ? ' ' + t('hist.delLinked') : ''),
+      confirmLabel: t('hist.delConfirm'),
+      destructive: true
+    })
+    if (!ok) return
+    try {
+      const r = await window.agentswitch.history.trash(e.key)
+      if (r.failed.length) return toast({ kind: 'warn', title: t('del.trashFailed', { n: r.failed.length }) })
+      if (linked) await deleteThread(linked.id, false)
+      patchMeta(e.key, { title: undefined, pinned: undefined })
+      historyCache = (historyCache ?? []).filter((x) => x.key !== e.key)
+      setItems(historyCache)
+      toast({ kind: 'success', title: r.trashed.length ? t('del.trashed', { n: r.trashed.length }) : t('hist.removed') })
+    } catch (err) {
+      toast({ kind: 'error', title: t('hist.delFailed'), desc: errText(err) })
     }
   }
 
@@ -334,36 +421,178 @@ function HistoryList({ query }: { query: string }) {
       {items && groups.length === 0 && <div className="px-3 pt-6 text-center text-[13.5px] text-ink-3">{query ? t('hist.noMatch') : t('hist.none')}</div>}
       {groups.map(([dir, list]) => (
         <div key={dir || '_'} className="mb-3.5">
-          <div className="flex h-8 items-center gap-2 px-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || t('hist.unknownProject')}>
+          <div className="group flex h-8 items-center gap-2 pr-1 pl-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || t('hist.unknownProject')}>
             <IconFolder size={15} className="shrink-0 text-ink-3" />
-            <span className="truncate">{dir ? baseName(dir) : t('hist.unknownProject')}</span>
+            <span className="min-w-0 flex-1 truncate">{dir ? baseName(dir) : t('hist.unknownProject')}</span>
+            {dir && (
+              <button
+                onClick={() => start(dir)}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.06] hover:text-ink focus-visible:opacity-100 dark:hover:bg-white/[0.08]"
+                title={t('nav.newInProject', { name: baseName(dir) })}
+              >
+                <IconPlus size={14} />
+              </button>
+            )}
           </div>
           {list.map((e) => {
-            const p = byId(e.profileId)!
             const linked = importedThreadOf(e.key)
-            const active = !!linked && linked.id === current?.id
             return (
-              <button
+              <HistoryRow
                 key={e.key}
-                onClick={() => void open(e)}
-                title={`${e.title}\n${p.name} · ${fullTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
-                className={`flex h-[50px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
-              >
-                <KindAvatar kind={e.kind} size={18} />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className={`truncate text-[14px] leading-[20px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>{e.title}</span>
-                  <span className="flex items-center gap-1 truncate text-[12px] leading-[17px] text-ink-3">
-                    {opening === e.key && <Spinner size={11} className="text-accent" />}
-                    {shortTime(e.updatedAt)} · {p.name}
-                    {linked && !linked.preview && <span className="text-accent">{t('hist.continued')}</span>}
-                  </span>
-                </span>
-              </button>
+                e={e}
+                title={titleOf(e)}
+                pinned={!!meta[e.key]?.pinned}
+                active={!!linked && linked.id === current?.id}
+                opening={opening === e.key}
+                onOpen={() => void open(e)}
+                onRename={(name) => rename(e, name)}
+                onPin={() => patchMeta(e.key, { pinned: !meta[e.key]?.pinned })}
+                onCopyChat={() => void copyChat(e)}
+                onNewHere={() => start(e.cwd)}
+                onDelete={() => void remove(e)}
+              />
             )
           })}
         </div>
       ))}
     </div>
+  )
+}
+
+function HistoryRow(props: {
+  e: HistoryEntry
+  title: string
+  pinned: boolean
+  active: boolean
+  opening: boolean
+  onOpen: () => void
+  onRename: (name: string) => void
+  onPin: () => void
+  onCopyChat: () => void
+  onNewHere: () => void
+  onDelete: () => void
+}) {
+  const { e, title, pinned, active, opening } = props
+  const { byId, toast } = useApp()
+  const p = byId(e.profileId)!
+  const linked = importedThreadOf(e.key)
+  const busy = !!linked && isThreadBusy(linked)
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(title)
+  const [menu, setMenu] = useState<MenuAt | null>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  useEffect(() => setName(title), [title])
+  const commit = () => {
+    setEditing(false)
+    if (name.trim() && name.trim() !== title) props.onRename(name)
+    else setName(title)
+  }
+  const copy = (text: string) => {
+    void window.agentswitch.sys.copy(text)
+    toast({ kind: 'success', title: t('common.copied') })
+  }
+
+  return (
+    <div
+      className="group relative"
+      onContextMenu={(ev) => {
+        if (editing) return
+        ev.preventDefault()
+        setMenu({ x: ev.clientX, y: ev.clientY })
+      }}
+    >
+      {editing ? (
+        <input
+          autoFocus
+          value={name}
+          onChange={(ev) => setName(ev.target.value)}
+          onBlur={commit}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Enter') commit()
+            if (ev.key === 'Escape') {
+              setName(title)
+              setEditing(false)
+            }
+          }}
+          className="h-[50px] w-full rounded-lg bg-surface px-2.5 text-[14px] text-ink ring-2 ring-accent/40 outline-none"
+        />
+      ) : (
+        <button
+          onClick={props.onOpen}
+          onDoubleClick={() => setEditing(true)}
+          title={`${title}\n${p.name} · ${fullTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
+          className={`flex h-[50px] w-full items-center gap-2.5 rounded-lg pr-8 pl-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
+        >
+          <KindAvatar kind={e.kind} size={18} />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className={`flex items-center gap-1 text-[14px] leading-[20px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>
+              {pinned && <IconPin size={12} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
+              <span className="truncate">{title}</span>
+            </span>
+            <span className="flex items-center gap-1 truncate text-[12px] leading-[17px] text-ink-3">
+              {(opening || busy) && <Spinner size={11} className="text-accent" />}
+              {shortTime(e.updatedAt)} · {p.name}
+              {linked && !linked.preview && <span className="text-accent">{t('hist.continued')}</span>}
+            </span>
+          </span>
+        </button>
+      )}
+      {!editing && <MoreButton open={!!menu} onToggle={(at) => setMenu(at)} />}
+      {menu && (
+        <RowMenu at={menu} onClose={closeMenu}>
+          <MenuItem onClick={props.onOpen}>{t('hist.open')}</MenuItem>
+          <MenuItem onClick={() => setEditing(true)}>{t('common.rename')}</MenuItem>
+          <MenuItem onClick={props.onPin}>{pinned ? t('nav.unpin') : t('nav.pin')}</MenuItem>
+          <MenuItem onClick={props.onCopyChat}>{t('nav.copyChat')}</MenuItem>
+          <MenuItem onClick={() => copy(e.nativeId)}>{t('hist.copyId')}</MenuItem>
+          <MenuSep />
+          <MenuItem onClick={props.onNewHere}>{e.cwd ? t('nav.newInProject', { name: baseName(e.cwd) }) : t('nav.newNoProject')}</MenuItem>
+          {e.cwd && (
+            <>
+              <MenuItem onClick={() => void window.agentswitch.sys.showInFolder(e.cwd!)}>{t('common.showInFinder')}</MenuItem>
+              <MenuItem onClick={() => copy(e.cwd!)}>{t('proj.copyPath')}</MenuItem>
+            </>
+          )}
+          {busy && (
+            <>
+              <MenuSep />
+              <MenuItem onClick={() => stop(linked!.id)}>{t('nav.stopReply')}</MenuItem>
+            </>
+          )}
+          <MenuSep />
+          <MenuItem danger onClick={props.onDelete}>
+            {t('nav.deleteChat')}
+          </MenuItem>
+        </RowMenu>
+      )}
+    </div>
+  )
+}
+
+/** The ··· on a sidebar row: opens its menu under the button (a second click closes it). */
+function MoreButton({ open, onToggle }: { open: boolean; onToggle: (at: MenuAt | null) => void }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  return (
+    <button
+      ref={ref}
+      // keep the outside-click handler from closing the menu this click toggles
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={() => {
+        if (open) return onToggle(null)
+        const r = ref.current!.getBoundingClientRect()
+        onToggle({ x: r.right, y: r.bottom + 4, alignRight: true, flipY: r.top - 4 })
+      }}
+      className={`absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-3 transition-opacity hover:bg-black/[0.06] hover:text-ink ${
+        open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+      }`}
+      title={t('common.more')}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="5.5" cy="12" r="1.7" />
+        <circle cx="12" cy="12" r="1.7" />
+        <circle cx="18.5" cy="12" r="1.7" />
+      </svg>
+    </button>
   )
 }
 
@@ -373,7 +602,6 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
   const [name, setName] = useState(th.title)
   /** Open menu: under the ··· button, or at the cursor for a right-click. */
   const [menu, setMenu] = useState<MenuAt | null>(null)
-  const more = useRef<HTMLButtonElement>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
   const busy = isThreadBusy(th)
   const kind: ProfileKind | null =
@@ -471,28 +699,7 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
           }`}
         />
       )}
-      {!editing && (
-        <button
-          ref={more}
-          // keep the outside-click handler from closing the menu this click toggles
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => {
-            if (menu) return setMenu(null)
-            const r = more.current!.getBoundingClientRect()
-            setMenu({ x: r.right, y: r.bottom + 4, alignRight: true, flipY: r.top - 4 })
-          }}
-          className={`absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-3 transition-opacity hover:bg-black/[0.06] hover:text-ink ${
-            menu ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
-          title={t('common.more')}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="5.5" cy="12" r="1.7" />
-            <circle cx="12" cy="12" r="1.7" />
-            <circle cx="18.5" cy="12" r="1.7" />
-          </svg>
-        </button>
-      )}
+      {!editing && <MoreButton open={!!menu} onToggle={(at) => setMenu(at)} />}
       {menu && (
         <RowMenu at={menu} onClose={closeMenu}>
           <MenuItem onClick={() => setEditing(true)}>{t('common.rename')}</MenuItem>

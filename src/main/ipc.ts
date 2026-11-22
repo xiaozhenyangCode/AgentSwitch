@@ -47,7 +47,7 @@ import { t } from './i18n'
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
-import { deleteThreadData } from './threadDelete'
+import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
@@ -317,6 +317,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     return { ...h, cwdExists: !!h.entry.cwd && cwdExists(h.entry.cwd) }
   })
   ipcMain.handle(IPC.historyStat, (_e, key: unknown) => (typeof key === 'string' ? historyStat(key) : null))
+  ipcMain.handle(IPC.historyTrash, (_e, key: unknown) => {
+    if (typeof key !== 'string') throw new Error('bad key')
+    return trashHistorySession(key)
+  })
   ipcMain.handle(IPC.historyImport, (_e, threadId: unknown, profileId: unknown, nativeId: unknown) => {
     if (typeof threadId === 'string' && typeof nativeId === 'string' && hasProfile(profileId)) importSession(threadId, profileId, nativeId)
   })

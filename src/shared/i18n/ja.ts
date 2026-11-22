@@ -781,5 +781,12 @@ export const ja: Dict = {
   'nav.stopReply': '返信を停止',
   'chat.mdYou': '自分',
   'usage.okShort': '使用量は正常',
-  'usage.noQuotaShort': 'クォータ情報なし'
+  'usage.noQuotaShort': 'クォータ情報なし',
+  'hist.open': 'チャットを開く',
+  'hist.copyId': 'セッション ID をコピー',
+  'hist.delMessage': 'このセッションの CLI 側の元ファイルをゴミ箱に移動します（ゴミ箱から復元できます）。CLI で resume できなくなります。',
+  'hist.delLinked': 'AgentSwitch で続けたチャットも一緒に削除されます。',
+  'hist.delConfirm': 'ゴミ箱に移動',
+  'hist.removed': 'ローカル履歴から削除しました',
+  'hist.delFailed': '削除できませんでした'
 }

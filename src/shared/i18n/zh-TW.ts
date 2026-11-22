@@ -803,5 +803,12 @@ export const zhTW: Dict = {
   'nav.stopReply': '停止回覆',
   'chat.mdYou': '我',
   'usage.okShort': '用量正常',
-  'usage.noQuotaShort': '暫無額度資料'
+  'usage.noQuotaShort': '暫無額度資料',
+  'hist.open': '開啟對話',
+  'hist.copyId': '複製工作階段 ID',
+  'hist.delMessage': '會把這個工作階段在 CLI 裡的原始檔案移到垃圾桶（可從垃圾桶復原），CLI 中將無法再 resume。',
+  'hist.delLinked': '在 AgentSwitch 中繼續過的那則對話也會一併刪除。',
+  'hist.delConfirm': '移到垃圾桶',
+  'hist.removed': '已從本機歷史中移除',
+  'hist.delFailed': '刪除失敗'
 }

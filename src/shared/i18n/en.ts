@@ -781,5 +781,12 @@ export const en: Dict = {
   'nav.stopReply': 'Stop reply',
   'chat.mdYou': 'Me',
   'usage.okShort': 'Usage OK',
-  'usage.noQuotaShort': 'No quota data'
+  'usage.noQuotaShort': 'No quota data',
+  'hist.open': 'Open chat',
+  'hist.copyId': 'Copy session ID',
+  'hist.delMessage': 'The CLI\'s own files for this session will be moved to the Trash (recoverable from there). It can no longer be resumed in the CLI.',
+  'hist.delLinked': 'The AgentSwitch chat that continued it will be deleted too.',
+  'hist.delConfirm': 'Move to Trash',
+  'hist.removed': 'Removed from local history',
+  'hist.delFailed': 'Couldn\'t delete'
 }
