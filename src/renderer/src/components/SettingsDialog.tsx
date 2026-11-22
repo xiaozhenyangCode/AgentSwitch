@@ -9,6 +9,8 @@ import { openOnboarding } from '../state/onboarding'
 import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settings'
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
+import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
+import { parseThreadBundle, type ThreadBundle } from '../state/chat'
 import {
   IconAuto,
   IconCheck,
@@ -124,6 +126,15 @@ const ITEMS: Item[] = [
     Body: ThresholdRow
   },
   {
+    id: 'transfer',
+    section: 'data',
+    title: 'set.transfer',
+    hint: 'set.transferHint',
+    keys: ['set.exportChats', 'set.importChats'],
+    words: 'export import backup migrate sync transfer threads chats json 导出 导入 备份 迁移 同步 对话 エクスポート インポート 移行',
+    Body: TransferBlock
+  },
+  {
     id: 'dataDir',
     section: 'data',
     title: 'set.dataDir',
@@ -183,7 +194,7 @@ const LAYOUT: Record<Exclude<SettingsSection, 'about'>, string[][]> = {
   general: [['language'], ['sendKey', 'defaultDriver'], ['onboarding']],
   appearance: [['theme']],
   usage: [['probe', 'threshold']],
-  data: [['dataDir'], ['history']],
+  data: [['transfer'], ['dataDir'], ['history']],
   developer: [['debugTerminal']],
   shortcuts: [['scApp'], ['scCompose']]
 }
@@ -614,6 +625,40 @@ function ThresholdRow({ title }: { title: ReactNode }) {
     <Row label={title} hint={t('set.thresholdHint')}>
       <Segmented value={String(quotaWarn)} onChange={(v) => setSetting('quotaWarn', Number(v) as 70 | 80 | 90)} options={['70', '80', '90'].map((v) => ({ value: v, label: `${v}%` }))} />
     </Row>
+  )
+}
+
+function TransferBlock({ title }: { title: ReactNode }) {
+  const { toast } = useApp()
+  const [exportOpen, setExportOpen] = useState(false)
+  const [importState, setImportState] = useState<{ bundle: ThreadBundle; filePath: string } | null>(null)
+
+  const openImport = async () => {
+    try {
+      const picked = await window.agentswitch.sys.importThreadsFile()
+      if (!picked) return
+      const bundle = parseThreadBundle(picked.text)
+      setImportState({ bundle, filePath: picked.path })
+    } catch (e) {
+      toast({ kind: 'error', title: t('xfer.invalidFile'), desc: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return (
+    <>
+      <Row label={title} hint={t('set.transferHint')}>
+        <div className="flex items-center gap-2">
+          <button className={btn} onClick={() => setExportOpen(true)}>
+            {t('set.exportChats')}
+          </button>
+          <button className={btn} onClick={() => void openImport()}>
+            {t('set.importChats')}
+          </button>
+        </div>
+      </Row>
+      {exportOpen && <ExportThreadsDialog onClose={() => setExportOpen(false)} />}
+      {importState && <ImportThreadsDialog bundle={importState.bundle} filePath={importState.filePath} onClose={() => setImportState(null)} />}
+    </>
   )
 }
 

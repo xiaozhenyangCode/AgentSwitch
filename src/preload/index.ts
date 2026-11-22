@@ -169,6 +169,10 @@ const api = {
     showInFolder: (p: string): Promise<void> => ipcRenderer.invoke(IPC.showInFolder, p),
     /** Opens AgentSwitch's userData folder in Finder (outside the file allowlist on purpose). */
     showDataDir: (): Promise<void> => ipcRenderer.invoke(IPC.showDataDir),
+    exportThreadsFile: (defaultName: string, content: string): Promise<{ path: string } | null> =>
+      ipcRenderer.invoke(IPC.exportThreadsFile, defaultName, content),
+    importThreadsFile: (): Promise<{ path: string; text: string } | null> =>
+      ipcRenderer.invoke(IPC.importThreadsFile),
     /** Absolute path of a File picked/dropped in the renderer ('' for in-memory files). */
     pathForFile: (file: File): string => webUtils.getPathForFile(file)
   }

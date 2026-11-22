@@ -52,7 +52,7 @@ import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } fr
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
@@ -442,6 +442,32 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.onboardingSet, (_e, done: unknown) => writeSettings({ onboardingCompleted: done === true }))
 
   ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
+  ipcMain.handle(IPC.exportThreadsFile, async (_e, defaultName: unknown, content: unknown) => {
+    if (typeof content !== 'string') throw new Error('bad content')
+    const w = getWindow()
+    const name = typeof defaultName === 'string' && defaultName.trim() ? defaultName.trim() : 'AgentSwitch-chats.json'
+    const opts: Electron.SaveDialogOptions = {
+      defaultPath: join(app.getPath('downloads'), name),
+      filters: [{ name: 'AgentSwitch Chats', extensions: ['json'] }]
+    }
+    const r = w ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    writeFileSync(r.filePath, content, 'utf8')
+    return { path: r.filePath }
+  })
+  ipcMain.handle(IPC.importThreadsFile, async () => {
+    const w = getWindow()
+    const opts: Electron.OpenDialogOptions = {
+      properties: ['openFile'],
+      filters: [{ name: 'AgentSwitch Chats', extensions: ['json'] }]
+    }
+    const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled || !r.filePaths[0]) return null
+    const p = r.filePaths[0]
+    const st = statSync(p)
+    if (!st.isFile() || st.size > 64 * 1024 * 1024) throw new Error('file too large')
+    return { path: p, text: readFileSync(p, 'utf8') }
+  })
   ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
     if (typeof p !== 'string' || !p.trim()) return
     const target = expandHome(p.trim())

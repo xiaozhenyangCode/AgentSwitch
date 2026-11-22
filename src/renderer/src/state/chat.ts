@@ -790,6 +790,172 @@ export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(thre
 
 export const dismissContextWarn = (threadId: string, turns: number) => patchThread(threadId, (t) => ({ ...t, contextWarnDismissedAt: turns }))
 
+// ---- cross-machine thread export / import -----------------------------------------------------
+
+export interface ExportedThread {
+  thread: Thread
+  /** Folder basename (e.g. "AgentMux"), null for threads without a project. */
+  projectName: string | null
+  /** Original projectDir on the exporting machine (informational only). */
+  sourceProjectDir: string | null
+  /** Driver CLI kind for automatic account mapping on another machine. */
+  driverKind: ProfileKind | null
+}
+
+export interface ThreadBundle {
+  format: 'agentswitch-threads'
+  version: 1
+  exportedAt: number
+  threads: ExportedThread[]
+}
+
+const folderBase = (p: string | null | undefined): string | null => {
+  if (!p) return null
+  const name = p.replace(/\/+$/, '').split('/').filter(Boolean).pop()
+  return name || null
+}
+
+/** Builds a portable JSON bundle for the selected thread IDs. */
+export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]): ThreadBundle {
+  const kindOf = new Map(profiles.map((p) => [p.id, p.kind]))
+  const threads: ExportedThread[] = []
+  for (const th of state.threads) {
+    if (th.preview || !ids.has(th.id)) continue
+    // Bake imported history messages into `messages` so nothing is lost on another machine.
+    const merged = threadMessages(th)
+    const driverKind: ProfileKind | null =
+      (th.driver.profileId ? kindOf.get(th.driver.profileId) : undefined) ??
+      th.imported?.kind ??
+      [...merged].reverse().find((m) => m.role === 'assistant')?.agent.kind ??
+      null
+    const cleaned: Thread = {
+      id: th.id,
+      title: th.title,
+      projectDir: th.projectDir,
+      workdir: null,
+      participants: th.participants,
+      driver: th.driver,
+      messages: merged,
+      activeTurn: null,
+      pause: null,
+      createdAt: th.createdAt,
+      updatedAt: th.updatedAt,
+      ...(th.titleLocked ? { titleLocked: true } : {}),
+      ...(th.suggestedInput ? { suggestedInput: th.suggestedInput } : {}),
+      ...(th.pinned ? { pinned: true } : {})
+    }
+    threads.push({
+      thread: cleaned,
+      projectName: folderBase(th.projectDir),
+      sourceProjectDir: th.projectDir,
+      driverKind
+    })
+  }
+  return { format: 'agentswitch-threads', version: 1, exportedAt: Date.now(), threads }
+}
+
+/** Parses and validates a thread bundle JSON string; throws on invalid format. */
+export function parseThreadBundle(raw: string): ThreadBundle {
+  const j = JSON.parse(raw) as Partial<ThreadBundle>
+  if (!j || j.format !== 'agentswitch-threads' || j.version !== 1 || !Array.isArray(j.threads)) {
+    throw new Error('invalid bundle')
+  }
+  const threads: ExportedThread[] = []
+  for (const item of j.threads) {
+    if (!item || typeof item !== 'object' || !item.thread || typeof item.thread.id !== 'string' || !Array.isArray(item.thread.messages)) continue
+    threads.push({
+      thread: item.thread,
+      projectName: typeof item.projectName === 'string' && item.projectName ? item.projectName : folderBase(item.thread.projectDir),
+      sourceProjectDir: typeof item.sourceProjectDir === 'string' ? item.sourceProjectDir : item.thread.projectDir ?? null,
+      driverKind: item.driverKind === 'claude' || item.driverKind === 'codex' || item.driverKind === 'gemini' ? item.driverKind : null
+    })
+  }
+  return { format: 'agentswitch-threads', version: 1, exportedAt: Number(j.exportedAt) || Date.now(), threads }
+}
+
+/** Map of known local project directories keyed by folder basename (most recently updated wins). */
+export function localProjectsByName(): Record<string, string> {
+  const map: Record<string, string> = {}
+  const sorted = [...state.threads].sort((a, b) => b.updatedAt - a.updatedAt)
+  for (const th of sorted) {
+    const name = folderBase(th.projectDir)
+    if (name && th.projectDir && !(name in map)) map[name] = th.projectDir
+  }
+  return map
+}
+
+export type ImportConflictMode = 'replace' | 'duplicate'
+
+/**
+ * Applies selected imported threads into the local store:
+ *  - Remaps projectDir via `projectMap[projectName]` (so different local pwds work seamlessly).
+ *  - Remaps driver & participants to accounts available on this machine.
+ *  - Respects `conflictMode` ('replace' updates matching id; 'duplicate' keeps both with a new id).
+ */
+export function applyThreadImport(
+  items: ExportedThread[],
+  projectMap: Record<string, string | null>,
+  profiles: { id: ProfileId; kind: ProfileKind; status: string }[],
+  conflictMode: ImportConflictMode
+): { added: number; replaced: number } {
+  const ready = profiles.filter((p) => p.status === 'logged_in' || p.status === 'rate_limited')
+  const readyIds = ready.map((p) => p.id)
+  const validIds = new Set(profiles.map((p) => p.id))
+  const pickAccount = (origId: ProfileId | null, kind: ProfileKind | null): ProfileId | null => {
+    if (origId && validIds.has(origId)) return origId
+    if (kind) {
+      const sameReady = ready.find((p) => p.kind === kind) ?? profiles.find((p) => p.kind === kind)
+      if (sameReady) return sameReady.id
+    }
+    return ready[0]?.id ?? profiles[0]?.id ?? null
+  }
+
+  let threads = [...state.threads]
+  const byIdMap = new Map(threads.map((t, i) => [t.id, i]))
+  let added = 0
+  let replaced = 0
+
+  for (const item of items) {
+    const src = item.thread
+    const mappedDir = item.projectName ? (projectMap[item.projectName] ?? null) : null
+    const mappedDriverId = pickAccount(src.driver?.profileId ?? null, item.driverKind)
+    const mappedParticipants = readyIds.length ? readyIds : profiles.map((p) => p.id)
+    const existingIdx = byIdMap.get(src.id)
+    const makeCopy = existingIdx !== undefined && conflictMode === 'duplicate'
+    const id = makeCopy ? `${src.id}-${uid().slice(0, 4)}` : src.id
+
+    const nextThread: Thread = {
+      ...src,
+      id,
+      projectDir: mappedDir,
+      workdir: null,
+      driver: { profileId: mappedDriverId, model: src.driver?.model ?? null },
+      participants: mappedParticipants,
+      activeTurn: null,
+      pause: null,
+      handoff: null,
+      handoffFailed: null,
+      unread: null,
+      preview: false,
+      imported: undefined
+    }
+
+    if (existingIdx !== undefined && !makeCopy) {
+      threads[existingIdx] = nextThread
+      replaced++
+    } else {
+      threads = [nextThread, ...threads]
+      // rebuild index map for subsequent items
+      byIdMap.clear()
+      threads.forEach((t, i) => byIdMap.set(t.id, i))
+      added++
+    }
+  }
+
+  set({ ...state, threads })
+  return { added, replaced }
+}
+
 // ---- imported CLI history ----------------------------------------------------------------------
 
 function fromHistory(h: { messages: HistoryMessage[] }, agent: AgentRef): Message[] {

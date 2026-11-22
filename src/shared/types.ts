@@ -439,6 +439,8 @@ export const IPC = {
   pickProject: 'dialog:pickProject',
   showInFolder: 'shell:showInFolder',
   showDataDir: 'shell:showDataDir',
+  exportThreadsFile: 'threads:export-file',
+  importThreadsFile: 'threads:import-file',
   extSkills: 'ext:skills',
   extMcp: 'ext:mcp',
   extOverview: 'ext:overview',
