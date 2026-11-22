@@ -182,7 +182,7 @@ export interface QuotaGroup {
 export interface AccountQuota extends QuotaReport {
   /** When the data was produced (event time), ms. */
   fetchedAt: number
-  source: 'claude-stream' | 'codex-rollout' | 'agy-usage'
+  source: 'claude-stream' | 'claude-oauth' | 'codex-rollout' | 'codex-rpc' | 'agy-usage'
   /** agy only; fiveHour/sevenDay above mirror the default (Gemini) group. */
   groups?: QuotaGroup[]
 }

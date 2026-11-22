@@ -1,18 +1,20 @@
 import { useEffect, useRef } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { SessionId } from '@shared/types'
 import { terminals } from '../lib/terminals'
+import { isDark, useTheme } from '../state/theme'
 
 interface Props {
   sessionId: SessionId
   visible: boolean
 }
 
-const THEME = {
+const DARK_THEME: ITheme = {
   background: '#0b0d10',
   foreground: '#d6dae0',
   cursor: '#7dd3fc',
+  cursorAccent: '#0b0d10',
   selectionBackground: '#264f78',
   black: '#1b1f24',
   brightBlack: '#5c6370',
@@ -26,7 +28,26 @@ const THEME = {
   brightWhite: '#f0f3f6'
 }
 
+const LIGHT_THEME: ITheme = {
+  background: '#fafafa',
+  foreground: '#1d1d1f',
+  cursor: '#0066d6',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#b3d7ff',
+  black: '#1d1d1f',
+  brightBlack: '#6e6e73',
+  red: '#c9342b',
+  green: '#1d8a3c',
+  yellow: '#9a6700',
+  blue: '#0066d6',
+  magenta: '#8944ab',
+  cyan: '#0b7a8a',
+  white: '#48484a',
+  brightWhite: '#1d1d1f'
+}
+
 export function XtermView({ sessionId, visible }: Props) {
+  const { dark } = useTheme()
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -41,7 +62,7 @@ export function XtermView({ sessionId, visible }: Props) {
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: true,
-      theme: THEME
+      theme: isDark() ? DARK_THEME : LIGHT_THEME
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -181,6 +202,10 @@ export function XtermView({ sessionId, visible }: Props) {
       term.dispose()
     }
   }, [sessionId])
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = dark ? DARK_THEME : LIGHT_THEME
+  }, [dark])
 
   useEffect(() => {
     if (!visible) return

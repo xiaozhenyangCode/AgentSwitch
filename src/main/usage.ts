@@ -1,12 +1,14 @@
 import { app } from 'electron'
-import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import type { AccountQuota, AccountUsage, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
+import { realHome } from './shellEnv'
 
 /**
  * Per-account token / cost statistics and quota windows.
@@ -237,6 +239,172 @@ export function refreshCodexQuota(profileId: ProfileId): boolean {
   return true
 }
 
+// ---- codex live quota (`codex app-server` JSON-RPC `account/rateLimits/read`, zero tokens) ----
+
+const codexPending = new Map<ProfileId, Promise<boolean>>()
+
+export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
+  const running = codexPending.get(profileId)
+  if (running) return running
+  const p = new Promise<boolean>((resolve) => {
+    const bin = kindBinaryPath('codex')
+    if (!bin || !hasProfile(profileId)) return resolve(false)
+    let env: NodeJS.ProcessEnv
+    try {
+      env = buildSpawnSpec(profileId, 'run').env
+    } catch {
+      return resolve(false)
+    }
+    const cwd = join(app.getPath('userData'), 'usage-probe')
+    mkdirSync(cwd, { recursive: true })
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      try {
+        proc.kill()
+      } catch {
+        /* already exited */
+      }
+      resolve(ok)
+    }
+    const proc = spawn(bin, ['app-server'], { env, cwd, stdio: ['pipe', 'pipe', 'ignore'] })
+    const timer = setTimeout(() => finish(false), 15_000)
+    proc.on('error', () => finish(false))
+    proc.on('exit', () => finish(false))
+
+    const rl = createInterface({ input: proc.stdout })
+    rl.on('line', (line) => {
+      let msg: any
+      try {
+        msg = JSON.parse(line)
+      } catch {
+        return
+      }
+      if (msg.id === 1) {
+        try {
+          proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n')
+          proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n')
+        } catch {
+          finish(false)
+        }
+        return
+      }
+      if (msg.id !== 2) return
+      const r = msg.result?.rateLimits
+      if (!r || typeof r !== 'object') return finish(false)
+      const parseWin = (w: any): QuotaWindow | null => {
+        if (!w || typeof w.usedPercent !== 'number') return null
+        return {
+          percent: w.usedPercent,
+          resetsAt: typeof w.resetsAt === 'number' ? w.resetsAt * 1000 : null,
+          minutes: Number(w.windowDurationMins) || 0
+        }
+      }
+      const wins = [parseWin(r.primary), parseWin(r.secondary)].filter((w): w is QuotaWindow => !!w)
+      if (!wins.length) return finish(false)
+      const five = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
+      const seven = wins.find((w) => w.minutes >= 1440) ?? null
+      const limited = !!r.rateLimitReachedType || wins.some((w) => w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
+      recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: typeof r.planType === 'string' ? r.planType : null }, 'codex-rpc')
+      finish(true)
+    })
+
+    try {
+      proc.stdin.write(
+        JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'agentswitch', version: '0.1.0' } } }) + '\n'
+      )
+    } catch {
+      finish(false)
+    }
+  }).finally(() => codexPending.delete(profileId))
+  codexPending.set(profileId, p)
+  return p
+}
+
+// ---- claude live quota (OAuth `/api/oauth/usage` via local credentials, zero tokens) -----------
+
+const claudePending = new Map<ProfileId, Promise<boolean>>()
+
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+function readClaudeOauthToken(configDir: string): Promise<string | null> {
+  const dir = safeRealpath(expandHome(configDir))
+  const parseToken = (raw: string): string | null => {
+    try {
+      const tok = JSON.parse(raw)?.claudeAiOauth?.accessToken
+      return typeof tok === 'string' && tok.length > 0 ? tok : null
+    } catch {
+      return null
+    }
+  }
+  const credFile = join(dir, '.credentials.json')
+  if (existsSync(credFile)) {
+    try {
+      const tok = parseToken(readFileSync(credFile, 'utf8'))
+      if (tok) return Promise.resolve(tok)
+    } catch {
+      /* fall through to keychain */
+    }
+  }
+  if (process.platform !== 'darwin') return Promise.resolve(null)
+  const defaultDir = safeRealpath(join(realHome, '.claude'))
+  const service =
+    dir === defaultDir ? 'Claude Code-credentials' : `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`
+  return new Promise((resolve) => {
+    execFile('/usr/bin/security', ['find-generic-password', '-s', service, '-w'], { timeout: 5000 }, (err, stdout) => {
+      if (err) return resolve(null)
+      resolve(parseToken(String(stdout).trim()))
+    })
+  })
+}
+
+export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
+  const running = claudePending.get(profileId)
+  if (running) return running
+  const p = (async (): Promise<boolean> => {
+    if (!hasProfile(profileId)) return false
+    const cfg = getConfig(profileId)
+    const token = await readClaudeOauthToken(cfg.configDir)
+    if (!token) return false
+    try {
+      const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'anthropic-beta': 'oauth-2025-04-20',
+          'User-Agent': 'claude-code/2.1.0',
+          Accept: 'application/json'
+        },
+        signal: AbortSignal.timeout(12_000)
+      })
+      if (!res.ok) return false
+      const d: any = await res.json()
+      const parseWin = (w: any, minutes: number): QuotaWindow | null => {
+        if (!w || typeof w.utilization !== 'number') return null
+        const t = w.resets_at ? Date.parse(String(w.resets_at)) : NaN
+        return { percent: Math.round(w.utilization * 10) / 10, resetsAt: isNaN(t) ? null : t, minutes }
+      }
+      const five = parseWin(d?.five_hour, 300)
+      const seven = parseWin(d?.seven_day, 10080)
+      if (!five && !seven) return false
+      const limited = [five, seven].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
+      recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: null }, 'claude-oauth')
+      return true
+    } catch {
+      return false
+    }
+  })().finally(() => claudePending.delete(profileId))
+  claudePending.set(profileId, p)
+  return p
+}
+
 // ---- agy quota (`agy -p "/usage" --output-format json`: local command, no model call) -----------
 
 const agyPending = new Map<ProfileId, Promise<boolean>>()
@@ -465,34 +633,46 @@ export function runBackfill(): Promise<void> {
 // ---- refresh ------------------------------------------------------------------------------------
 
 /**
- * Zero-cost refresh: codex rollouts + history backfill. probe=true additionally sends one tiny
- * haiku message per logged-in claude account to pull a fresh rate_limit_event (uses quota).
+ * Live zero-token refresh for all three CLIs:
+ *  - codex:  `codex app-server` `account/rateLimits/read` (falls back to local rollout logs)
+ *  - gemini: `agy -p "/usage" --output-format json`
+ *  - claude: OAuth `/api/oauth/usage` via local credentials; when probe=true, accounts whose
+ *            OAuth token expired or is unavailable fall back to a tiny haiku message.
  */
 export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
-  for (const c of listConfigs()) if (c.kind === 'codex') refreshCodexQuota(c.id)
-  await Promise.all(listConfigs().filter((c) => c.kind === 'gemini' && isLoggedIn(c.id)).map((c) => refreshAgyQuota(c.id)))
-  if (probe) {
-    const dir = join(app.getPath('userData'), 'usage-probe')
-    mkdirSync(dir, { recursive: true })
-    await Promise.all(
-      listConfigs()
-        .filter((c) => c.kind === 'claude' && isLoggedIn(c.id))
-        .map(async (c) => {
-          let usage: Usage | null = null
-          const h = runAgent(
-            { cfg: { ...c, autoApprove: 'edits' }, model: 'haiku', prompt: 'Reply with exactly: OK', system: null, cwd: dir, images: [], resume: null, outDir: dir },
-            (e) => {
-              if (e.t === 'quota') recordQuota(c.id, e.quota, 'claude-stream')
-              if (e.t === 'usage') usage = { ...(usage ?? {}), ...e.usage }
-              if (e.t === 'rate_limited') recordLimited(c.id)
-            },
-            () => {}
-          )
-          await h.done
-          recordRun(c.id, usage)
-        })
-    )
-  }
+  const configs = listConfigs()
+  const codexTask = Promise.all(
+    configs
+      .filter((c) => c.kind === 'codex')
+      .map(async (c) => {
+        const ok = isLoggedIn(c.id) ? await refreshCodexLive(c.id) : false
+        if (!ok) refreshCodexQuota(c.id)
+      })
+  )
+  const agyTask = Promise.all(configs.filter((c) => c.kind === 'gemini' && isLoggedIn(c.id)).map((c) => refreshAgyQuota(c.id)))
+  const claudeTask = Promise.all(
+    configs
+      .filter((c) => c.kind === 'claude' && isLoggedIn(c.id))
+      .map(async (c) => {
+        const ok = await refreshClaudeOauth(c.id)
+        if (ok || !probe) return
+        const dir = join(app.getPath('userData'), 'usage-probe')
+        mkdirSync(dir, { recursive: true })
+        let usage: Usage | null = null
+        const h = runAgent(
+          { cfg: { ...c, autoApprove: 'edits' }, model: 'haiku', prompt: 'Reply with exactly: OK', system: null, cwd: dir, images: [], resume: null, outDir: dir },
+          (e) => {
+            if (e.t === 'quota') recordQuota(c.id, e.quota, 'claude-stream')
+            if (e.t === 'usage') usage = { ...(usage ?? {}), ...e.usage }
+            if (e.t === 'rate_limited') recordLimited(c.id)
+          },
+          () => {}
+        )
+        await h.done
+        recordRun(c.id, usage)
+      })
+  )
+  await Promise.all([codexTask, agyTask, claudeTask])
   void runBackfill()
   changed()
   return snapshot()
@@ -502,7 +682,12 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
 export function startUsage(): void {
   for (const c of listConfigs()) if (c.kind === 'codex') refreshCodexQuota(c.id)
   setTimeout(() => {
-    for (const c of listConfigs()) if (c.kind === 'gemini' && isLoggedIn(c.id)) void refreshAgyQuota(c.id)
+    for (const c of listConfigs()) {
+      if (!isLoggedIn(c.id)) continue
+      if (c.kind === 'gemini') void refreshAgyQuota(c.id)
+      else if (c.kind === 'codex') void refreshCodexLive(c.id)
+      else if (c.kind === 'claude') void refreshClaudeOauth(c.id)
+    }
   }, 4000)
   setTimeout(() => void runBackfill(), 8000)
   setInterval(() => void runBackfill(), 30 * 60_000)

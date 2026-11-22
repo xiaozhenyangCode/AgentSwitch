@@ -162,12 +162,12 @@ export function DebugDrawer() {
   }, [])
 
   const chip =
-    'h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors'
+    'h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium text-ink-2 hover:bg-black/[0.06] hover:text-ink dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors'
 
   return (
     <div
       aria-hidden={!drawer.open}
-      className={`dark-scroll absolute inset-x-3 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-[14px] bg-[#1C1C1E] shadow-[0_-1px_0_rgba(0,0,0,0.08),0_-16px_48px_rgba(0,0,0,0.18)] ${
+      className={`dark:dark-scroll absolute inset-x-3 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-[14px] bg-surface shadow-[0_0_0_1px_var(--ring),0_-12px_40px_rgba(0,0,0,0.08)] dark:bg-[#1C1C1E] dark:shadow-[0_-1px_0_rgba(255,255,255,0.06),0_-16px_48px_rgba(0,0,0,0.28)] ${
         dragging ? '' : 'transition-[transform,opacity] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
       } ${drawer.open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
       style={{
@@ -183,8 +183,8 @@ export function DebugDrawer() {
       >
         <div className="mx-auto h-[2px] w-full bg-transparent transition-colors duration-150 group-hover:bg-accent/60 group-active:bg-accent" />
       </div>
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-[#2C2C2E] px-3">
-        <span className="shrink-0 font-mono text-[12px] font-medium text-white/50">&gt;_ {t('nav.debugLog')}</span>
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-hairline bg-surface-2 px-3 dark:border-white/[0.06] dark:bg-[#2C2C2E]">
+        <span className="shrink-0 font-mono text-[12px] font-medium text-ink-3 dark:text-white/50">&gt;_ {t('nav.debugLog')}</span>
 
         {/* tabs: scroll horizontally, never squeeze the toolbar */}
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [&::-webkit-scrollbar]:hidden">
@@ -195,18 +195,20 @@ export function DebugDrawer() {
               onClick={() => setDrawerSession(s.sessionId)}
               onAuxClick={(e) => e.button === 1 && void remove(s.sessionId)}
               className={`group flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-md pr-1 pl-2.5 text-[12px] whitespace-nowrap transition-colors ${
-                s.sessionId === active ? 'bg-white/[0.12] text-white' : 'text-white/50 hover:text-white/85'
+                s.sessionId === active
+                  ? 'bg-black/[0.07] text-ink dark:bg-white/[0.12] dark:text-white'
+                  : 'text-ink-3 hover:text-ink dark:text-white/50 dark:hover:text-white/85'
               }`}
               title={`${s.sessionId}${s.mode ? ` · ${s.mode}` : ''}${s.alive ? t('dbg.alive') : t('dbg.ended')}${s.cwd ? `\n${s.cwd}` : ''}`}
             >
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-green' : 'bg-white/25'}`} />
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.alive ? 'bg-green' : 'bg-ink-3/35 dark:bg-white/25'}`} />
               {s.label}
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   void remove(s.sessionId)
                 }}
-                className={`grid h-4 w-4 place-items-center rounded text-white/50 transition-opacity hover:bg-white/15 hover:text-white ${
+                className={`grid h-4 w-4 place-items-center rounded text-ink-3 transition-opacity hover:bg-black/[0.08] hover:text-ink dark:text-white/50 dark:hover:bg-white/15 dark:hover:text-white ${
                   s.sessionId === active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
                 title={s.alive ? t('dbg.closeRunning') : t('dbg.closeTab')}
@@ -218,7 +220,7 @@ export function DebugDrawer() {
           ))}
           <button
             onClick={() => void openShell()}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:text-white/55 dark:hover:bg-white/10 dark:hover:text-white"
             title={t('dbg.newShell')}
             aria-label={t('dbg.newShell')}
           >
@@ -229,7 +231,7 @@ export function DebugDrawer() {
         {/* toolbar: fixed width, never truncated */}
         <div className="flex shrink-0 items-center gap-1">
           <span
-            className="max-w-[240px] shrink truncate font-mono text-[11px] text-white/40"
+            className="max-w-[240px] shrink truncate font-mono text-[11px] text-ink-3 dark:text-white/40"
             title={activeInfo?.cwd ? t('dbg.cwd', { path: activeInfo.cwd }) : t('dbg.newShellCwd', { path: projectDir ?? '~' })}
           >
             {activeInfo?.cwd ? tilde(activeInfo.cwd) : tilde(projectDir ?? '~')}
@@ -240,15 +242,19 @@ export function DebugDrawer() {
           <button className={chip} disabled={!active} onClick={() => active && terminals.get(active)?.clear()}>
             {t('dbg.clear')}
           </button>
-          <button className="ml-0.5 shrink-0 rounded-md p-1.5 text-white/50 hover:bg-white/10 hover:text-white" onClick={closeDrawer} title={t('common.collapse')}>
+          <button
+            className="ml-0.5 shrink-0 rounded-md p-1.5 text-ink-3 hover:bg-black/[0.06] hover:text-ink dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white"
+            onClick={closeDrawer}
+            title={t('common.collapse')}
+          >
             <IconX size={14} />
           </button>
         </div>
       </div>
 
-      <div className="relative min-h-0 flex-1 bg-[#0B0D10]">
+      <div className="relative min-h-0 flex-1 bg-[#fafafa] dark:bg-[#0B0D10]">
         {sessions.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-white/40">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3 dark:text-white/40">
             <IconTerminal size={22} />
             <div className="text-[13px]">{t('dbg.empty')}</div>
           </div>
