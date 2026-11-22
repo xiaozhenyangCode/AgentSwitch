@@ -1421,7 +1421,6 @@ function Composer({
         e.preventDefault()
         const v = suggestion!
         setText(v)
-        if (threadId) clearSuggestion(threadId)
         requestAnimationFrame(() => {
           const el = ta.current
           if (!el) return
@@ -1636,8 +1635,9 @@ function Composer({
               value={text}
               onChange={(e) => {
                 histRef.current = null
+                // the suggestion only hides while there is text (ghost needs an empty box): typing,
+                // pinyin or a thread switch never throws it away — sending or Esc does
                 setText(e.target.value)
-                if (e.target.value && suggestion && threadId) clearSuggestion(threadId)
                 // mid-composition text is pinyin, not the query: wait for compositionend
                 if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
               }}
