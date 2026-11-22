@@ -4,6 +4,7 @@
   "description": "Orchestrate local AI CLI agents (Claude Code / Gemini CLI / Codex CLI)",
   "main": "./out/main/index.js",
   "private": true,
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
