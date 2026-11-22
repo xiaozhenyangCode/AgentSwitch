@@ -213,16 +213,16 @@ export function NavRail() {
       <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? t('nav.noMatchThreads') : t('nav.noThreads')}</div>}
         {groups.map(([dir, threads]) => (
-          <div key={dir || '_'} className="mb-3">
-            <div className="group flex h-7 items-center gap-1.5 pr-1 pl-2.5 text-[12px] font-medium text-ink-3" title={dir || undefined}>
-              <IconFolder size={13} className="shrink-0" />
+          <div key={dir || '_'} className="mb-3.5">
+            <div className="group flex h-8 items-center gap-2 pr-1 pl-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || undefined}>
+              <IconFolder size={15} className="shrink-0 text-ink-3" />
               <span className="min-w-0 flex-1 truncate">{dir ? baseName(dir) : t('nav.noProject')}</span>
               <button
                 onClick={() => start(dir || null)}
-                className="grid h-5 w-5 shrink-0 place-items-center rounded-md opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.06] hover:text-ink focus-visible:opacity-100 dark:hover:bg-white/[0.08]"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.06] hover:text-ink focus-visible:opacity-100 dark:hover:bg-white/[0.08]"
                 title={dir ? t('nav.newInProject', { name: baseName(dir) }) : t('nav.newNoProject')}
               >
-                <IconPlus size={13} />
+                <IconPlus size={14} />
               </button>
             </div>
             {threads.map((th) => (
@@ -325,17 +325,17 @@ function HistoryList({ query }: { query: string }) {
 
   return (
     <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-      <div className="flex h-6 items-center justify-between px-2.5 text-[11px] text-ink-3">
+      <div className="flex h-7 items-center justify-between px-2.5 text-[12px] text-ink-3">
         <span>{items ? t('hist.count', { n: items.length }) : t('hist.scanning')}</span>
         <button onClick={() => void load(true)} className="flex items-center gap-1 rounded px-1 hover:bg-black/[0.05] hover:text-ink-2" title={t('hist.rescan')}>
-          {loading ? <Spinner size={11} /> : <IconRefresh size={11} />}
+          {loading ? <Spinner size={12} /> : <IconRefresh size={12} />}
         </button>
       </div>
-      {items && groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] text-ink-3">{query ? t('hist.noMatch') : t('hist.none')}</div>}
+      {items && groups.length === 0 && <div className="px-3 pt-6 text-center text-[13.5px] text-ink-3">{query ? t('hist.noMatch') : t('hist.none')}</div>}
       {groups.map(([dir, list]) => (
-        <div key={dir || '_'} className="mb-3">
-          <div className="flex h-7 items-center gap-1.5 px-2.5 text-[12px] font-medium text-ink-3" title={dir || t('hist.unknownProject')}>
-            <IconFolder size={13} className="shrink-0" />
+        <div key={dir || '_'} className="mb-3.5">
+          <div className="flex h-8 items-center gap-2 px-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || t('hist.unknownProject')}>
+            <IconFolder size={15} className="shrink-0 text-ink-3" />
             <span className="truncate">{dir ? baseName(dir) : t('hist.unknownProject')}</span>
           </div>
           {list.map((e) => {
@@ -347,13 +347,13 @@ function HistoryList({ query }: { query: string }) {
                 key={e.key}
                 onClick={() => void open(e)}
                 title={`${e.title}\n${p.name} · ${fullTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
-                className={`flex h-[46px] w-full items-center gap-2 rounded-lg px-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
+                className={`flex h-[50px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
               >
-                <KindAvatar kind={e.kind} size={16} />
+                <KindAvatar kind={e.kind} size={18} />
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className={`truncate text-[13px] leading-[18px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>{e.title}</span>
-                  <span className="flex items-center gap-1 truncate text-[11px] leading-4 text-ink-3">
-                    {opening === e.key && <Spinner size={10} className="text-accent" />}
+                  <span className={`truncate text-[14px] leading-[20px] ${active ? 'font-medium text-ink' : 'text-ink/85'}`}>{e.title}</span>
+                  <span className="flex items-center gap-1 truncate text-[12px] leading-[17px] text-ink-3">
+                    {opening === e.key && <Spinner size={11} className="text-accent" />}
                     {shortTime(e.updatedAt)} · {p.name}
                     {linked && !linked.preview && <span className="text-accent">{t('hist.continued')}</span>}
                   </span>
@@ -411,13 +411,13 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
               setEditing(false)
             }
           }}
-          className="h-[46px] w-full rounded-lg bg-surface px-2.5 text-[13px] text-ink ring-2 ring-accent/40 outline-none"
+          className="h-[50px] w-full rounded-lg bg-surface px-2.5 text-[14px] text-ink ring-2 ring-accent/40 outline-none"
         />
       ) : (
         <button
           onClick={onOpen}
           onDoubleClick={() => setEditing(true)}
-          className={`flex h-[46px] w-full items-center gap-2 rounded-lg pr-8 pl-2.5 text-left transition-colors ${
+          className={`flex h-[50px] w-full items-center gap-2.5 rounded-lg pr-8 pl-2.5 text-left transition-colors ${
             active
               ? 'bg-black/[0.07]'
               : th.unread === 'done'
@@ -429,21 +429,21 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
                     : 'hover:bg-black/[0.035]'
           }`}
         >
-          {kind && <KindAvatar kind={kind} size={16} />}
+          {kind && <KindAvatar kind={kind} size={18} />}
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className={`flex items-center gap-1 text-[13px] leading-[18px] ${active || th.unread ? 'font-medium text-ink' : 'text-ink/85'}`}>
-              {th.pinned && <IconPin size={11} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
+            <span className={`flex items-center gap-1 text-[14px] leading-[20px] ${active || th.unread ? 'font-medium text-ink' : 'text-ink/85'}`}>
+              {th.pinned && <IconPin size={12} className="shrink-0 text-ink-3" aria-label={t('nav.pinned')} />}
               <span className="truncate">{th.title}</span>
             </span>
-            <span className="flex items-center gap-1 text-[11px] leading-4 text-ink-3">
+            <span className="flex items-center gap-1 text-[12px] leading-[17px] text-ink-3">
               {busy ? (
                 <>
-                  <Spinner size={10} className="text-accent" />
+                  <Spinner size={11} className="text-accent" />
                   {t('nav.replying')}
                 </>
               ) : th.unread === 'done' ? (
                 <>
-                  <IconCheck size={10} className="shrink-0 text-ok" />
+                  <IconCheck size={11} className="shrink-0 text-ok" />
                   <span className="font-medium text-ok">{t('nav.done')}</span>
                   <span>· {ago(th.updatedAt)}</span>
                 </>
