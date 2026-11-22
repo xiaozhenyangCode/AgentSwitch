@@ -707,6 +707,7 @@ export const zhCN = {
   'att.binary': '该文件不是文本，无法在此预览。可用默认应用打开或在 Finder 中显示。',
   'att.clickPreview': '点击预览',
   'wb.tabAccept': '按 Tab 采纳建议，Esc 清除',
+  'wb.scrollToBottom': '回到底部',
   'live.prepWrite': '正在准备写入文件…',
   'live.prepTool': '正在准备调用 {tool}…',
   'live.generated': '已生成 {size}',

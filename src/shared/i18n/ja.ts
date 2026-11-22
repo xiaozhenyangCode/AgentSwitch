@@ -683,6 +683,7 @@ export const ja: Dict = {
   'att.binary': 'テキストではないためここではプレビューできません。既定のアプリで開くか Finder で表示してください。',
   'att.clickPreview': 'クリックしてプレビュー',
   'wb.tabAccept': 'Tab で提案を採用、Esc で消去',
+  'wb.scrollToBottom': '一番下へスクロール',
   'live.prepWrite': 'ファイル書き込みを準備中…',
   'live.prepTool': '{tool} の呼び出しを準備中…',
   'live.generated': '{size} 生成済み',

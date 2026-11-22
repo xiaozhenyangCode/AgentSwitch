@@ -208,6 +208,25 @@ export function WorkbenchPage() {
 
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  const scrollingToBottom = useRef(false)
+  const scrollTimer = useRef<number | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  const scrollToBottom = useCallback(() => {
+    const el = scroller.current
+    if (!el) return
+    stick.current = true
+    scrollingToBottom.current = true
+    setAtBottom(true)
+    if (scrollTimer.current) window.clearTimeout(scrollTimer.current)
+    scrollTimer.current = window.setTimeout(() => {
+      scrollingToBottom.current = false
+      scrollTimer.current = null
+    }, 650)
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [])
+  useEffect(() => () => {
+    if (scrollTimer.current) window.clearTimeout(scrollTimer.current)
+  }, [])
   const messages = useMemo(() => threadMessages(thread), [thread])
   /** Text-only sent prompts for ↑/↓ recall: current thread's user messages, or recent global prompts in a new chat. */
   const inputHistory = useMemo(() => {
@@ -317,10 +336,18 @@ export function WorkbenchPage() {
   }
   useLayoutEffect(() => {
     const el = scroller.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
+    if (!el) return
+    if (stick.current) {
+      el.scrollTop = el.scrollHeight
+      setAtBottom(true)
+    } else {
+      setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+    }
   }, [messages])
   useEffect(() => {
     stick.current = true
+    scrollingToBottom.current = false
+    setAtBottom(true)
     const el = scroller.current
     if (el) el.scrollTop = el.scrollHeight
   }, [thread?.id])
@@ -437,9 +464,18 @@ export function WorkbenchPage() {
           ref={scroller}
           data-scroller
           className="min-h-0 flex-1 overflow-y-auto"
+          onWheel={() => {
+            scrollingToBottom.current = false
+          }}
           onScroll={(e) => {
             const el = e.currentTarget
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            if (scrollingToBottom.current) {
+              if (near) scrollingToBottom.current = false
+              return
+            }
+            stick.current = near
+            setAtBottom(near)
           }}
         >
           <div className="mx-auto flex min-h-full max-w-[820px] flex-col px-8 pt-2" style={{ paddingBottom: composerH + 28 }}>
@@ -466,6 +502,26 @@ export function WorkbenchPage() {
               </div>
             )}
           </div>
+        </div>
+
+        <div
+          className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center transition-all duration-200 ease-out ${
+            !atBottom && messages.length > 0 ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-90 opacity-0'
+          }`}
+          style={{ bottom: composerH + (thread?.pause || (!!driverP && (handoffNeeded || handoffReady || contextLong)) ? 54 : 8) }}
+        >
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            tabIndex={!atBottom && messages.length > 0 ? 0 : -1}
+            aria-label={t('wb.scrollToBottom')}
+            title={t('wb.scrollToBottom')}
+            className={`flex h-8 w-8 items-center justify-center rounded-full bg-surface/95 text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_14px_rgba(0,0,0,0.12)] backdrop-blur-md transition-all duration-150 hover:bg-surface hover:text-ink active:scale-95 ${
+              !atBottom && messages.length > 0 ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
+            <IconArrowUp size={15} className="rotate-180" />
+          </button>
         </div>
 
         <Composer
@@ -1292,6 +1348,26 @@ function Composer({
     m.scrollTop = el.scrollTop
   }, [])
   const ghost = !!suggestion && !text && !atts.length && !mention && !slash
+  useEffect(() => {
+    if (!ghost || extOpen) return
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return
+      const active = document.activeElement as HTMLElement | null
+      if (active === ta.current) return // handled by textarea onKeyDown
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable || active.closest('.xterm'))) return
+      e.preventDefault()
+      const v = suggestion!
+      setText(v)
+      requestAnimationFrame(() => {
+        const el = ta.current
+        if (!el) return
+        el.focus()
+        el.setSelectionRange(v.length, v.length)
+      })
+    }
+    window.addEventListener('keydown', onWinKey)
+    return () => window.removeEventListener('keydown', onWinKey)
+  }, [ghost, extOpen, suggestion])
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
 

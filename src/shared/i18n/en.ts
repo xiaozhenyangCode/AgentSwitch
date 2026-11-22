@@ -683,6 +683,7 @@ export const en: Dict = {
   'att.binary': 'This file isn\'t text, so it can\'t be previewed here. Open it with its app or show it in Finder.',
   'att.clickPreview': 'Click to preview',
   'wb.tabAccept': 'Press Tab to use the suggestion, Esc to dismiss',
+  'wb.scrollToBottom': 'Scroll to bottom',
   'live.prepWrite': 'Preparing to write a file…',
   'live.prepTool': 'Preparing to call {tool}…',
   'live.generated': '{size} generated',

@@ -705,6 +705,7 @@ export const zhTW: Dict = {
   'att.binary': '此檔案不是文字，無法在此預覽。可用預設應用程式開啟或在 Finder 中顯示。',
   'att.clickPreview': '點擊預覽',
   'wb.tabAccept': '按 Tab 採納建議，Esc 清除',
+  'wb.scrollToBottom': '捲動至底部',
   'live.prepWrite': '正在準備寫入檔案…',
   'live.prepTool': '正在準備呼叫 {tool}…',
   'live.generated': '已產生 {size}',
