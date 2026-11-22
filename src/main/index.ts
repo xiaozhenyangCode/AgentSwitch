@@ -1,7 +1,8 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
-import { app, BrowserWindow, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, screen, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { readSettings, writeSettings } from './appSettings'
 import { initProfiles } from './profiles'
 import { registerIpc } from './ipc'
 import { initShellEnv } from './shellEnv'
@@ -12,14 +13,90 @@ import { buildMenu } from './menu'
 
 registerFileScheme()
 
+const DEFAULT_WIDTH = 1360
+const DEFAULT_HEIGHT = 880
+const MIN_WIDTH = 1080
+const MIN_HEIGHT = 640
+
+interface SavedWindowBounds {
+  x?: number
+  y?: number
+  width: number
+  height: number
+  maximized?: boolean
+  fullScreen?: boolean
+}
+
+function loadWindowBounds(): SavedWindowBounds {
+  const raw = readSettings().windowBounds as Partial<SavedWindowBounds> | undefined
+  if (!raw || typeof raw !== 'object') return { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT }
+  const width = typeof raw.width === 'number' && Number.isFinite(raw.width) ? Math.max(MIN_WIDTH, Math.round(raw.width)) : DEFAULT_WIDTH
+  const height = typeof raw.height === 'number' && Number.isFinite(raw.height) ? Math.max(MIN_HEIGHT, Math.round(raw.height)) : DEFAULT_HEIGHT
+  const out: SavedWindowBounds = {
+    width,
+    height,
+    maximized: raw.maximized === true,
+    fullScreen: raw.fullScreen === true
+  }
+  if (typeof raw.x === 'number' && Number.isFinite(raw.x) && typeof raw.y === 'number' && Number.isFinite(raw.y)) {
+    const x = Math.round(raw.x)
+    const y = Math.round(raw.y)
+    // Ensure at least a reachable portion of the window sits on a currently connected display.
+    const visible = screen.getAllDisplays().some(({ workArea: wa }) => {
+      const overlapX = Math.min(x + width, wa.x + wa.width) - Math.max(x, wa.x)
+      const overlapY = Math.min(y + height, wa.y + wa.height) - Math.max(y, wa.y)
+      return overlapX >= 100 && overlapY >= 60 && y >= wa.y - 20
+    })
+    if (visible) {
+      out.x = x
+      out.y = y
+    }
+  }
+  return out
+}
+
+function trackWindowBounds(win: BrowserWindow): void {
+  let timer: NodeJS.Timeout | null = null
+  const save = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    if (win.isDestroyed()) return
+    const b = win.getNormalBounds()
+    const payload: SavedWindowBounds = {
+      x: b.x,
+      y: b.y,
+      width: Math.max(MIN_WIDTH, b.width),
+      height: Math.max(MIN_HEIGHT, b.height),
+      maximized: win.isMaximized(),
+      fullScreen: win.isFullScreen()
+    }
+    writeSettings({ windowBounds: payload })
+  }
+  const schedule = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(save, 300)
+  }
+  win.on('resize', schedule)
+  win.on('move', schedule)
+  win.on('maximize', save)
+  win.on('unmaximize', save)
+  win.on('enter-full-screen', save)
+  win.on('leave-full-screen', save)
+  win.on('close', save)
+}
+
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+  const saved = loadWindowBounds()
   mainWindow = new BrowserWindow({
-    width: 1360,
-    height: 880,
-    minWidth: 1080,
-    minHeight: 640,
+    width: saved.width,
+    height: saved.height,
+    ...(saved.x !== undefined && saved.y !== undefined ? { x: saved.x, y: saved.y } : {}),
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     // Transparent so the sidebar's native vibrancy shows through; the main canvas paints itself.
     backgroundColor: '#00000000',
     titleBarStyle: 'hiddenInset',
@@ -37,7 +114,14 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  trackWindowBounds(mainWindow)
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (saved.maximized && !saved.fullScreen) mainWindow.maximize()
+    mainWindow.show()
+    if (saved.fullScreen) mainWindow.setFullScreen(true)
+  })
   mainWindow.on('closed', () => (mainWindow = null))
 
   // Never navigate the app window; external links go to the default browser.
