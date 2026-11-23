@@ -163,6 +163,14 @@ const ITEMS: Item[] = [
     Body: DebugTerminalRow
   },
   {
+    id: 'gitTools',
+    section: 'developer',
+    title: 'set.gitTools',
+    hint: 'set.gitToolsHint',
+    words: 'git branch commit stage 开发者 分支 暂存 提交 開発者 ブランチ コミット ステージ',
+    Body: GitToolsRow
+  },
+  {
     id: 'scApp',
     section: 'shortcuts',
     title: 'set.scGroupApp',
@@ -197,7 +205,7 @@ const LAYOUT: Record<Exclude<SettingsSection, 'about'>, string[][]> = {
   appearance: [['theme']],
   usage: [['probe', 'threshold']],
   data: [['transfer'], ['dataDir'], ['history']],
-  developer: [['debugTerminal']],
+  developer: [['debugTerminal', 'gitTools']],
   shortcuts: [['scApp'], ['scCompose']]
 }
 
@@ -474,10 +482,11 @@ function Select<T extends string>({ value, options, onChange }: { value: T; opti
   )
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
     <button
       role="switch"
+      aria-label={label}
       aria-checked={on}
       onClick={() => onChange(!on)}
       className={`relative h-[22px] w-[38px] rounded-full transition-colors duration-200 ${on ? 'bg-accent' : 'bg-black/[0.12]'}`}
@@ -617,6 +626,15 @@ function DebugTerminalRow({ title }: { title: ReactNode }) {
           if (!v && drawer.open) closeDrawer()
         }}
       />
+    </Row>
+  )
+}
+
+function GitToolsRow({ title }: { title: ReactNode }) {
+  const { showGitTools } = useSettings()
+  return (
+    <Row label={title} hint={t('set.gitToolsHint')}>
+      <Toggle on={showGitTools} onChange={(v) => setSetting('showGitTools', v)} label={t('set.gitTools')} />
     </Row>
   )
 }

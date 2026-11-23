@@ -1,53 +1,30 @@
-import { execFile } from 'node:child_process'
-import { openSync, readSync, closeSync, statSync } from 'node:fs'
-import { isAbsolute, join, relative, sep } from 'node:path'
-import type { FileChange, FileChanges } from '@shared/types'
-import { getBaseEnv } from './shellEnv'
+import { constants, openSync, readSync, closeSync, fstatSync, realpathSync } from 'node:fs'
+import { dirname, join, relative, sep } from 'node:path'
+import type { FileChange, FileChangePreview, FileChanges } from '@shared/types'
+import { git, gitWorktree, isInside, parseStatus } from './gitOps'
 import { allowRoot } from './fileProtocol'
 
 /** Read-only `git status` + `git diff` of a project folder for the 文件修改 panel. */
 
 const MAX_FILES = 300
 const MAX_DIFF = 200 * 1024 // per file
-const MAX_TOTAL = 4 * 1024 * 1024 // whole `git diff` output
 const MAX_UNTRACKED_READ = 256 * 1024
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
-
-function env(): NodeJS.ProcessEnv {
-  try {
-    return getBaseEnv()
-  } catch {
-    return process.env
-  }
-}
-
-function git(cwd: string, args: string[], maxBuffer = MAX_TOTAL): Promise<string> {
-  return new Promise((resolve, reject) =>
-    execFile(
-      'git',
-      ['-c', 'core.quotepath=off', '--no-optional-locks', ...args],
-      {
-        cwd,
-        env: { ...env(), GIT_PAGER: 'cat', LC_ALL: 'C' },
-        maxBuffer,
-        timeout: 15_000
-      },
-      (err, stdout) => (err ? reject(err) : resolve(stdout))
-    )
-  )
-}
 
 const cut = (d: string): { diff: string; truncated: boolean } =>
   d.length > MAX_DIFF ? { diff: d.slice(0, MAX_DIFF) + '\n… (diff truncated)', truncated: true } : { diff: d, truncated: false }
 
 /** Synthetic all-added diff for an untracked file. */
-function untrackedDiff(abs: string, rel: string): { diff: string; added: number; binary: boolean; truncated: boolean } {
+function untrackedDiff(root: string, abs: string, rel: string): { diff: string; added: number; binary: boolean; truncated: boolean } {
   let fd: number | null = null
   try {
-    const size = statSync(abs).size
+    if (!isInside(root, realpathSync(dirname(abs)))) return { diff: '', added: 0, binary: false, truncated: false }
+    fd = openSync(abs, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    const info = fstatSync(fd)
+    if (!info.isFile()) return { diff: '', added: 0, binary: false, truncated: false }
+    const size = info.size
     const n = Math.min(size, MAX_UNTRACKED_READ)
     const buf = Buffer.alloc(n)
-    fd = openSync(abs, 'r')
     readSync(fd, buf, 0, n, 0)
     if (buf.subarray(0, 8192).includes(0)) return { diff: '', added: 0, binary: true, truncated: false }
     const text = buf.toString('utf8')
@@ -68,35 +45,60 @@ function untrackedDiff(abs: string, rel: string): { diff: string; added: number;
   }
 }
 
-/** Splits `git diff` output into per-file chunks keyed by the new (b/) path. */
-function splitDiff(out: string): Map<string, string> {
-  const map = new Map<string, string>()
-  const parts = out.split(/^(?=diff --git )/m)
-  for (const p of parts) {
-    if (!p.startsWith('diff --git ')) continue
-    const plus = /^\+\+\+ b\/(.+)$/m.exec(p)?.[1]
-    const minus = /^--- a\/(.+)$/m.exec(p)?.[1]
-    const head = /^diff --git a\/(.+?) b\/(.+)$/m.exec(p)
-    const key = plus ?? head?.[2] ?? minus
-    if (key) map.set(key, p.replace(/^diff --git .*\n(?:(?:index|similarity|rename|new file|deleted file|old mode|new mode).*\n)*/, ''))
+type DiffStats = Pick<FileChangePreview, 'added' | 'removed' | 'binary' | 'diff' | 'truncated'>
+
+async function readDiff(root: string, scope: string, comparison: string[]): Promise<Map<string, DiffStats>> {
+  const args = ['diff', ...comparison, '--numstat', '-z', '-M', '--no-ext-diff', '--no-color']
+  const output = await git(root, [...args, '--patch', '--', scope])
+    .catch(() => git(root, [...args, '--', scope]).catch(() => ''))
+  const tokens = output.split('\0')
+  const stats = new Map<string, DiffStats>()
+  const orderedPaths: string[] = []
+  let i = 0
+  while (i < tokens.length && tokens[i]) {
+    const match = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(tokens[i++])
+    if (!match) break
+    let path = match[3]
+    if (!path) {
+      path = tokens[i + 1]
+      i += 2
+    }
+    orderedPaths.push(path)
+    stats.set(path, {
+      added: match[1] === '-' ? 0 : Number(match[1]),
+      removed: match[2] === '-' ? 0 : Number(match[2]),
+      binary: match[1] === '-',
+      diff: ''
+    })
   }
-  return map
+
+  // Git emits numstat and patch records in the same order. Match by position so quoted
+  // paths, tabs and embedded newlines in filenames do not affect the lookup.
+  const patches = tokens.slice(i + 1).join('\0').split(/^(?=(?:diff --(?:git|cc|combined) |\* Unmerged path ))/m).filter(Boolean)
+  if (patches.length === orderedPaths.length) {
+    orderedPaths.forEach((path, index) => {
+      const stat = stats.get(path)
+      const patch = patches[index].replace(/^diff --.*\n(?:(?:index|similarity|rename|new file|deleted file|old mode|new mode).*\n)*/, '')
+      if (stat) Object.assign(stat, cut(patch))
+    })
+  }
+  return stats
 }
 
-export async function gitChanges(dir: unknown): Promise<FileChanges> {
+function preview(status: FileChange['status'], stats?: DiffStats): FileChangePreview {
+  return { status, added: 0, removed: 0, diff: '', ...stats }
+}
+
+function changeStatus(code: string): FileChange['status'] {
+  if (code === 'D' || code === 'A' || code === 'R') return code
+  return 'M'
+}
+
+export async function gitChanges(dir: unknown, split = false): Promise<FileChanges> {
   const none: FileChanges = { repo: false, files: [], added: 0, removed: 0 }
-  if (typeof dir !== 'string' || !isAbsolute(dir)) return none
-  try {
-    if (!statSync(dir).isDirectory()) return none
-  } catch {
-    return none
-  }
-  let root: string
-  try {
-    root = (await git(dir, ['rev-parse', '--show-toplevel'])).trim()
-  } catch {
-    return none
-  }
+  const worktree = await gitWorktree(dir)
+  if (!worktree || typeof dir !== 'string') return none
+  const { root } = worktree
   allowRoot(dir) // Finder / open for the listed files
 
   let base = 'HEAD'
@@ -107,73 +109,31 @@ export async function gitChanges(dir: unknown): Promise<FileChanges> {
   }
 
   // only what lies under the chosen folder (it may be a subfolder of the repo)
-  const scope = relative(root, dir) || '.'
-  const [status, numstat, diffOut] = await Promise.all([
+  const scope = relative(root, worktree.dir) || '.'
+  const [status, combined, index, workingTree] = await Promise.all([
     git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', scope]),
-    git(root, ['diff', base, '--numstat', '-z', '-M', '--', scope]).catch(() => ''),
-    git(root, ['diff', base, '--no-color', '--no-ext-diff', '-M', '--', scope]).catch(() => '')
+    readDiff(root, scope, [base]),
+    split ? readDiff(root, scope, ['--cached']) : undefined,
+    split ? readDiff(root, scope, []) : undefined
   ])
 
-  // numstat -z: "add\tdel\tpath\0" or, for renames, "add\tdel\t\0old\0new\0"
-  const stats = new Map<string, { a: number; d: number; bin: boolean }>()
-  {
-    const tok = numstat.split('\0')
-    for (let i = 0; i < tok.length; i++) {
-      const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(tok[i])
-      if (!m) continue
-      let p = m[3]
-      if (!p) {
-        p = tok[i + 2] ?? ''
-        i += 2
-      }
-      stats.set(p, {
-        a: m[1] === '-' ? 0 : +m[1],
-        d: m[2] === '-' ? 0 : +m[2],
-        bin: m[1] === '-'
-      })
-    }
-  }
-  const diffs = splitDiff(diffOut)
-
   const files: FileChange[] = []
-  let total = 0
-  const tok = status.split('\0')
-  for (let i = 0; i < tok.length; i++) {
-    const e = tok[i]
-    if (e.length < 4) continue
-    const xy = e.slice(0, 2)
-    const p = e.slice(3)
-    if (xy[0] === 'R' || xy[0] === 'C') i++ // next token is the old path
-    total++
-    if (files.length >= MAX_FILES) continue
-    const abs = join(root, p)
-    const rel = relative(dir, abs).split(sep).join('/')
+  const entries = parseStatus(status)
+  const total = entries.length
+  for (const { xy, path: p, staged, unstaged } of entries.slice(0, MAX_FILES)) {
+    const rel = relative(worktree.dir, join(root, p)).split(sep).join('/')
+    const abs = join(dir, rel)
     if (xy === '??') {
-      const u = untrackedDiff(abs, rel)
-      files.push({
-        path: rel,
-        abs,
-        status: 'U',
-        added: u.added,
-        removed: 0,
-        diff: u.diff,
-        binary: u.binary,
-        truncated: u.truncated
-      })
+      const u = untrackedDiff(root, join(root, p), rel)
+      const change = preview('U', { ...u, removed: 0 })
+      files.push({ path: rel, abs, staged, unstaged, ...change, ...(split ? { unstagedChange: change } : {}) })
       continue
     }
-    const st: FileChange['status'] = xy.includes('D') ? 'D' : xy[0] === 'R' ? 'R' : xy.includes('A') ? 'A' : 'M'
-    const s = stats.get(p)
-    const c = cut(diffs.get(p) ?? '')
+    const status = xy.includes('D') ? 'D' : xy[0] === 'R' ? 'R' : xy.includes('A') ? 'A' : 'M'
     files.push({
-      path: rel,
-      abs,
-      status: st,
-      added: s?.a ?? 0,
-      removed: s?.d ?? 0,
-      diff: c.diff,
-      binary: s?.bin,
-      truncated: c.truncated
+      path: rel, abs, staged, unstaged, ...preview(status, combined.get(p)),
+      ...(index && staged ? { stagedChange: preview(changeStatus(xy[0]), index.get(p)) } : {}),
+      ...(workingTree && unstaged ? { unstagedChange: preview(changeStatus(xy[1]), workingTree.get(p)) } : {})
     })
   }
   files.sort((a, b) => a.path.localeCompare(b.path))

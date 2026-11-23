@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useChat } from '../state/chat'
 import { useEscape } from '../lib/escStack'
 import { baseName } from '../lib/fileUrl'
@@ -35,13 +35,15 @@ export function ProjectBar({
   locked,
   onChange,
   onPick,
-  onNewHere
+  onNewHere,
+  gitBranch
 }: {
   dir: string | null
   locked: boolean
   onChange: (dir: string | null) => void
   onPick: () => void
   onNewHere: (dir: string | null) => void
+  gitBranch?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -60,85 +62,88 @@ export function ProjectBar({
   }
 
   return (
-    <div ref={ref} className="relative mt-2 flex items-center px-2">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={`flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${open ? 'bg-black/[0.05] dark:bg-white/[0.07]' : ''}`}
-        title={dir ? `${dir}${locked ? '\n' + t('proj.lockedHint') : ''}` : t('wb.projectHint')}
-      >
-        <IconFolder size={14} className={`shrink-0 ${dir ? 'text-accent' : 'text-ink-3'}`} />
-        {dir ? (
-          <>
-            <span className="shrink-0 font-medium text-ink">{baseName(dir)}</span>
-            <span className="min-w-0 truncate text-ink-3">{tildePath(dir)}</span>
-          </>
-        ) : (
-          <span className="text-ink-3">{t('nav.noProject')}</span>
-        )}
-        {locked ? <IconLock size={11} className="shrink-0 text-ink-3" /> : <IconChevronDown size={12} className="shrink-0 text-ink-3" />}
-      </button>
-
-      {open && (
-        <div className="absolute bottom-full left-0 z-30 mb-1.5 w-[340px] rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
-          {locked ? (
+    <div className="relative mt-2 flex items-center px-2">
+      <div ref={ref} className="min-w-0">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className={`flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${open ? 'bg-black/[0.05] dark:bg-white/[0.07]' : ''}`}
+          title={dir ? `${dir}${locked ? '\n' + t('proj.lockedHint') : ''}` : t('wb.projectHint')}
+        >
+          <IconFolder size={14} className={`shrink-0 ${dir ? 'text-accent' : 'text-ink-3'}`} />
+          {dir ? (
             <>
-              <div className="px-2.5 pt-1 pb-1.5 text-[11.5px] leading-relaxed text-ink-3">{dir ? t('proj.lockedHint') : t('proj.lockedNone')}</div>
-              {dir && (
-                <>
-                  <button className={item} onClick={close(() => void window.agentswitch.sys.showInFolder(dir))}>
-                    <IconFolder size={15} className="shrink-0 text-ink-2" />
-                    {t('common.showInFinder')}
-                  </button>
-                  <button
-                    className={item}
-                    onClick={() => {
-                      void window.agentswitch.sys.copy(dir)
-                      setCopied(true)
-                      setTimeout(() => {
-                        setCopied(false)
-                        setOpen(false)
-                      }, 700)
-                    }}
-                  >
-                    {copied ? <IconCheck size={15} className="shrink-0 text-ok" /> : <IconCopy size={15} className="shrink-0 text-ink-2" />}
-                    {copied ? t('common.copied') : t('proj.copyPath')}
-                  </button>
-                </>
-              )}
-              <button className={item} onClick={close(() => onNewHere(dir))}>
-                <IconPlus size={15} className="shrink-0 text-accent" />
-                {dir ? t('proj.newHere') : t('proj.newNone')}
-              </button>
+              <span className="max-w-[12rem] shrink-0 truncate font-medium text-ink">{baseName(dir)}</span>
+              <span className="min-w-0 truncate text-ink-3">{tildePath(dir)}</span>
             </>
           ) : (
-            <>
-              {recent.length > 0 && <div className="px-2.5 pt-1 pb-1 text-[11.5px] text-ink-3">{t('proj.recent')}</div>}
-              <div className="max-h-[300px] overflow-y-auto">
-                {recent.map((p) => (
-                  <button key={p} className={item + ' h-11'} onClick={close(() => onChange(p))} title={p}>
-                    <IconFolder size={15} className="shrink-0 text-accent" />
-                    <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                      <span className="truncate font-medium">{baseName(p)}</span>
-                      <span className="truncate text-[11.5px] text-ink-3">{tildePath(p)}</span>
-                    </span>
-                    {p === dir && <IconCheck size={14} className="shrink-0 text-accent" />}
-                  </button>
-                ))}
-              </div>
-              {recent.length > 0 && <div className="mx-2 my-1 h-px bg-hairline" />}
-              <button className={item} onClick={close(onPick)}>
-                <IconPlus size={15} className="shrink-0 text-ink-2" />
-                {t('proj.pickOther')}
-              </button>
-              <button className={item} onClick={close(() => onChange(null))}>
-                <IconX size={15} className="shrink-0 text-ink-2" />
-                <span className="min-w-0 flex-1 truncate">{t('proj.none')}</span>
-                {!dir && <IconCheck size={14} className="shrink-0 text-accent" />}
-              </button>
-            </>
+            <span className="text-ink-3">{t('nav.noProject')}</span>
           )}
-        </div>
-      )}
+          {locked ? <IconLock size={11} className="shrink-0 text-ink-3" /> : <IconChevronDown size={12} className="shrink-0 text-ink-3" />}
+        </button>
+
+        {open && (
+          <div className="absolute bottom-full left-0 z-30 mb-1.5 w-[340px] rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+            {locked ? (
+              <>
+                <div className="px-2.5 pt-1 pb-1.5 text-[11.5px] leading-relaxed text-ink-3">{dir ? t('proj.lockedHint') : t('proj.lockedNone')}</div>
+                {dir && (
+                  <>
+                    <button className={item} onClick={close(() => void window.agentswitch.sys.showInFolder(dir))}>
+                      <IconFolder size={15} className="shrink-0 text-ink-2" />
+                      {t('common.showInFinder')}
+                    </button>
+                    <button
+                      className={item}
+                      onClick={() => {
+                        void window.agentswitch.sys.copy(dir)
+                        setCopied(true)
+                        setTimeout(() => {
+                          setCopied(false)
+                          setOpen(false)
+                        }, 700)
+                      }}
+                    >
+                      {copied ? <IconCheck size={15} className="shrink-0 text-ok" /> : <IconCopy size={15} className="shrink-0 text-ink-2" />}
+                      {copied ? t('common.copied') : t('proj.copyPath')}
+                    </button>
+                  </>
+                )}
+                <button className={item} onClick={close(() => onNewHere(dir))}>
+                  <IconPlus size={15} className="shrink-0 text-accent" />
+                  {dir ? t('proj.newHere') : t('proj.newNone')}
+                </button>
+              </>
+            ) : (
+              <>
+                {recent.length > 0 && <div className="px-2.5 pt-1 pb-1 text-[11.5px] text-ink-3">{t('proj.recent')}</div>}
+                <div className="max-h-[300px] overflow-y-auto">
+                  {recent.map((p) => (
+                    <button key={p} className={item + ' h-11'} onClick={close(() => onChange(p))} title={p}>
+                      <IconFolder size={15} className="shrink-0 text-accent" />
+                      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                        <span className="truncate font-medium">{baseName(p)}</span>
+                        <span className="truncate text-[11.5px] text-ink-3">{tildePath(p)}</span>
+                      </span>
+                      {p === dir && <IconCheck size={14} className="shrink-0 text-accent" />}
+                    </button>
+                  ))}
+                </div>
+                {recent.length > 0 && <div className="mx-2 my-1 h-px bg-hairline" />}
+                <button className={item} onClick={close(onPick)}>
+                  <IconPlus size={15} className="shrink-0 text-ink-2" />
+                  {t('proj.pickOther')}
+                </button>
+                <button className={item} onClick={close(() => onChange(null))}>
+                  <IconX size={15} className="shrink-0 text-ink-2" />
+                  <span className="min-w-0 flex-1 truncate">{t('proj.none')}</span>
+                  {!dir && <IconCheck size={14} className="shrink-0 text-accent" />}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      {gitBranch}
     </div>
   )
 }

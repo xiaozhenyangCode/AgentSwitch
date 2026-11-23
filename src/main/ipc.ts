@@ -91,6 +91,7 @@ import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
+import { gitLog, gitMutate, gitStatus, gitWorktree } from './gitOps'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
@@ -334,7 +335,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.ptyBuffer, (_e, id: unknown) => ptys.getBuffer(typeof id === 'string' ? id : ''))
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
-  ipcMain.handle(IPC.gitChanges, (_e, dir: unknown) => gitChanges(dir))
+  ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
+  ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
+  ipcMain.handle(IPC.gitLog, (_e, dir: unknown) => gitLog(dir))
+  ipcMain.handle(IPC.gitMutate, (_e, dir: unknown, op: unknown, threadId: unknown) =>
+    gitMutate(dir, op, async (root) => {
+      const projects = orchestrator.activeProjects()
+      const matches = await Promise.all(projects.map(async (project) => (await gitWorktree(project.dir))?.root === root))
+      const active = orchestrator.active()
+      return active.some((turn) => turn.threadId === threadId)
+        || projects.some((project, i) => matches[i] && active.some((turn) => turn.threadId === project.threadId))
+    }, t('git.agentBusy'))
+  )
   /** Closes a drawer tab: kills the process (if any) and drops its scrollback. */
   ipcMain.handle(IPC.ptyForget, (_e, id: unknown) => {
     if (typeof id === 'string' && id) {

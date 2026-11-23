@@ -16,6 +16,8 @@ import { fmtTokens } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
+import { GitBranchMenu } from '../components/GitBranchMenu'
+import { useProjectGit } from '../state/useProjectGit'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { useStartThread } from '../state/threads'
@@ -179,7 +181,7 @@ function contextWindow(kind: ProfileState['kind'], model: string | null): number
 
 export function WorkbenchPage() {
   const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
-  const { showDebugTerminal } = useSettings()
+  const { showDebugTerminal, showGitTools } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
   const sorted = useSortedAccounts()
@@ -394,12 +396,14 @@ export function WorkbenchPage() {
 
   // 文件修改 panel: open state remembered across chats
   const [changesOpen, setChangesOpen] = useState(() => localStorage.getItem('agentswitch.changesOpen') === '1')
-  const toggleChanges = () =>
-    setChangesOpen((o) => {
-      localStorage.setItem('agentswitch.changesOpen', o ? '0' : '1')
-      return !o
-    })
-  const fc = useFileChanges(thread, ctx.projectDir, isThreadBusy(thread))
+  const setChangesVisible = (visible: boolean) => {
+    localStorage.setItem('agentswitch.changesOpen', visible ? '1' : '0')
+    setChangesOpen(visible)
+  }
+  const toggleChanges = () => setChangesVisible(!changesOpen)
+  const gitBusy = isThreadBusy(thread)
+  const fc = useFileChanges(thread, ctx.projectDir, gitBusy, showGitTools && changesOpen)
+  const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, gitBusy, fc.refresh)
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
 
   return (
@@ -548,6 +552,10 @@ export function WorkbenchPage() {
               onChange={(dir) => !projectLocked && update({ projectDir: dir })}
               onPick={() => void pickProject()}
               onNewHere={startThread}
+              gitBranch={showGitTools && git.status && (
+                <GitBranchMenu key={ctx.projectDir} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
+                  run={git.run} onViewChanges={() => setChangesVisible(true)} />
+              )}
             />
           }
         />
@@ -656,7 +664,12 @@ export function WorkbenchPage() {
           </div>
         )}
       </div>
-      {changesOpen && <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={fc.refresh} onClose={toggleChanges} />}
+      {changesOpen && (
+        <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={showGitTools ? git.refreshAll : fc.refresh}
+          onClose={toggleChanges} gitTools={showGitTools && git.status
+            ? { status: git.status, disabled: git.disabled || fc.loading, busy: gitBusy, run: git.run }
+            : null} />
+      )}
     </div>
   )
 }

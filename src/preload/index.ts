@@ -5,6 +5,11 @@ import {
   type ProfileConnect,
   type AppInfo,
   type FileChanges,
+  type GitCommit,
+  type GitMutation,
+  type GitMutationResult,
+  type GitResult,
+  type GitStatus,
   type DeleteThreadRequest,
   type ThemeMode,
   type MenuCommand,
@@ -165,7 +170,10 @@ const api = {
   },
   git: {
     /** Changed files of a project folder (read-only git status / diff). */
-    changes: (dir: string): Promise<FileChanges> => ipcRenderer.invoke(IPC.gitChanges, dir)
+    changes: (dir: string, split = false): Promise<FileChanges> => ipcRenderer.invoke(IPC.gitChanges, dir, split),
+    status: (dir: string): Promise<GitResult<GitStatus>> => ipcRenderer.invoke(IPC.gitStatus, dir),
+    log: (dir: string): Promise<GitResult<{ commits: GitCommit[] }>> => ipcRenderer.invoke(IPC.gitLog, dir),
+    mutate: (dir: string, op: GitMutation, threadId: string | null): Promise<GitMutationResult> => ipcRenderer.invoke(IPC.gitMutate, dir, op, threadId)
   },
   sys: {
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),

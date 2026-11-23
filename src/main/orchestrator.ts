@@ -391,6 +391,10 @@ export class Orchestrator {
     return [...this.turns.values()].map((t) => ({ threadId: t.req.threadId, turnId: t.req.turnId, running: t.steps.filter((s) => s.status === 'running').map((s) => s.id) }))
   }
 
+  activeProjects(): { threadId: string; dir: string }[] {
+    return [...this.turns.values()].filter((turn) => turn.req.projectDir).map((turn) => ({ threadId: turn.req.threadId, dir: turn.cwd }))
+  }
+
   stop(threadId: string): void {
     const turn = this.turns.get(threadId)
     if (!turn) return
