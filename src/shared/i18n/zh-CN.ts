@@ -973,6 +973,8 @@ export const zhCN = {
   'set.developer': '开发者',
   'set.debugTerminal': '显示调试终端',
   'set.debugTerminalHint': '在顶部工具栏显示 >_ 按钮，打开内置终端与 CLI 调试日志抽屉',
+  'set.gitTools': '显示 Git 管理',
+  'set.gitToolsHint': '在 Git 项目中显示分支切换、暂存与提交等操作。关闭时文件修改面板仅可查看。',
   'nav.hideSidebar': '隐藏侧边栏',
   'nav.showSidebar': '显示侧边栏',
   'menu.toggleSidebar': '切换侧边栏',

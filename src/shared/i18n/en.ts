@@ -949,6 +949,8 @@ export const en: Dict = {
   'set.developer': 'Developer',
   'set.debugTerminal': 'Show debug terminal',
   'set.debugTerminalHint': 'Adds a >_ button to the top toolbar that opens the built-in terminal and CLI debug log drawer',
+  'set.gitTools': 'Show Git management',
+  'set.gitToolsHint': 'Show branch switching, staging, and commits in Git projects. When off, the File Changes panel is read-only.',
   'nav.hideSidebar': 'Hide sidebar',
   'nav.showSidebar': 'Show sidebar',
   'menu.toggleSidebar': 'Toggle Sidebar',

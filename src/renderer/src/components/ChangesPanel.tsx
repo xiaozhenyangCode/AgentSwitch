@@ -128,32 +128,31 @@ export function ChangesPanel({
   dir,
   onRefresh,
   onClose,
-  git,
-  gitDisabled,
-  gitBusy,
-  runGit
+  gitTools
 }: {
   changes: FileChanges | null
   loading: boolean
   dir: string | null
   onRefresh: () => void
   onClose: () => void
-  git: Extract<GitStatus, { repo: true }> | null
-  gitDisabled: boolean
-  gitBusy: boolean
-  runGit: RunGit
+  gitTools: {
+    status: Extract<GitStatus, { repo: true }>
+    disabled: boolean
+    busy: boolean
+    run: RunGit
+  } | null
 }) {
   const { confirm } = useApp()
-  const gitTitle = gitBusy ? t('git.agentBusy') : undefined
-  const repo = changes?.repo && dir ? git : null
+  const tools = changes?.repo && dir ? gitTools : null
+  const gitTitle = tools?.busy ? t('git.agentBusy') : undefined
   const discard = async (file: FileChange) => {
-    if (await confirm({
+    if (tools && await confirm({
       title: t('git.discard'),
       message: t(file.status === 'U' ? 'git.deleteConfirm' : 'git.restoreConfirm', { path: file.path }),
       confirmLabel: t('git.discard'),
       destructive: true
     })) {
-      await runGit({ kind: 'discard', path: file.path, untracked: file.status === 'U' })
+      await tools.run({ kind: 'discard', path: file.path, untracked: file.status === 'U' })
     }
   }
   const [width, setWidth] = useState(() => Math.min(MAX_W, Math.max(MIN_W, Number(localStorage.getItem(WIDTH_KEY)) || 400)))
@@ -211,7 +210,7 @@ export function ChangesPanel({
         </button>
       </div>
 
-      {repo && <CommitSection key={dir + ':commit'} git={repo} disabled={gitDisabled} busy={gitBusy} run={runGit} />}
+      {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {!dir ? (
           <Empty text={t('chg.noProject')} />
@@ -219,13 +218,13 @@ export function ChangesPanel({
           <div className="flex justify-center py-10 text-ink-3">
             <Spinner size={16} />
           </div>
-        ) : repo?.dirty ? (
+        ) : tools?.status.dirty ? (
           <>
-            {!repo.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
-            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={gitDisabled} busy={gitTitle}
-              count={repo.staged} run={runGit} onDiscard={(file) => void discard(file)} />
-            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={gitDisabled} busy={gitTitle}
-              count={repo.unstaged} run={runGit} onDiscard={(file) => void discard(file)} />
+            {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
+            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
+              count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
+            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
+              count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
           </>
         ) : files.length === 0 ? (
           <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
@@ -234,7 +233,7 @@ export function ChangesPanel({
         )}
         {!!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
       </div>
-      {repo && dir && <CommitHistory key={dir + ':history'} dir={dir} git={repo} />}
+      {tools && dir && <CommitHistory key={dir + ':history'} dir={dir} git={tools.status} />}
     </aside>
   )
 }

@@ -17,11 +17,13 @@ export interface Settings {
   quotaWarn: 70 | 80 | 90
   /** Developer: the >_ button (built-in terminal + CLI debug log drawer) in the workbench toolbar. */
   showDebugTerminal: boolean
+  /** Developer: branch chip + stage/commit tools for git projects; off = read-only changes panel. */
+  showGitTools: boolean
 }
 
 const KEY = 'agentswitch.settings.v1'
 const PROBE_KEY = 'agentswitch.usage.probe' // older home of probeClaude
-const DEFAULTS: Settings = { sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80, showDebugTerminal: false }
+const DEFAULTS: Settings = { sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80, showDebugTerminal: false, showGitTools: false }
 
 function load(): Settings {
   let saved: Partial<Settings> = {}
@@ -35,6 +37,7 @@ function load(): Settings {
   if (s.sendKey !== 'enter' && s.sendKey !== 'mod-enter') s.sendKey = 'enter'
   if (![70, 80, 90].includes(s.quotaWarn)) s.quotaWarn = 80
   s.showDebugTerminal = s.showDebugTerminal === true
+  s.showGitTools = s.showGitTools === true
   return s
 }
 

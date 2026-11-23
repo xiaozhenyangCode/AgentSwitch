@@ -949,6 +949,8 @@ export const ja: Dict = {
   'set.developer': '開発者',
   'set.debugTerminal': 'デバッグターミナルを表示',
   'set.debugTerminalHint': '上部ツールバーに >_ ボタンを表示し、内蔵ターミナルと CLI デバッグログのドロワーを開けるようにします',
+  'set.gitTools': 'Git 管理を表示',
+  'set.gitToolsHint': 'Git プロジェクトでブランチの切り替え、ステージング、コミットなどの操作を表示します。オフの場合、ファイル変更パネルは閲覧専用になります。',
   'nav.hideSidebar': 'サイドバーを非表示',
   'nav.showSidebar': 'サイドバーを表示',
   'menu.toggleSidebar': 'サイドバーを切り替え',

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GitMutation, GitMutationResult, GitStatus } from '@shared/types'
 import { useApp } from './AppContext'
 import { t } from './i18n'
+import { getSettings } from './settings'
 
 export type RunGit = (op: GitMutation) => Promise<GitMutationResult>
 
@@ -46,7 +47,7 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
 
   const refresh = useCallback(() => {
     const id = ++request.current
-    if (!dir) return setSnapshot(null)
+    if (!dir || !getSettings().showGitTools) return setSnapshot(null)
     void window.agentswitch.git.status(dir).then((result) => {
       if (id !== request.current) return
       if (result.ok) setSnapshot({ dir, status: result })
@@ -58,12 +59,13 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
 
   useEffect(() => {
     refresh()
+    if (!dir) return
     window.addEventListener('focus', refresh)
     return () => {
       request.current++
       window.removeEventListener('focus', refresh)
     }
-  }, [refresh])
+  }, [dir, refresh])
 
   const wasBusy = useRef(busy)
   useEffect(() => {
@@ -80,6 +82,7 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
 
   const run: RunGit = async (op) => {
     const context = current.current
+    if (!getSettings().showGitTools) return { ok: false, error: t('git.failed') }
     if (!dir || dir !== context.dir || threadId !== context.threadId || context.busy || operation.current) {
       if (context.busy) toast({ kind: 'error', title: t('git.agentBusy') })
       return { ok: false, error: context.busy ? t('git.agentBusy') : t('git.failed') }
@@ -88,6 +91,7 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
     setPending({ dir, kind: op.kind })
     try {
       const result = await window.agentswitch.git.mutate(dir, op, threadId)
+      if (!getSettings().showGitTools) return result
       if (result.ok) toast({ kind: 'success', title: resultTitle(op, result) })
       else toast({
         kind: 'error',
@@ -97,7 +101,7 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
       return result
     } catch (error) {
       const detail = String(error)
-      toast({ kind: 'error', title: t('git.failed'), desc: detail })
+      if (getSettings().showGitTools) toast({ kind: 'error', title: t('git.failed'), desc: detail })
       return { ok: false, error: detail }
     } finally {
       operation.current = false

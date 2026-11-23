@@ -181,7 +181,7 @@ function contextWindow(kind: ProfileState['kind'], model: string | null): number
 
 export function WorkbenchPage() {
   const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
-  const { showDebugTerminal } = useSettings()
+  const { showDebugTerminal, showGitTools } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
   const sorted = useSortedAccounts()
@@ -402,8 +402,8 @@ export function WorkbenchPage() {
   }
   const toggleChanges = () => setChangesVisible(!changesOpen)
   const gitBusy = isThreadBusy(thread)
-  const fc = useFileChanges(thread, ctx.projectDir, gitBusy, changesOpen)
-  const git = useProjectGit(ctx.projectDir, thread?.id ?? null, gitBusy, fc.refresh)
+  const fc = useFileChanges(thread, ctx.projectDir, gitBusy, showGitTools && changesOpen)
+  const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, gitBusy, fc.refresh)
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
 
   return (
@@ -552,7 +552,7 @@ export function WorkbenchPage() {
               onChange={(dir) => !projectLocked && update({ projectDir: dir })}
               onPick={() => void pickProject()}
               onNewHere={startThread}
-              gitBranch={git.status && (
+              gitBranch={showGitTools && git.status && (
                 <GitBranchMenu key={ctx.projectDir} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
                   run={git.run} onViewChanges={() => setChangesVisible(true)} />
               )}
@@ -665,8 +665,10 @@ export function WorkbenchPage() {
         )}
       </div>
       {changesOpen && (
-        <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={git.refreshAll}
-          onClose={toggleChanges} git={git.status} gitDisabled={git.disabled || fc.loading} gitBusy={gitBusy} runGit={git.run} />
+        <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={showGitTools ? git.refreshAll : fc.refresh}
+          onClose={toggleChanges} gitTools={showGitTools && git.status
+            ? { status: git.status, disabled: git.disabled || fc.loading, busy: gitBusy, run: git.run }
+            : null} />
       )}
     </div>
   )

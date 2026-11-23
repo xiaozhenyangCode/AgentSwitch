@@ -971,6 +971,8 @@ export const zhTW: Dict = {
   'set.developer': '開發者',
   'set.debugTerminal': '顯示除錯終端機',
   'set.debugTerminalHint': '在頂部工具列顯示 >_ 按鈕，開啟內建終端機與 CLI 除錯日誌抽屜',
+  'set.gitTools': '顯示 Git 管理',
+  'set.gitToolsHint': '在 Git 專案中顯示切換分支、暫存和提交等操作。關閉時只能在檔案修改面板中查看變更。',
   'nav.hideSidebar': '隱藏側邊欄',
   'nav.showSidebar': '顯示側邊欄',
   'menu.toggleSidebar': '切換側邊欄',
