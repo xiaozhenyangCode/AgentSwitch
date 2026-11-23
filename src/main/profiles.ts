@@ -1,10 +1,11 @@
 import { app } from 'electron'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import {
   KINDS,
+  type ApiKeyConfig,
   type EnvPreview,
   type KindConfig,
   type ProfileConfig,
@@ -17,6 +18,8 @@ import {
 import { findOnPath, getBaseEnv, realHome, strippedVarNames } from './shellEnv'
 import { loadStore, saveStore, type StoreData } from './store'
 import { t } from './i18n'
+import { apiKeyEnv, maskEnv, resolveApiKeyConfig, stripCredentials, validateApiKeyConfig } from './apiKey'
+import { secrets } from './secrets'
 
 const SHELL = '/bin/zsh'
 
@@ -242,12 +245,35 @@ function suggestName(kind: ProfileKind): string {
   }
 }
 
-export function addProfile(kind: ProfileKind, name?: string): ProfileConfig {
+/** Next free name from an i18n pattern with `{n}` (e.g. "DeepSeek N"). */
+function suggestNameFrom(key: 'acct.deepseekName' | 'acct.customName'): string {
+  const used = new Set(store.profiles.map((p) => p.name))
+  for (let n = 1; ; n++) {
+    const name = t(key, { n })
+    if (!used.has(name)) return name
+  }
+}
+
+/** True for accounts that connect with an API key instead of the CLI's own sign-in. */
+export function isApiKeyAccount(cfg: ProfileConfig): boolean {
+  return !!cfg.apiKey
+}
+
+export function addProfile(kind: ProfileKind, name?: string, apiKey?: ApiKeyConfig): ProfileConfig {
   if (!KINDS.includes(kind)) throw new Error(`bad kind ${kind}`)
+  let conn: ApiKeyConfig | undefined
+  if (apiKey) {
+    const c: ApiKeyConfig = { provider: apiKey.provider, baseUrl: apiKey.baseUrl, models: apiKey.models ? [...apiKey.models] : undefined }
+    const err = validateApiKeyConfig(kind, c)
+    if (err) throw new Error(t(err as Parameters<typeof t>[0]))
+    conn = resolveApiKeyConfig(kind, c)
+  }
   const id = newId(kind)
+  const fallbackName =
+    conn?.provider === 'deepseek' ? suggestNameFrom('acct.deepseekName') : conn?.provider === 'custom' ? suggestNameFrom('acct.customName') : suggestName(kind)
   const p: ProfileConfig = {
     id,
-    name: name?.trim() || suggestName(kind),
+    name: name?.trim() || fallbackName,
     kind,
     configDir: managedDir(id, kind),
     imported: false,
@@ -255,6 +281,7 @@ export function addProfile(kind: ProfileKind, name?: string): ProfileConfig {
     extraEnv: {},
     defaultModel: '',
     autoApprove: 'cli',
+    ...(conn ? { apiKey: conn } : {}),
     createdAt: Date.now()
   }
   store.profiles.push(p)
@@ -269,7 +296,17 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   if (rest.name !== undefined) rest.name = rest.name.trim() || store.profiles[i].name
   if (rest.defaultModel !== undefined) rest.defaultModel = rest.defaultModel.trim()
   if (rest.autoApprove !== undefined && rest.autoApprove !== 'full' && rest.autoApprove !== 'edits') rest.autoApprove = 'cli'
-  store.profiles[i] = { ...store.profiles[i], ...rest }
+  // The connection (subscription vs key, and which provider) is fixed at creation; only a
+  // custom endpoint's model list may change.
+  const cur = store.profiles[i]
+  delete rest.apiKey
+  if (patch.apiKey?.models && cur.apiKey?.provider === 'custom') {
+    const next: ApiKeyConfig = { ...cur.apiKey, models: [...patch.apiKey.models] }
+    const err = validateApiKeyConfig(cur.kind, next)
+    if (err) throw new Error(t(err as Parameters<typeof t>[0]))
+    rest.apiKey = next
+  }
+  store.profiles[i] = { ...cur, ...rest }
   persist()
   return getConfig(id)
 }
@@ -284,6 +321,11 @@ export function resetProfile(id: ProfileId): ProfileConfig {
 export function removeProfile(id: ProfileId): void {
   store.profiles = store.profiles.filter((p) => p.id !== id)
   persist()
+  try {
+    secrets().remove(id)
+  } catch (e) {
+    console.warn('[profiles] removing API key failed', e)
+  }
 }
 
 // ---- detection -----------------------------------------------------------------
@@ -377,6 +419,7 @@ function agyTokenFiles(home: string): string[] {
 
 /** Best-effort "has this account completed OAuth" check, by kind. */
 function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
+  if (isApiKeyAccount(cfg)) return secrets().has(cfg.id)
   switch (cfg.kind) {
     case 'claude': {
       // Default dir keeps its global config at ~/.claude.json; custom CLAUDE_CONFIG_DIR at <dir>/.claude.json.
@@ -471,7 +514,22 @@ export function prepareProfileDir(cfg: ProfileConfig): string {
       }
     }
   }
+  if (cfg.kind === 'gemini' && isApiKeyAccount(cfg)) ensureAgyGeminiProvider(dir)
   return dir
+}
+
+/** agy only reads GEMINI_API_KEY when its settings select the Gemini API provider. */
+function ensureAgyGeminiProvider(home: string): void {
+  const file = join(home, '.gemini', 'antigravity-cli', 'settings.json')
+  const cur = readJson(file)
+  const obj = cur && typeof cur === 'object' && !Array.isArray(cur) ? cur : {}
+  if (obj.modelProvider === 'gemini') return
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ ...obj, modelProvider: 'gemini' }, null, 2))
+  } catch (e) {
+    console.warn('[profiles] writing agy settings failed', e)
+  }
 }
 
 /** Env vars injected on top of the base login env for isolated modes. */
@@ -489,7 +547,14 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
       break
   }
   env.AGENTSWITCH_PROFILE = cfg.id
-  return { ...env, ...cfg.extraEnv }
+  return env
+}
+
+/** The account's key env, or {} (subscription account, or no key saved yet). */
+function accountKeyEnv(cfg: ProfileConfig): Record<string, string> {
+  if (!cfg.apiKey) return {}
+  const key = secrets().get(cfg.id)
+  return key ? apiKeyEnv(cfg.kind, cfg.apiKey, key, cfg.defaultModel) : {}
 }
 
 export interface SpawnSpec {
@@ -527,8 +592,11 @@ export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>,
   const cfg = getConfig(id)
   const base = getBaseEnv()
   const dir = prepare ? prepareProfileDir(cfg) : expandHome(cfg.configDir)
-  const injected = isolationEnv(cfg, dir)
-  const env = { ...base, ...injected }
+  // Inherited credential vars are always dropped, so a global `export ANTHROPIC_BASE_URL=…`
+  // can't redirect a subscription account, and an API-key account gets only its own key.
+  const added = { ...isolationEnv(cfg, dir), ...accountKeyEnv(cfg), ...cfg.extraEnv }
+  const env = { ...stripCredentials(cfg.kind, base), ...added }
+  const injected = maskEnv(added)
   const cwd = realHome
   if (mode === 'shell') return { shell: SHELL, args: ['-i'], env, cwd, injected }
   const cmd = command ?? (mode === 'login' ? cfg.loginCommand : mode === 'run' ? cfg.runCommand : 'echo "no command"')
