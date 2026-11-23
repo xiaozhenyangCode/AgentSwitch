@@ -24,8 +24,9 @@
 - **多模型同一个对话**：先和一个模型聊，再 `@` 另一个来审查、接着做或者接手。模型之间可以互相派活，失败的步骤可以打回重做。
 - **用你自己的订阅**：直接驱动你本机已经安装并登录好的官方 CLI。AgentSwitch 不接触、不保存你的账号密码，也不转售任何 API。
 - **本机历史集中管理**：各个 CLI 在本机留下的会话都能在这里浏览、搜索，并接着在对话里继续。
-- **用量一目了然**：显示当前模型的上下文占用；CLI 提供额度数据时，还会显示 5 小时和 7 天额度，快用完时会提醒。
+- **用量和花费一目了然**：显示当前模型的上下文占用；CLI 提供额度数据时，还会显示 5 小时和 7 天额度，快用完时会提醒。另外会按各模型的官方价格换算花费，可按今天、7 天、30 天和全部查看。
 - **账号隔离**：同一个 CLI 可以加多个账号，比如工作号和私人号，各自独立登录、互不干扰。
+- **API Key 账号**：不登录也能用，给账号填 API Key 即可，支持官方 Key、DeepSeek 和自定义的 Anthropic 兼容接口。Key 会用 macOS 钥匙串里的密钥加密保存。
 - **扩展管理**：集中管理各个 CLI 加载的 MCP 服务器、技能（skills）和规则。
 - **Git 管理（按需开启）**：在「设置 → 开发者 → 显示 Git 管理」中打开后，输入框下方会显示当前分支和与远程的领先/落后数，可以切换或新建分支、获取、拉取（仅快进）和推送，并在「文件修改」面板里暂存、丢弃和提交。默认关闭，面板只用来查看改动。
 - **内置终端**：用来安装、登录和调试各个 CLI。
@@ -37,8 +38,9 @@
 | Claude | Claude Code（`claude`） | `curl -fsSL https://claude.ai/install.sh \| bash` |
 | Codex | Codex CLI（`codex`） | `npm install -g @openai/codex` |
 | Gemini | Antigravity CLI（`agy`） | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` |
+| DeepSeek | Reasonix（`reasonix`） | `npm i -g reasonix` |
 
-也可以直接在应用里一键安装和登录。之后会支持更多助手和本地模型。
+Reasonix 不需要登录，用 DeepSeek API Key 即可：可以导入你已有的 `~/.reasonix` 配置，也可以在应用里直接填 Key。也可以直接在应用里一键安装和登录。之后会支持更多助手和本地模型。
 
 ## 安装
 
@@ -63,11 +65,13 @@ pnpm dist      # 在 dist/ 下生成 .dmg
 ## 隐私
 
 - **只存在本机**：对话、设置和用量统计都保存在你的 Mac 上，位置是 `~/Library/Application Support/agentswitch`。
-- **没有遥测**：AgentSwitch 自己只发两类网络请求：
+- **没有遥测**：AgentSwitch 自己只发三类网络请求：
   - 你主动点击执行的 CLI 安装脚本；
-  - 用你自己的 Claude 登录信息查询额度时，请求 Anthropic 的用量接口。
+  - 用你自己的 Claude 登录信息查询额度时，请求 Anthropic 的用量接口；
+  - 每天下载一次 [LiteLLM 的公开价格表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)（GitHub 上的静态 JSON，不发送任何关于你的信息），用来估算花费。下载失败时使用内置的副本。
 
-  其余请求都由官方 CLI 自己发出。
+  其余请求，包括模型调用和 DeepSeek 余额查询，都由各个 CLI 自己发出。
+- **API Key 只存在本机**：API Key 账号的 Key 用 Electron safeStorage 加密（密钥保存在 macOS 钥匙串里），不会显示在界面上，只在运行 CLI 时传给它。给 Reasonix 填的 DeepSeek Key 会写入该账号目录下的 `.env` 文件，权限为仅本人可读（600），因为 Reasonix CLI 从这里读取。
 - **不改 CLI 的文件**：`~/.claude`、`~/.codex`、`~/.gemini` 里的会话只读不写。只有你明确选择删除某个会话时才会动它，而且是移到废纸篓。
 
 ## 开发
