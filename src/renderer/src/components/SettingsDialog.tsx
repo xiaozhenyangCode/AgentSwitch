@@ -32,7 +32,7 @@ import {
 } from './icons'
 
 const WEBSITE = 'https://agentswitch.app'
-const GITHUB_REPO = 'https://github.com/xiaozhenyangCode/AgentSwitch'
+const GITHUB_REPO = 'https://github.com/yitian-builds/AgentSwitch'
 const LICENSE_URL = `${GITHUB_REPO}/blob/main/LICENSE`
 
 const SECTIONS: { id: SettingsSection; Icon: (p: { size?: number }) => ReactElement }[] = [

@@ -5,10 +5,10 @@
   "homepage": "https://agentswitch.app",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xiaozhenyangCode/AgentSwitch.git"
+    "url": "git+https://github.com/yitian-builds/AgentSwitch.git"
   },
   "bugs": {
-    "url": "https://github.com/xiaozhenyangCode/AgentSwitch/issues"
+    "url": "https://github.com/yitian-builds/AgentSwitch/issues"
   },
   "main": "./out/main/index.js",
   "private": true,
