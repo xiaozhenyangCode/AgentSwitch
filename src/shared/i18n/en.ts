@@ -1,6 +1,29 @@
 import type { Dict } from './index'
 
 export const en: Dict = {
+  // Reasonix
+  'reasonix.import': 'Use existing ~/.reasonix',
+  'reasonix.managed': 'Create account',
+  'reasonix.importUnavailable': 'The ~/.reasonix directory was not found.',
+  'reasonix.importDuplicate': 'This Reasonix directory is already imported.',
+  'reasonix.badConnection': 'Choose a valid Reasonix connection.',
+  'reasonix.plaintext': 'Reasonix stores the key in plaintext in its own account directory’s .env file (readable only by you, mode 600). AgentSwitch keeps no copy.',
+  'reasonix.importedKeyReadonly': 'Reasonix manages the key in ~/.reasonix/.env. AgentSwitch does not read it.',
+  'reasonix.noKey': 'This Reasonix account has no key. For an imported account, run reasonix setup in a terminal. For a managed account, enter a key in its settings.',
+  'reasonix.invalidKey': 'The key cannot contain a line break or null character.',
+  'reasonix.writeFailed': 'Could not save the Reasonix account files.',
+  'reasonix.unmaintained': 'Reasonix is no longer maintained. This integration targets its final release, 2.61.0.',
+  'model.followReasonix': 'Use the default model configured in Reasonix',
+  'effort.disabled': 'No thinking',
+  'proc.usageCacheRate': 'Cache hit {pct}%',
+  'reasonix.extensionsUnavailable': 'Reasonix rules cannot be edited in AgentSwitch.',
+  'reasonix.removeManaged': 'This removes the account and deletes its .env key file. Other account files stay on disk.',
+  'ob.desc.reasonix': 'Use DeepSeek through Reasonix',
+  'reasonix.setupHint': 'Run reasonix setup in the terminal to configure the key.',
+  'reasonix.approvalCli': 'Use Reasonix’s own permission rules in non-interactive CLI mode.',
+  'reasonix.approvalEdits': 'Approve file edits automatically. Other operations follow Reasonix’s permission rules.',
+  'reasonix.approvalFull': 'Bypass Reasonix approval prompts. The Reasonix sandbox settings still apply. Enable only for tasks you trust.',
+
   'common.cancel': 'Cancel',
   'common.close': 'Close',
   'common.save': 'Save',

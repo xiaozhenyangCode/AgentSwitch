@@ -26,13 +26,13 @@ export const effortRank = (e: string): number => {
   return i < 0 ? 99 : i
 }
 
-export function splitSpec(spec: string | null | undefined): { model: string | null; effort: string | null } {
+export function splitSpec(spec: string | null | undefined, kind?: 'reasonix'): { model: string | null; effort: string | null } {
   const s = spec?.trim()
   if (!s) return { model: null, effort: null }
   const i = s.lastIndexOf(':')
   if (i <= 0) return { model: s, effort: null }
   const e = s.slice(i + 1)
-  return EFFORT_LABEL[e] ? { model: s.slice(0, i), effort: e } : { model: s, effort: null }
+  return EFFORT_LABEL[e] || (kind === 'reasonix' && e === 'disabled') ? { model: s.slice(0, i), effort: e } : { model: s, effort: null }
 }
 
 export const joinSpec = (model: string | null, effort: string | null): string | null => (model ? (effort ? `${model}:${effort}` : model) : null)

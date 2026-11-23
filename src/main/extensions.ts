@@ -1,3 +1,4 @@
+import { t } from './i18n'
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
@@ -334,6 +335,7 @@ export const canRevealExtFile = (path: string): boolean => allowed.has(resolve(p
 /** Resolves and allow-lists the canonical global or project rule file for an account. */
 export function prepareRuleTarget(id: ProfileId, cwd: string | null, scope: 'global' | 'project'): RuleTarget {
   const cfg = getConfig(id)
+  if (cfg.kind === 'reasonix') throw new Error(t('reasonix.extensionsUnavailable'))
   const dir = expandHome(cfg.configDir)
   let target: string
   if (scope === 'project') {
@@ -963,7 +965,7 @@ function scan(id: ProfileId, cwd: string | null, refresh: boolean): { scan: Scan
   const ctx: Ctx = { errors: 0 }
   let result: Scan
   try {
-    result = cfg.kind === 'claude' ? scanClaude(dir, cwd, ctx) : cfg.kind === 'codex' ? scanCodex(dir, cwd, ctx) : scanAgy(dir, cwd, ctx)
+    result = cfg.kind === 'claude' ? scanClaude(dir, cwd, ctx) : cfg.kind === 'codex' ? scanCodex(dir, cwd, ctx) : cfg.kind === 'gemini' ? scanAgy(dir, cwd, ctx) : emptyScan(dir)
   } catch (e) {
     console.warn('[extensions] scan failed', e)
     result = emptyScan(cfg.kind === 'gemini' ? join(dir, '.gemini') : dir)

@@ -4,6 +4,7 @@ import type { PermissionOption, Usage } from '@shared/types'
 import { replyPermission, type Activity, type Thinking } from '../state/chat'
 import { isPendingPermission, type PendingPermission } from '../state/permissionState'
 import { IconAlert, IconCheck, IconChevronDown, IconCopy, IconTerminal, IconX, Spinner } from './icons'
+import { cacheHitPercentage } from '../state/usage'
 import { fmtDuration, t } from '../state/i18n'
 
 /**
@@ -429,7 +430,7 @@ export function ActivityBar({ items, others, permissions, live, openSeq = 0 }: {
 
 // ---- usage footer ---------------------------------------------------------------------------
 
-export function UsageLine({ usage, ms }: { usage: Usage | null | undefined; ms: number | null }) {
+export function UsageLine({ usage, ms, reasonix }: { usage: Usage | null | undefined; ms: number | null; reasonix?: boolean }) {
   const u = usage ?? {}
   const parts: string[] = []
   if (ms) parts.push(fmtSec(ms))
@@ -438,7 +439,12 @@ export function UsageLine({ usage, ms }: { usage: Usage | null | undefined; ms: 
     parts.push(t('proc.usageOut', { n: fmtNum(u.output ?? 0) }) + (u.reasoning ? t('proc.usageReasoning', { n: fmtNum(u.reasoning) }) : ''))
   }
   if (u.cacheRead || u.cacheWrite) parts.push(t('proc.usageCache', { n: fmtNum(u.cacheRead ?? 0) }) + (u.cacheWrite ? t('proc.usageCacheWrite', { n: fmtNum(u.cacheWrite) }) : ''))
-  if (typeof u.costUsd === 'number') parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(3)}`)
+  if (reasonix) {
+    const pct = cacheHitPercentage(u)
+    if (pct !== null) parts.push(t('proc.usageCacheRate', { pct }))
+  }
+  if (reasonix && typeof u.costCny === 'number') parts.push(`CN¥${u.costCny.toFixed(u.costCny < 0.01 ? 6 : 3)}`)
+  if (typeof u.costUsd === 'number') parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(reasonix ? 6 : 4) : u.costUsd.toFixed(3)}`)
   if (!parts.length) return null
   return (
     <span className="text-[11px] text-ink-3/70 tabular-nums" title={t('proc.usageTip')}>

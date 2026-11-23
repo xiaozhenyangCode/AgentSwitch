@@ -4,10 +4,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { dirname, join } from 'node:path'
 import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/types'
 import { EFFORT_SUFFIX_RE, effortRank } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, getKindConfig, kindBinaryPath } from './profiles'
+import { buildSpawnSpec, expandHome, getConfig, getKindConfig, KIND_DEFAULTS, kindBinaryPath } from './profiles'
 import { realHome } from './shellEnv'
 import { t } from './i18n'
 import { displayModel } from './apiKey'
+import { readReasonixConfig, reasonixDefaultModel } from './reasonix'
 
 /**
  * Sub-model lists, per account (each account sees its own entitlements).
@@ -191,6 +192,26 @@ export function agyModelId(id: ProfileId, model: string, effort: string | null):
   return `${model}-${e}`
 }
 
+function reasonixCatalog(cfg: ProfileConfig): Omit<ModelList, 'profileId'> {
+  const config = readReasonixConfig(expandHome(cfg.configDir))
+  const models = new Map<string, ModelOption>()
+  for (const provider of config?.providers ?? []) {
+    for (const id of provider.models) {
+      if (models.has(id)) continue
+      const effort = provider.efforts[id]
+      const option: ModelOption = { id, label: id, group: 'main' }
+      if (effort?.supported.length) {
+        option.efforts = effort.supported
+        option.defaultEffort = effort.default
+      }
+      models.set(id, option)
+    }
+  }
+  const fetchedAt = Date.now()
+  if (config && models.size) return { models: [...models.values()], defaultModel: reasonixDefaultModel(config), source: 'catalog', fetchedAt }
+  return { models: KIND_DEFAULTS.reasonix.models.map((id) => ({ id, label: id, group: 'main' })), source: 'static', fetchedAt }
+}
+
 // ---- public ----------------------------------------------------------------------------
 
 async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<ModelList, 'profileId'>> {
@@ -213,6 +234,8 @@ async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<Mod
       if (!models.length) throw new Error(t('main.codexNoModels'))
       return { models, source: 'command', fetchedAt: Date.now() }
     }
+    case 'reasonix':
+      return reasonixCatalog(cfg)
     case 'gemini': {
       const models = parseAgy(await run(cfg, ['models']))
       if (!models.length) throw new Error(t('main.agyNoModels'))
@@ -224,15 +247,16 @@ async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<Mod
 const inflight = new Map<ProfileId, Promise<ModelList>>()
 
 export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
+  const cfg = getConfig(id)
+  if (cfg.kind === 'reasonix') return fetchLive(cfg, refresh).then((list) => ({ profileId: id, ...list }))
   const c = loadCache()
   const cached = c[id]
   // claude's catalog is a cheap local read: always re-read so new models appear promptly
-  const kind = getConfig(id).kind
+  const kind = cfg.kind
   if (!refresh && cached && kind !== 'claude' && Date.now() - cached.fetchedAt < TTL && cached.source !== 'static') return Promise.resolve(cached)
   const running = inflight.get(id)
   if (running) return running
   const p = (async (): Promise<ModelList> => {
-    const cfg = getConfig(id)
     try {
       const live = await fetchLive(cfg, refresh)
       const list: ModelList = { profileId: id, ...live }

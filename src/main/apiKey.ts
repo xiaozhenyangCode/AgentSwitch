@@ -41,17 +41,18 @@ export const CREDENTIAL_VARS: Record<ProfileKind, string[]> = {
     'ANTHROPIC_CUSTOM_HEADERS'
   ],
   codex: ['CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
-  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS']
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS'],
+  reasonix: ['DEEPSEEK_API_KEY']
 }
 
 /** Env vars whose values are secrets and must be masked wherever env is displayed. */
 export const SECRET_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY']
 
 /** API-key accounts connect via env only; the CLI's OAuth login would write a second credential. */
-export const ptyModeAllowed = (cfg: { apiKey?: ApiKeyConfig }, mode: string): boolean => !(cfg.apiKey && mode === 'login')
+export const ptyModeAllowed = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }, mode: string): boolean => !((cfg.apiKey || cfg.kind === 'reasonix') && mode === 'login')
 
 /** Only subscription sign-ins have 5h/7d quota; probing an API-key account would spend the user's credits. */
-export const hasSubscriptionQuota = (cfg: { apiKey?: ApiKeyConfig }): boolean => !cfg.apiKey
+export const hasSubscriptionQuota = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }): boolean => !cfg.apiKey && cfg.kind !== 'reasonix'
 
 const isThirdParty = (cfg: ApiKeyConfig): boolean => cfg.provider === 'deepseek' || cfg.provider === 'custom'
 
@@ -67,7 +68,7 @@ export function resolveApiKeyConfig(_kind: ProfileKind, cfg: ApiKeyConfig): ApiK
  */
 export function validateApiKeyConfig(kind: ProfileKind, cfg: ApiKeyConfig): string | null {
   if (!['official', 'deepseek', 'custom'].includes(cfg.provider)) return 'apikey.badProvider'
-  if (isThirdParty(cfg) && kind !== 'claude') return 'apikey.badProvider'
+  if (kind === 'reasonix' || (isThirdParty(cfg) && kind !== 'claude')) return 'apikey.badProvider'
   if (cfg.provider !== 'custom') return null
   const url = (cfg.baseUrl ?? '').trim().replace(/\/+$/, '')
   if (!/^https?:\/\/[^\s/]+/i.test(url)) return 'apikey.badUrl'
@@ -79,6 +80,7 @@ export function validateApiKeyConfig(kind: ProfileKind, cfg: ApiKeyConfig): stri
 
 /** Env that connects `kind` with `key`. `defaultModel` = the account's chosen default ('' = first model). */
 export function apiKeyEnv(kind: ProfileKind, cfg: ApiKeyConfig, key: string, defaultModel: string): Record<string, string> {
+  if (kind === 'reasonix') return {}
   if (kind === 'codex') return { CODEX_API_KEY: key }
   if (kind === 'gemini') return { GEMINI_API_KEY: key }
   if (!isThirdParty(cfg)) return { ANTHROPIC_API_KEY: key }

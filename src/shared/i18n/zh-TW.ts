@@ -1,6 +1,29 @@
 import type { Dict } from './index'
 
 export const zhTW: Dict = {
+  // Reasonix
+  'reasonix.import': '使用現有 ~/.reasonix',
+  'reasonix.managed': '新增帳號',
+  'reasonix.importUnavailable': '找不到 ~/.reasonix 目錄。',
+  'reasonix.importDuplicate': '這個 Reasonix 目錄已匯入。',
+  'reasonix.badConnection': '請選擇有效的 Reasonix 連線方式。',
+  'reasonix.plaintext': 'Reasonix 會將金鑰以明文儲存在自己的帳號目錄 .env 檔案中（僅本人可讀，權限 600）。AgentSwitch 不另存副本。',
+  'reasonix.importedKeyReadonly': '金鑰由 Reasonix 自行管理（~/.reasonix/.env），AgentSwitch 不讀取。',
+  'reasonix.noKey': '這個 Reasonix 帳號還沒有金鑰：匯入帳號請在終端機執行 reasonix setup；受管帳號請在帳號設定中填寫',
+  'reasonix.invalidKey': '金鑰不能包含換行或空字元。',
+  'reasonix.writeFailed': '無法儲存 Reasonix 帳號檔案。',
+  'reasonix.unmaintained': 'Reasonix 上游已停止維護（最後版本 2.61.0），依 2.61.0 相容。',
+  'model.followReasonix': '使用 Reasonix 設定的預設模型',
+  'effort.disabled': '不思考',
+  'proc.usageCacheRate': '快取命中 {pct}%',
+  'reasonix.extensionsUnavailable': '目前無法在 AgentSwitch 中編輯 Reasonix 規則。',
+  'reasonix.removeManaged': '這會移除此帳號並刪除帳號目錄中的 .env 金鑰檔案。其他帳號檔案會保留。',
+  'ob.desc.reasonix': '透過 Reasonix 使用 DeepSeek',
+  'reasonix.setupHint': '在終端機執行 reasonix setup 以設定金鑰。',
+  'reasonix.approvalCli': 'CLI 以非互動模式執行，使用 Reasonix 本身的權限規則。',
+  'reasonix.approvalEdits': '自動允許編輯檔案，其他操作受 Reasonix 權限規則限制。',
+  'reasonix.approvalFull': '略過 Reasonix 的權限審核，命令仍受 Reasonix 沙箱設定限制。請只在信任目前任務時開啟。',
+
   // ---- common
   'common.cancel': '取消',
   'common.close': '關閉',

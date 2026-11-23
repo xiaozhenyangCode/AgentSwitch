@@ -813,6 +813,7 @@ export function listHistory(force = false): HistoryEntry[] {
   }
   safe(() => listClaude(cfgs.filter((c) => c.kind === 'claude'), own, userData))
   for (const c of cfgs) {
+    if (c.kind === 'reasonix') continue // TODO(reasonix-history)
     if (c.kind === 'codex') safe(() => listCodex(c, own, userData))
     if (c.kind === 'gemini') safe(() => listAgy(c, own, userData))
   }
@@ -840,7 +841,7 @@ export async function openHistory(key: string): Promise<HistoryThread> {
     } else if (entry.kind === 'codex') {
       const p = rolloutPaths.get(entry.nativeId)
       if (p) messages = await parseCodex(p)
-    } else if (cfg) messages = parseAgy(cfg, entry.nativeId)
+    } else if (entry.kind === 'gemini' && cfg) messages = parseAgy(cfg, entry.nativeId)
   } catch (e) {
     notice = t('main.parseInterrupted', { error: String(e instanceof Error ? e.message : e) })
   }
@@ -869,7 +870,7 @@ export function historyStat(key: string): HistoryStat | null {
     const entry = (cache?.entries ?? listHistory()).find((e) => e.key === key) ?? listHistory(true).find((e) => e.key === key)
     if (!entry) return null
     const cfg = listConfigs().find((c) => c.id === entry.profileId)
-    const main = entry.kind === 'claude' ? claudePath(entry) : entry.kind === 'codex' ? (rolloutPaths.get(entry.nativeId) ?? null) : cfg ? agyConversationDb(cfg, entry.nativeId) : null
+    const main = entry.kind === 'claude' ? claudePath(entry) : entry.kind === 'codex' ? (rolloutPaths.get(entry.nativeId) ?? null) : entry.kind === 'gemini' && cfg ? agyConversationDb(cfg, entry.nativeId) : null
     if (!main) return null
     files = entry.kind === 'gemini' ? [main, main + '-wal'] : [main]
     sourceFiles.set(key, files)

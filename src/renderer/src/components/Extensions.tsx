@@ -621,12 +621,12 @@ function ContextTab({
         <span className="text-[11px] font-medium text-ink-3">{t('ext.rules')}</span>
         <span className="text-[11px] font-medium text-ink-3 tabular-nums">{rules.length}</span>
         <span className="flex-1" />
-        {!hasGlobal && (
+        {account.kind !== 'reasonix' && !hasGlobal && (
           <button onClick={() => void startCreate('global')} className={rowBtn}>
             {t('ext.newGlobalRule')}
           </button>
         )}
-        {projectDir && !hasProject && (
+        {account.kind !== 'reasonix' && projectDir && !hasProject && (
           <button onClick={() => void startCreate('project')} className={rowBtn}>
             {t('ext.newProjectRule')}
           </button>

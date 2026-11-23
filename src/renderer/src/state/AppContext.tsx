@@ -217,7 +217,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: t('acct.removeTitle', { name: p.name }),
         message: p.imported
           ? t('acct.removeImported', { dir: p.configDir })
-          : t('acct.removeOwn'),
+          : t(p.kind === 'reasonix' ? 'reasonix.removeManaged' : 'acct.removeOwn'),
         confirmLabel: t('acct.removeConfirm'),
         destructive: true
       })

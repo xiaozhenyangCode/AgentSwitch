@@ -147,7 +147,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
             </span>
           </>
         ) : installed ? (
-          <button className={btnText} onClick={() => void install(kind, true)} title={ks?.updateCommand || ks?.installCommand}>
+          (kind !== 'reasonix' || ks?.updateCommand) && <button className={btnText} onClick={() => void install(kind, true)} title={ks?.updateCommand || ks?.installCommand}>
             {t('eng.checkUpdate')}
           </button>
         ) : (
@@ -165,6 +165,12 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
         </button>
       </div>
 
+      {kind === 'reasonix' && (
+        <div className="px-4 pt-3 text-[12px] text-ink-3">
+          {!installed && <code className="mr-2">npm i -g reasonix</code>}
+          {t('reasonix.unmaintained')}
+        </div>
+      )}
       {accounts.length === 0 ? (
         <div className="px-4 py-5 text-[13px] text-ink-3">{t('eng.noAccounts', { name: meta.name })}</div>
       ) : (
@@ -197,6 +203,8 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   const alert = alertOf(loggingIn ? 'login' : a.status)
   const [changingKey, setChangingKey] = useState(false)
   const keyAcct = !!a.apiKey
+  const reasonix = a.kind === 'reasonix'
+  const canChangeKey = keyAcct || (reasonix && !a.imported)
   const host = (u?: string) => {
     try {
       return u ? new URL(u).host : ''
@@ -204,7 +212,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
       return u ?? ''
     }
   }
-  const where = keyAcct
+  const where = reasonix && a.imported && !a.loggedIn ? t('reasonix.setupHint') : keyAcct
     ? a.apiKey!.provider === 'deepseek'
       ? `DeepSeek · ${t('apikey.badge')}`
       : a.apiKey!.provider === 'custom'
@@ -275,13 +283,17 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
 
       {/* actions */}
       <div className="flex items-center justify-end gap-0.5">
-        {keyAcct && !a.loggedIn ? (
+        {canChangeKey && !a.loggedIn ? (
           <button className={btnSolid} onClick={() => setChangingKey(true)}>
             {t('apikey.change')}
           </button>
         ) : a.loggedIn ? (
           <button className={btnIcon} onClick={() => openConfig(a.id)} title={t('eng.accountSettings')}>
             <IconSliders size={15} />
+          </button>
+        ) : reasonix ? (
+          <button className={btnSolid} disabled={!cliReady} onClick={() => void openTerminal()} title={t('reasonix.setupHint')}>
+            {t('eng.openTerminal')}
           </button>
         ) : (
           <button className={btnSolid} disabled={!cliReady || loggingIn} onClick={() => openLogin(a.id)} title={cliReady ? undefined : t('eng.installFirst')}>
@@ -290,9 +302,9 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
         )}
         <RowMenu
           items={[
-            ...(keyAcct
+            ...(canChangeKey
               ? [{ label: t('apikey.change'), run: () => setChangingKey(true) }]
-              : a.loggedIn
+              : a.loggedIn && !reasonix
                 ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }]
                 : []),
             ...(a.loggedIn ? [] : [{ label: t('eng.accountSettings'), run: () => openConfig(a.id) }]),

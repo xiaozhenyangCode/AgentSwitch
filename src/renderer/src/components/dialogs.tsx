@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { API_KEY_PAGES, type ApiKeyConfig, type ProfileKind, type ProfileState } from '@shared/types'
+import { API_KEY_PAGES, REASONIX_MODELS, type ReasonixModel, type ApiKeyConfig, type ProfileKind, type ProfileState } from '@shared/types'
 import { ipcError, useApp } from '../state/AppContext'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal, ProfileAvatar } from './common'
 import { IconX } from './icons'
 import { t } from '../state/i18n'
 
+type StandardKind = Exclude<ProfileKind, 'reasonix'>
 type Conn = 'subscription' | ApiKeyConfig['provider']
 
 function suggestName(kind: ProfileKind, used: string[], conn: Conn = 'subscription'): string {
@@ -16,13 +17,13 @@ function suggestName(kind: ProfileKind, used: string[], conn: Conn = 'subscripti
   }
 }
 
-const CONNS: Record<ProfileKind, Conn[]> = {
+const CONNS: Record<StandardKind, Conn[]> = {
   claude: ['subscription', 'official', 'deepseek', 'custom'],
   codex: ['subscription', 'official'],
   gemini: ['subscription', 'official']
 }
 
-const connLabel = (kind: ProfileKind, c: Conn): string =>
+const connLabel = (kind: StandardKind, c: Conn): string =>
   c === 'subscription'
     ? t(`add.conn.subscription.${kind}`)
     : c === 'official'
@@ -33,8 +34,13 @@ const connLabel = (kind: ProfileKind, c: Conn): string =>
 
 /** Create a new isolated account; optionally go straight into login. */
 export function AddAccountModal() {
+  const { addRequest } = useApp()
+  if (!addRequest) return null
+  return addRequest.kind === 'reasonix' ? <ReasonixAccountModal /> : <StandardAccountModal kind={addRequest.kind} />
+}
+
+function StandardAccountModal({ kind }: { kind: StandardKind }) {
   const { addRequest, closeAddAccount, profiles, kindState, openLogin, toast } = useApp()
-  const kind = addRequest!.kind
   const meta = KIND_META[kind]
   const used = profiles.map((p) => p.name)
   const [name, setName] = useState(() => suggestName(kind, used))
@@ -204,9 +210,138 @@ export function AddAccountModal() {
   )
 }
 
+function ReasonixAccountModal() {
+  const { addRequest, closeAddAccount, profiles, kindState, toast } = useApp()
+  const [name, setName] = useState(() => suggestName('reasonix', profiles.map((p) => p.name)))
+  const [choice, setChoice] = useState<'import' | 'managed' | null>(null)
+  const [canImport, setCanImport] = useState<boolean | null>(null)
+  const [key, setKey] = useState('')
+  const [defaultModel, setDefaultModel] = useState<ReasonixModel>(REASONIX_MODELS[0])
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const installed = !!kindState('reasonix')?.binaryPath
+  const mode = choice ?? (canImport === false ? 'managed' : 'import')
+
+  useEffect(() => {
+    let active = true
+    void window.agentswitch.profiles.reasonixCanImport().then(
+      (available) => { if (active) setCanImport(available) },
+      () => { if (active) setCanImport(false) }
+    )
+    return () => { active = false }
+  }, [])
+
+  const create = async () => {
+    if (mode === 'import' && !canImport) return
+    if (mode === 'managed' && !key.trim()) return setError(t('apikey.empty'))
+    setBusy(true)
+    setError(null)
+    try {
+      const connect = mode === 'import' ? { reasonix: 'import' as const } : { reasonix: 'managed' as const, key, defaultModel }
+      const id = await window.agentswitch.profiles.add('reasonix', name, connect)
+      setKey('')
+      addRequest?.onCreated?.(id)
+      closeAddAccount()
+      toast({ kind: 'success', title: t('add.added', { name: name.trim() || t('add.newAccount') }) })
+    } catch (e) {
+      setError(ipcError(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal onClose={closeAddAccount} width={440}>
+      <form
+        className="p-7"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void create()
+        }}
+      >
+        <div className="flex items-center gap-3.5">
+          <KindAvatar kind="reasonix" size={44} />
+          <h2 className="flex-1 text-[20px] font-semibold text-ink">{t('add.title', { name: 'Reasonix' })}</h2>
+          <button type="button" className={btnGhost} onClick={closeAddAccount} aria-label={t('common.close')}><IconX size={16} /></button>
+        </div>
+        <fieldset className="mt-5 space-y-1">
+          <legend className="mb-1 text-[13px] font-medium text-ink">{t('add.connect')}</legend>
+          <label className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[14px] text-ink has-disabled:text-ink-3">
+            <input
+              type="radio"
+              name="conn"
+              className="accent-accent"
+              checked={mode === 'import'}
+              disabled={!canImport || busy}
+              onChange={() => {
+                setChoice('import')
+                setKey('')
+                setError(null)
+              }}
+            />
+            {t('reasonix.import')}
+          </label>
+          {canImport === false && <p className="px-2 text-[12px] text-ink-3">{t('reasonix.importUnavailable')}</p>}
+          <label className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[14px] text-ink">
+            <input
+              type="radio"
+              name="conn"
+              className="accent-accent"
+              checked={mode === 'managed'}
+              disabled={busy}
+              onChange={() => {
+                setChoice('managed')
+                setError(null)
+              }}
+            />
+            {t('reasonix.managed')}
+          </label>
+        </fieldset>
+        <label className="mt-4 block text-[13px] font-medium text-ink">
+          {t('add.name')}
+          <input className={inputCls + ' mt-1.5'} value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
+        </label>
+        {mode === 'managed' && (
+          <div className="mt-4 space-y-4">
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label htmlFor="reasonix-key" className="text-[13px] font-medium text-ink">DeepSeek {t('apikey.key')}</label>
+                <button type="button" className="text-[13px] text-accent" onClick={() => void window.agentswitch.sys.openExternal(API_KEY_PAGES.reasonix)}>
+                  {t('apikey.getKey')}
+                </button>
+              </div>
+              <input id="reasonix-key" type="password" className={inputCls} value={key} onChange={(e) => setKey(e.target.value)}
+                autoComplete="off" spellCheck={false} disabled={busy} aria-describedby="reasonix-key-note" />
+              <p id="reasonix-key-note" className="mt-1.5 text-[12px] leading-relaxed text-warn">{t('reasonix.plaintext')}</p>
+            </div>
+            <label className="block text-[13px] font-medium text-ink">
+              {t('cfg.defaultModel')}
+              <select className={inputCls + ' mt-1.5'} value={defaultModel} disabled={busy}
+                onChange={(e) => setDefaultModel(e.target.value as ReasonixModel)}>
+                {REASONIX_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+        {error && <p role="alert" className="mt-4 text-[13px] text-danger">{error}</p>}
+        {!installed && (
+          <div className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[13px] text-warn">
+            <p>{t('add.notInstalled', { cli: 'reasonix' })}</p>
+            <code className="mt-1 block">npm i -g reasonix</code>
+            <p className="mt-1 text-[12px]">{t('reasonix.unmaintained')}</p>
+          </div>
+        )}
+        <div className="mt-6 flex justify-end gap-2.5">
+          <button type="button" className={btnSecondary} onClick={closeAddAccount}>{t('common.cancel')}</button>
+          <button type="submit" className={btnPrimary} disabled={busy || (mode === 'import' && !canImport)}>{t('add.add')}</button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 /** Vendor page where the account's kind of key is created. */
 export const keyPageOf = (p: Pick<ProfileState, 'kind' | 'apiKey'>): string | null =>
-  p.apiKey?.provider === 'deepseek' ? API_KEY_PAGES.deepseek : p.apiKey?.provider === 'official' ? API_KEY_PAGES[p.kind] : null
+  p.kind === 'reasonix' ? API_KEY_PAGES.reasonix : p.apiKey?.provider === 'deepseek' ? API_KEY_PAGES.deepseek : p.apiKey?.provider === 'official' ? API_KEY_PAGES[p.kind] : null
 
 /** Replace an API-key account's key. The old key is never shown. */
 export function ChangeKeyModal({ profile, onClose }: { profile: ProfileState; onClose: () => void }) {
@@ -241,7 +376,7 @@ export function ChangeKeyModal({ profile, onClose }: { profile: ProfileState; on
           <ProfileAvatar profile={profile} size={36} />
           <div className="flex-1">
             <div className="text-[17px] font-semibold text-ink">{t('apikey.changeTitle', { name: profile.name })}</div>
-            <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{t('apikey.changeDesc')}</div>
+            <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{t(profile.kind === 'reasonix' ? 'reasonix.plaintext' : 'apikey.changeDesc')}</div>
           </div>
         </div>
         <div className="mt-5">

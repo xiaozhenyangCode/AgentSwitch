@@ -16,6 +16,16 @@ const CODEX =
 
 export function BrandIcon({ kind, size }: { kind: ProfileKind; size: number }) {
   const id = useId().replace(/:/g, '')
+  if (kind === 'reasonix')
+    return (
+      <span className="relative inline-flex" aria-hidden>
+        <DeepSeekIcon size={size} />
+        <span
+          className="absolute right-[-2px] bottom-[-2px] grid place-items-center rounded-full bg-[#4257D9] font-bold leading-none text-white ring-1 ring-surface"
+          style={{ width: Math.max(8, size * 0.48), height: Math.max(8, size * 0.48), fontSize: Math.max(6, size * 0.34) }}
+        >R</span>
+      </span>
+    )
   if (kind === 'claude')
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>

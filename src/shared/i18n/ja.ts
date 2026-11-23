@@ -1,6 +1,29 @@
 import type { Dict } from './index'
 
 export const ja: Dict = {
+  // Reasonix
+  'reasonix.import': '既存の ~/.reasonix を使用',
+  'reasonix.managed': 'アカウントを作成',
+  'reasonix.importUnavailable': '~/.reasonix ディレクトリが見つかりません。',
+  'reasonix.importDuplicate': 'この Reasonix ディレクトリはインポート済みです。',
+  'reasonix.badConnection': '有効な Reasonix の接続方法を選択してください。',
+  'reasonix.plaintext': 'Reasonix はキーをアカウントディレクトリの .env ファイルに平文で保存します（本人のみ読み取り可能、権限 600）。AgentSwitch はコピーを保存しません。',
+  'reasonix.importedKeyReadonly': 'キーは Reasonix が ~/.reasonix/.env で管理します。AgentSwitch は読み取りません。',
+  'reasonix.noKey': 'この Reasonix アカウントにキーがありません。インポート済みのアカウントはターミナルで reasonix setup を実行し、管理対象のアカウントは設定でキーを入力してください。',
+  'reasonix.invalidKey': 'キーには改行やヌル文字を含められません。',
+  'reasonix.writeFailed': 'Reasonix のアカウントファイルを保存できませんでした。',
+  'reasonix.unmaintained': 'Reasonix のメンテナンスは終了しました。最終版の 2.61.0 に対応しています。',
+  'model.followReasonix': 'Reasonix で設定した既定のモデルを使用',
+  'effort.disabled': '思考なし',
+  'proc.usageCacheRate': 'キャッシュヒット率 {pct}%',
+  'reasonix.extensionsUnavailable': 'AgentSwitch では Reasonix のルールを編集できません。',
+  'reasonix.removeManaged': 'アカウントを削除し、.env キーファイルを消去します。その他のファイルは保持されます。',
+  'ob.desc.reasonix': 'Reasonix 経由で DeepSeek を使用',
+  'reasonix.setupHint': 'ターミナルで reasonix setup を実行してキーを設定してください。',
+  'reasonix.approvalCli': '非対話モードの CLI で Reasonix の権限ルールを使用します。',
+  'reasonix.approvalEdits': 'ファイル編集を自動で許可し、他の操作には Reasonix の権限ルールを適用します。',
+  'reasonix.approvalFull': 'Reasonix の承認プロンプトを省略します。Reasonix のサンドボックス設定は適用されます。信頼できるタスクでのみ有効にしてください。',
+
   'common.cancel': 'キャンセル',
   'common.close': '閉じる',
   'common.save': '保存',

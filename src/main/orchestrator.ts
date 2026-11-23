@@ -482,9 +482,15 @@ export class Orchestrator {
       `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
       replyLanguage(turn.req.text),
       cfg.autoApprove === 'full'
-        ? '当前授权：完全放行，可以执行命令。'
+        ? (cfg.kind === 'reasonix'
+          ? '当前授权：Reasonix 跳过权限审批，命令仍遵循 Reasonix 自身的沙箱设置。'
+          : '当前授权：完全放行，可以执行命令。')
         : cfg.autoApprove === 'cli'
-          ? '当前授权：沿用 CLI 自身的权限设置（与用户在终端中使用时相同），可以按需执行命令；被拒绝的操作说明原因，让用户决定。'
+          ? (cfg.kind === 'reasonix'
+            ? '当前授权：沿用 Reasonix 自身的权限设置。无交互模式下遇到权限拒绝时，请说明原因。'
+            : '当前授权：沿用 CLI 自身的权限设置（与用户在终端中使用时相同），可以按需执行命令；被拒绝的操作说明原因，让用户决定。')
+          : cfg.kind === 'reasonix'
+          ? '当前授权：Reasonix acceptEdits 模式会自动允许文件编辑，其他操作仍受 Reasonix 权限规则约束。无交互模式下遇到权限拒绝时，请说明原因。'
           : cfg.kind === 'codex'
           ? '当前授权：沙箱模式（workspace-write）。可以正常执行命令和读写项目内文件；沙箱内不能写项目以外的位置，也不能联网。'
           : cfg.kind === 'gemini' && cfg.agyTransport === 'acp'

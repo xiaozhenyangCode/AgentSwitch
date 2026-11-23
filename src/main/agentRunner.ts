@@ -1,14 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, StepRef } from '@shared/types'
+import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, StepRef, Usage } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profiles'
+import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
 import { agyModelId } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
 import { agyAcpPool } from './acp/pool'
+import { reasonixRedactor } from './reasonix'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -744,7 +745,162 @@ export function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activ
   return { ...base, type: 'tool', target: name, detail }
 }
 
-/** `onLog` receives raw stdout/stderr for the debug drawer. */
+// ---- reasonix ------------------------------------------------------------------------------
+
+function reasonixTool(tool: any, status: 'running' | 'done' | 'error'): Extract<AgentEvent, { t: 'activity' }> {
+  const name = typeof tool.name === 'string' ? tool.name : 'tool'
+  const id = `rnx:${tool.id}`
+  const type = name === 'read_file' ? 'read'
+    : name === 'write_file' || name === 'edit_file' ? 'write'
+    : name === 'shell' || name === 'bash' ? 'run'
+    : name === 'grep' || name === 'glob' || name.startsWith('web_') ? 'search'
+    : 'tool'
+  let input = tool.args
+  if (typeof input === 'string') {
+    try {
+      input = JSON.parse(input)
+    } catch {
+      input = null
+    }
+  }
+  const target = [input?.path, input?.command, input?.pattern].find((v) => typeof v === 'string' && v) ?? name
+  return {
+    t: 'activity', id, type, target: target.slice(0, 300), status,
+    detail: {
+      tool: name,
+      input: capJson(tool.args),
+      ...(status !== 'running' ? { output: capText(tool.output), exitCode: tool.execution?.exitCode } : {})
+    }
+  }
+}
+
+const reasonixCount = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+
+export function reasonixAdapter(s: RunSpec): Adapter {
+  let session: string | null = null
+  const spec = splitSpec(s.model || s.cfg.defaultModel, 'reasonix')
+  let model = spec.model
+  let result: { ok: boolean; error: string | null } | null = null
+  let sawDelta = false
+  let usage: Usage | null = null
+  const tools = new Map<string, Extract<AgentEvent, { t: 'activity' }>>()
+  const args = ['-p', '--output-format', 'stream-json']
+  if (spec.model) args.push('--model', spec.model)
+  if (spec.effort) args.push('--effort', spec.effort)
+  if (s.cfg.autoApprove === 'edits') args.push('--permission-mode', 'acceptEdits')
+  if (s.cfg.autoApprove === 'full') args.push('--permission-mode', 'bypassPermissions')
+  if (s.resume) args.push('--resume', s.resume)
+
+  const rememberSession = (id: unknown, emit: Emit): void => {
+    if (typeof id !== 'string' || !id) return
+    if (!session) emit({ t: 'session', id, model })
+    session = id
+  }
+
+  return {
+    args,
+    stdin: full(s) + (s.images.length ? '\n\n' + s.images.map((path) => `- ${path}`).join('\n') : ''),
+    sessionId: () => session,
+    model: () => model,
+    result: () => result,
+    onLine: (d, emit) => {
+      if (!d || typeof d !== 'object') return
+      if (d.type === 'result') {
+        rememberSession(d.session_id, emit)
+        if (Array.isArray(d.permission_denials) && d.permission_denials.length)
+          emit({ t: 'notice', message: deniedText(d.permission_denials.map((x: any) => x?.tool_name ?? x?.tool ?? 'tool'), s.cfg.autoApprove) })
+        const costCny = Number(d.cost_quote?.valuations?.CNY?.money?.amount ?? NaN)
+        if (usage || typeof d.total_cost_usd === 'number' || Number.isFinite(costCny)) {
+          const c = d.usage
+          const totals = usage ?? (c ? { input: c.input_tokens, output: c.output_tokens, cacheRead: c.cache_read_input_tokens } : {})
+          emit({
+            t: 'usage',
+            usage: {
+              ...totals,
+              ...(typeof d.total_cost_usd === 'number' ? { costUsd: reasonixCount(d.total_cost_usd) } : {}),
+              ...(Number.isFinite(costCny) ? { costCny } : {})
+            }
+          })
+        }
+        result = { ok: !d.is_error, error: d.is_error ? String(d.result ?? 'error') : null }
+        if (result.error && RATE_LIMIT_RE.test(result.error)) emit({ t: 'rate_limited' })
+        return
+      }
+      switch (d.kind) {
+        case 'turn_started':
+          if (typeof d.modelRef === 'string') model = d.modelRef.replace(/^[^/]+\//, '')
+          rememberSession(d.sessionId, emit)
+          break
+        case 'text':
+          if (typeof d.text === 'string' && d.text) {
+            emit({ t: 'text', delta: d.text })
+            sawDelta = true
+          }
+          break
+        case 'message':
+          if (!sawDelta && typeof d.text === 'string' && d.text) emit({ t: 'text', delta: d.text })
+          sawDelta = false
+          break
+        case 'reasoning':
+          if (typeof d.text === 'string' && d.text) emit({ t: 'thinking', delta: d.text })
+          break
+        case 'tool_dispatch': {
+          if (typeof d.tool?.id !== 'string' || d.tool.partial === true || tools.has(d.tool.id)) break
+          const event = reasonixTool(d.tool, 'running')
+          tools.set(d.tool.id, event)
+          emit(event)
+          break
+        }
+        case 'tool_result': {
+          if (typeof d.tool?.id !== 'string') break
+          const code = d.tool.execution?.exitCode
+          const failed = d.isError || d.is_error || d.tool.isError || d.tool.is_error || d.tool.error ||
+            /^(error|failed|denied|blocked)$/i.test(d.tool.execution?.state ?? d.tool.status ?? d.status ?? '') ||
+            (typeof code === 'number' && code !== 0)
+          const event = reasonixTool(d.tool, failed ? 'error' : 'done')
+          const dispatch = tools.get(d.tool.id)
+          emit(dispatch ? { ...event, type: dispatch.type, target: dispatch.target, detail: { ...dispatch.detail, ...event.detail } } : event)
+          break
+        }
+        case 'usage': {
+          const u = d.usage
+          if (!u || typeof u !== 'object') break
+          const prompt = reasonixCount(u.promptTokens)
+          const out = reasonixCount(u.completionTokens)
+          const hit = reasonixCount(u.cacheHitTokens)
+          const miss = typeof u.cacheMissTokens === 'number' ? reasonixCount(u.cacheMissTokens) : Math.max(0, prompt - hit)
+          usage = {
+            input: (usage?.input ?? 0) + miss,
+            output: (usage?.output ?? 0) + out,
+            cacheRead: (usage?.cacheRead ?? 0) + hit,
+            context: prompt + out
+          }
+          emit({ t: 'usage', usage })
+          break
+        }
+        case 'turn_status':
+        case 'user_message':
+        case 'turn_phase':
+        case 'stream_attempt':
+        case 'tool_started':
+        case 'turn_done':
+          break
+        default:
+          emit(other(String(d.kind ?? d.type ?? 'unknown'), d))
+      }
+    }
+  }
+}
+
+function redactReasonixPayload(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === 'string') return redact(value)
+  if (Array.isArray(value)) return value.map((entry) => redactReasonixPayload(entry, redact))
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [redact(key), redactReasonixPayload(entry, redact)]))
+  return value
+}
+
+/** Sends CLI diagnostics to the debug drawer. */
 export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => void): RunHandle {
   const cfg = getConfig(spec.cfg.id)
   let others = 0
@@ -778,10 +934,14 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
 
 function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (text: string) => void): RunHandle {
   const bin = kindBinaryPath(cfg.kind)
-  const { env } = buildSpawnSpec(cfg.id, 'run')
+  const reasonix = cfg.kind === 'reasonix'
+  const managedHome = reasonix ? reasonixManagedProfilePath(cfg) : null
+  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, !reasonix)
   const startedAt = Date.now()
+  const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =
-    cfg.kind === 'claude' ? claudeAdapter(spec) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt) : agyAdapter(spec)
+    cfg.kind === 'claude' ? claudeAdapter(spec) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt)
+      : reasonix ? reasonixAdapter({ ...spec, cfg }) : agyAdapter(spec)
 
   let child: ChildProcess | null = null
   let stopped = false
@@ -798,14 +958,20 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
       try {
         adapter.finish?.(wrapped)
       } catch (e) {
-        onLog(`[finish] ${String(e)}\n`)
+        onLog(redact(`[finish] ${String(e)}\n`))
       }
-      if (error && cfg.apiKey && isInvalidKeyError(error)) error = `${error}\n${t('apikey.checkKey')}`
+      if (error && reasonix) {
+        error = redact(error)
+        if (!rateLimited && RATE_LIMIT_RE.test(error)) wrapped({ t: 'rate_limited' })
+        if (/no stored key for/i.test(error)) error = t('reasonix.noKey')
+      }
+      if (error && (cfg.apiKey || reasonix) && isInvalidKeyError(error)) error = `${error}\n${t('apikey.checkKey')}`
       resolve({ ok: ok && !stopped, stopped, text: '', sessionId: adapter.sessionId(), model: adapter.model(), error: stopped ? null : error, rateLimited })
     }
     if (!bin) return finish(false, t('main.cliNotInstalled', { kind: cfg.kind }))
+    if (reasonix && !cfg.imported && !managedHome) return finish(false, t('reasonix.noKey'))
 
-    onLog(`\n── ${cfg.name} · ${spec.model ?? t('wb.defaultModel')} · cwd ${spec.cwd}\n$ ${bin} ${adapter.args.map((a) => (a.length > 80 ? JSON.stringify(a.slice(0, 80) + '…') : JSON.stringify(a))).join(' ')}\n`)
+    onLog(redact(`\n── ${cfg.name} · ${spec.model ?? t('wb.defaultModel')} · cwd ${spec.cwd}\n$ ${bin} ${adapter.args.map((a) => (a.length > 80 ? JSON.stringify(a.slice(0, 80) + '…') : JSON.stringify(a))).join(' ')}\n`))
     try {
       // detached: own process group, so stop() can take down the CLI's children too
       child = spawn(bin, adapter.args, { cwd: spec.cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -816,37 +982,42 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
     let errTail = ''
     child.stdout!.setEncoding('utf8')
     child.stderr!.setEncoding('utf8')
+    const handleLine = (raw: string): void => {
+      const line = raw.trim()
+      if (!line) return
+      if (!line.startsWith('{')) {
+        // Plain-text stdout can carry a CLI warning.
+        wrapped({ t: 'other_event', kind: 'stdout', payload: capText(redact(line), 4096) })
+        return
+      }
+      let obj: unknown
+      try {
+        obj = JSON.parse(line)
+      } catch (e) {
+        onLog(redact(`[parse] ${String(e)}\n`))
+        wrapped({ t: 'other_event', kind: 'unparsed', payload: capText(redact(line), 4096) })
+        return
+      }
+      try {
+        adapter.onLine(reasonix ? redactReasonixPayload(obj, redact) : obj, wrapped)
+      } catch (e) {
+        onLog(redact(`[adapter] ${String(e)}\n`))
+        wrapped({ t: 'other_event', kind: 'adapter-error', payload: capText(`${redact(String(e))}\n${redact(line)}`, 4096) })
+      }
+    }
     child.stdout!.on('data', (chunk: string) => {
-      onLog(chunk)
+      // Reasonix may include credentials in provider diagnostics.
+      if (!reasonix) onLog(chunk)
       out += chunk
       let nl: number
       while ((nl = out.indexOf('\n')) >= 0) {
-        const line = out.slice(0, nl).trim()
+        const line = out.slice(0, nl)
         out = out.slice(nl + 1)
-        if (!line) continue
-        if (!line.startsWith('{')) {
-          // plain-text stdout (warnings, hints): keep it visible instead of dropping it
-          wrapped({ t: 'other_event', kind: 'stdout', payload: capText(line, 4096) })
-          continue
-        }
-        let obj: unknown
-        try {
-          obj = JSON.parse(line)
-        } catch (e) {
-          onLog(`[parse] ${String(e)}\n`)
-          wrapped({ t: 'other_event', kind: 'unparsed', payload: capText(line, 4096) })
-          continue
-        }
-        try {
-          adapter.onLine(obj, wrapped)
-        } catch (e) {
-          onLog(`[adapter] ${String(e)}\n`)
-          wrapped({ t: 'other_event', kind: 'adapter-error', payload: capText(`${String(e)}\n${line}`, 4096) })
-        }
+        handleLine(line)
       }
     })
     child.stderr!.on('data', (chunk: string) => {
-      onLog(chunk)
+      if (!reasonix) onLog(chunk)
       // Claude Code warns on stderr about every third-party model id; that's not an error.
       const kept = cfg.apiKey ? chunk.split('\n').filter((l) => !isClaudeModelWarning(l)).join('\n') : chunk
       errTail = (errTail + kept).slice(-4000)
@@ -854,6 +1025,7 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
     })
     child.on('error', (e) => finish(false, e.message))
     child.on('close', (code, signal) => {
+      if (reasonix && out.trim()) handleLine(out)
       onLog(`── exited (code ${code}${signal ? `, ${signal}` : ''})\n`)
       const r = adapter.result()
       if (r) return finish(r.ok, r.error)

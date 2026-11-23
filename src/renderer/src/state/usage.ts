@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { AccountUsage, ProfileId, ProfileState, QuotaGroup, QuotaWindow, UsageSnapshot } from '@shared/types'
+import type { AccountUsage, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
 import { getSettings } from './settings'
@@ -68,6 +68,7 @@ export type QuotaLevel = 'ok' | 'warn' | 'danger'
 
 export function quotaLevel(p: ProfileState | undefined, u: AccountUsage | undefined, model?: string | null): { level: QuotaLevel; reason: string | null } {
   if (!p) return { level: 'ok', reason: null }
+  if (p.kind === 'reasonix') return p.status === 'rate_limited' ? { level: 'danger', reason: t('usage.limited') } : { level: 'ok', reason: null }
   const q = u?.quota
   const eff = effectiveQuota(u, model ?? p.defaultModel)
   const limited = p.status === 'rate_limited' || (!!q?.limited && !eff.group && Date.now() - q.fetchedAt < 6 * 3600_000)
@@ -156,4 +157,10 @@ export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | n
     out.add(cands[0].p.id)
   }
   return out
+}
+
+/** Reasonix reports cache misses as uncached input. */
+export function cacheHitPercentage(usage: Usage): number | null {
+  const input = (usage.input ?? 0) + (usage.cacheRead ?? 0)
+  return input > 0 ? Math.round((usage.cacheRead ?? 0) / input * 100) : null
 }

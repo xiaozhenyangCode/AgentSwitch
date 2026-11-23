@@ -52,7 +52,7 @@ function listDir(dir: string): string[] {
 /** Native files of one CLI session (never the config dir itself). */
 function nativeFiles(cfg: ProfileConfig, sid: string): { root: string; files: string[] } {
   const home = expandHome(cfg.configDir)
-  if (!sid || sid.length < 8 || /[/\\]/.test(sid)) return { root: home, files: [] }
+  if (cfg.kind === 'reasonix' || !sid || sid.length < 8 || /[/\\]/.test(sid)) return { root: home, files: [] }
   if (cfg.kind === 'claude') {
     const root = join(home, 'projects')
     const files: string[] = []

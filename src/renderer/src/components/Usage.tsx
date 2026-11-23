@@ -267,7 +267,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
               {u.quotaError}
             </div>
           ) : (
-            <div className="mt-2 text-[11px] text-ink-3">{t(p.apiKey ? 'apikey.noQuota' : 'usage.noQuotaNote')}</div>
+            <div className="mt-2 text-[11px] text-ink-3">{t(p.apiKey || p.kind === 'reasonix' ? 'apikey.noQuota' : 'usage.noQuotaNote')}</div>
           )}
         </>
       )}

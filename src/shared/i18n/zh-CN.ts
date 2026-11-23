@@ -3,6 +3,29 @@
  * `Dict` type). Placeholders: `{name}`. Model-facing prompts (orchestrator) are not UI and stay out.
  */
 export const zhCN = {
+  // Reasonix
+  'reasonix.import': '使用现有 ~/.reasonix',
+  'reasonix.managed': '新建账号',
+  'reasonix.importUnavailable': '未找到 ~/.reasonix 目录。',
+  'reasonix.importDuplicate': '这个 Reasonix 目录已被导入。',
+  'reasonix.badConnection': '请选择有效的 Reasonix 连接方式。',
+  'reasonix.plaintext': 'Reasonix 会把密钥以明文保存在它自己的账号目录 .env 文件里（仅本人可读，权限 600）。AgentSwitch 不另存副本。',
+  'reasonix.importedKeyReadonly': '密钥由 Reasonix 自己管理（~/.reasonix/.env），AgentSwitch 不读取。',
+  'reasonix.noKey': '这个 Reasonix 账号还没有密钥：导入账号请在终端运行 reasonix setup；托管账号请在账号设置里填写',
+  'reasonix.invalidKey': '密钥不能包含换行或空字符。',
+  'reasonix.writeFailed': '无法保存 Reasonix 账号文件。',
+  'reasonix.unmaintained': 'Reasonix 上游已停止维护（最后版本 2.61.0），按 2.61.0 适配。',
+  'model.followReasonix': '使用 Reasonix 配置的默认模型',
+  'effort.disabled': '不思考',
+  'proc.usageCacheRate': '缓存命中 {pct}%',
+  'reasonix.extensionsUnavailable': '暂不支持在 AgentSwitch 中编辑 Reasonix 的规则。',
+  'reasonix.removeManaged': '将移除此账号并删除账号目录中的 .env 密钥文件。其他账号文件会保留。',
+  'ob.desc.reasonix': '通过 Reasonix 使用 DeepSeek',
+  'reasonix.setupHint': '在终端运行 reasonix setup 以配置密钥。',
+  'reasonix.approvalCli': '使用 Reasonix 自身的权限规则，CLI 以非交互模式运行。',
+  'reasonix.approvalEdits': '自动允许文件编辑，其他操作受 Reasonix 权限规则约束。',
+  'reasonix.approvalFull': '跳过 Reasonix 的权限审批，命令仍受 Reasonix 沙箱设置约束。仅在信任当前任务时开启。',
+
   // ---- common
   'common.cancel': '取消',
   'common.close': '关闭',

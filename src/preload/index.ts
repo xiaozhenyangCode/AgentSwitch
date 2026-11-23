@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
-  type ApiKeyConfig,
+  type ProfileConnect,
   type AppInfo,
   type FileChanges,
   type DeleteThreadRequest,
@@ -55,8 +55,9 @@ const api = {
   },
   profiles: {
     /** Returns the new account id. */
-    add: (kind: ProfileKind, name?: string, connect?: { apiKey: ApiKeyConfig; key: string }): Promise<ProfileId> =>
+    add: (kind: ProfileKind, name?: string, connect?: ProfileConnect): Promise<ProfileId> =>
       ipcRenderer.invoke(IPC.profilesAdd, kind, name, connect),
+    reasonixCanImport: (): Promise<boolean> => ipcRenderer.invoke(IPC.reasonixCanImport),
     /** Replaces an API-key account's key (stored encrypted in the main process). */
     setKey: (id: ProfileId, key: string): Promise<void> => ipcRenderer.invoke(IPC.profilesSetKey, id, key),
     update: (id: ProfileId, patch: Partial<ProfileConfig>): Promise<void> => ipcRenderer.invoke(IPC.profilesUpdate, id, patch),

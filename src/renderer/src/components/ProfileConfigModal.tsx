@@ -51,7 +51,8 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   const [form, setForm] = useState<ProfileConfig>(profile)
   const [envText, setEnvText] = useState(envToText(profile.extraEnv))
   const [preview, setPreview] = useState<EnvPreview | null>(null)
-  const [previewMode, setPreviewMode] = useState<PtyMode>('login')
+  const reasonix = profile.kind === 'reasonix'
+  const [previewMode, setPreviewMode] = useState<PtyMode>(reasonix ? 'run' : 'login')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const conn = profile.apiKey
@@ -135,7 +136,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           <input className={inputCls} value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
 
-        {conn && (
+        {profile.kind !== 'reasonix' && conn && (
           <div className="space-y-4 rounded-xl bg-fill p-4">
             <div className="flex items-center justify-between">
               <div>
@@ -163,7 +164,30 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         )}
 
-        {!conn && (
+        {reasonix && (
+          <div className="space-y-3 rounded-xl bg-fill p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-medium text-ink">{t('apikey.section')}</div>
+                <p className="mt-1 text-[12px] leading-relaxed text-ink-2">
+                  {t(profile.imported ? 'reasonix.importedKeyReadonly' : 'reasonix.plaintext')}
+                </p>
+                {profile.imported && !profile.loggedIn && <p className="mt-1 text-[12px] text-ink-2">{t('reasonix.setupHint')}</p>}
+              </div>
+              {!profile.imported && <button className={btnSecondary + ' shrink-0'} onClick={() => setChangingKey(true)}>{t('apikey.change')}</button>}
+            </div>
+            <Field label={t('cfg.dir')}>
+              <div className="flex gap-2">
+                <input className={mono} value={form.configDir} readOnly />
+                <button className={btnGhost + ' shrink-0'} onClick={() => void window.agentswitch.sys.openPath(profile.resolvedConfigDir)} title={t('common.showInFinder')}>
+                  <IconFolder size={16} />
+                </button>
+              </div>
+            </Field>
+          </div>
+        )}
+
+        {!conn && !reasonix && (
         <Field label={t('cfg.dir')} hint={dirHint(profile.kind)}>
           <div className="flex gap-2">
             <input className={mono} value={form.configDir} onChange={(e) => set('configDir', e.target.value)} />
@@ -207,7 +231,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
                   set('defaultModel', m ? (withEffort(opt, m, defSpec.effort) ?? '') : '')
                 }}
               >
-                {m ? modelLabel(m, profile.id) : t('common.default')}
+                {m ? modelLabel(m, profile.id) : reasonix && models?.defaultModel ? modelLabel(null, profile.id) : t('common.default')}
               </button>
             ))}
             <button className="h-7 rounded-full px-2.5 text-[12px] text-ink-3 hover:bg-fill hover:text-ink" onClick={refreshModels} disabled={modelsLoading} title={t('wb.refetchModels')}>
@@ -216,7 +240,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
           {defSpec.opt?.efforts && defSpec.opt.efforts.length > 1 && (
             <div className="-mx-2 mt-3 w-[340px]">
-              <EffortBar opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
+              <EffortBar reasonix={reasonix} opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
             </div>
           )}
           {models?.error && <div className="mt-1.5 text-[12px] text-warn">{t('cfg.modelsFailed', { src: models.source === 'cache' ? t('cfg.lastCache') : t('cfg.builtin'), error: models.error })}</div>}
@@ -225,7 +249,9 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         <Field
           label={t('cfg.approval')}
           hint={
-            acp
+            reasonix
+              ? t(form.autoApprove === 'full' ? 'reasonix.approvalFull' : form.autoApprove === 'edits' ? 'reasonix.approvalEdits' : 'reasonix.approvalCli')
+              : acp
               ? t(form.autoApprove === 'full' ? 'cfg.acpApprovalFull' : form.autoApprove === 'edits' ? 'cfg.acpApprovalEdits' : 'cfg.acpApprovalCli')
               : form.autoApprove === 'cli'
               ? t('cfg.approvalCli')
@@ -262,7 +288,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         )}
 
-        {!conn && (
+        {!conn && !reasonix && (
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('cfg.loginCmd')}>
             <input className={mono} value={form.loginCommand} onChange={(e) => set('loginCommand', e.target.value)} />
@@ -287,7 +313,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             <Segmented
               value={previewMode}
               onChange={setPreviewMode}
-              options={(['install', 'login', 'run', 'shell'] as PtyMode[]).map((m) => ({ value: m, label: m }))}
+              options={(reasonix ? ['install', 'run', 'shell'] as const : ['install', 'login', 'run', 'shell'] as const).map((m) => ({ value: m, label: m }))}
             />
           </div>
           {preview && (

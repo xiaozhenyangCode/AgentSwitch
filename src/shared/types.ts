@@ -1,6 +1,6 @@
 /** Dynamic account id, e.g. `claude-a1b2c3`. */
 export type ProfileId = string
-export type ProfileKind = 'claude' | 'gemini' | 'codex'
+export type ProfileKind = 'claude' | 'gemini' | 'codex' | 'reasonix'
 
 /** How an API-key account reaches its model. deepseek/custom are Claude Code only. */
 export type ApiKeyProvider = 'official' | 'deepseek' | 'custom'
@@ -12,16 +12,23 @@ export interface ApiKeyConfig {
   /** deepseek: preset; custom: required (first = default); official: unset (CLI's own list) */
   models?: string[]
 }
+export const REASONIX_MODELS = ['deepseek-flash', 'deepseek-v4-pro'] as const
+export type ReasonixModel = (typeof REASONIX_MODELS)[number]
+export type ReasonixConnect = { reasonix: 'import' } | { reasonix: 'managed'; key: string; defaultModel: ReasonixModel }
+export type ProfileConnect = { apiKey: ApiKeyConfig; key: string } | ReasonixConnect
+
 /** Where users create keys (opened from the add-account dialog). */
+const DEEPSEEK_KEY_PAGE = 'https://platform.deepseek.com/api_keys'
 export const API_KEY_PAGES: Record<ProfileKind | 'deepseek', string> = {
   claude: 'https://platform.claude.com/settings/keys',
   codex: 'https://platform.openai.com/api-keys',
   gemini: 'https://aistudio.google.com/apikey',
-  deepseek: 'https://platform.deepseek.com/api_keys'
+  deepseek: DEEPSEEK_KEY_PAGE,
+  reasonix: DEEPSEEK_KEY_PAGE
 }
 export type ProfileStatus = 'uninstalled' | 'not_logged_in' | 'idle' | 'running' | 'rate_limited'
 
-export const KINDS: ProfileKind[] = ['claude', 'gemini', 'codex']
+export const KINDS: ProfileKind[] = ['claude', 'gemini', 'codex', 'reasonix']
 
 /**
  * install: real HOME, login shell (`zsh -ilc`), so CLIs land in the global PATH.
@@ -65,6 +72,7 @@ export interface ProfileConfig {
    * claude -> CLAUDE_CONFIG_DIR (omitted when it is the system default ~/.claude)
    * gemini -> HOME
    * codex  -> CODEX_HOME
+   * reasonix -> REASONIX_HOME
    */
   configDir: string
   /** Imported from an existing local setup (e.g. ~/.claude) rather than created by AgentSwitch. */
@@ -108,6 +116,7 @@ export interface ModelOption {
 export interface ModelList {
   profileId: ProfileId
   models: ModelOption[]
+  defaultModel?: string
   /** catalog: CLI's own local cache file; command: live CLI query; cache: AgentSwitch cache; static: built-in list. */
   source: 'catalog' | 'command' | 'cache' | 'static'
   fetchedAt: number
@@ -249,6 +258,7 @@ export interface Usage {
   /** Thinking / reasoning tokens (part of output). */
   reasoning?: number
   costUsd?: number
+  costCny?: number
   /**
    * Tokens in the model's context on the turn's last request (prompt incl. cache). The other
    * fields add up every request of the turn (each tool round re-reads the context), so they
@@ -470,6 +480,7 @@ export const IPC = {
   stateGet: 'state:get',
   stateChanged: 'state:changed',
   profilesAdd: 'profiles:add',
+  reasonixCanImport: 'profiles:reasonixCanImport',
   profilesUpdate: 'profiles:update',
   profilesRemove: 'profiles:remove',
   profilesSetKey: 'profiles:setKey',

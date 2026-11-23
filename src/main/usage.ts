@@ -681,6 +681,7 @@ export function runBackfill(): Promise<void> {
       const pathOf = (e: (typeof entries)[number]): string | null => {
         if (e.kind === 'claude') return claudePath(e)
         if (e.kind === 'codex') return rolloutPaths.get(e.nativeId) ?? null
+        if (e.kind !== 'gemini') return null
         const cfg = hasProfile(e.profileId) ? getConfig(e.profileId) : null
         return cfg ? agyConversationDb(cfg, e.nativeId) : null
       }
@@ -736,7 +737,7 @@ export function runBackfill(): Promise<void> {
  */
 export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
   // API-key accounts have no subscription quota, and a probe would spend the user's credits.
-  const configs = listConfigs().filter((c) => !c.apiKey)
+  const configs = listConfigs().filter(hasSubscriptionQuota)
   const codexTask = Promise.all(
     configs
       .filter((c) => c.kind === 'codex')
@@ -779,7 +780,7 @@ export function startUsage(): void {
   for (const c of listConfigs()) if (c.kind === 'codex') refreshCodexQuota(c.id)
   setTimeout(() => {
     for (const c of listConfigs()) {
-      if (!isLoggedIn(c.id)) continue
+      if (c.kind === 'reasonix' || !isLoggedIn(c.id)) continue
       if (c.kind === 'gemini') void refreshAgyQuota(c.id)
       else if (c.kind === 'codex') void refreshCodexLive(c.id)
       else if (c.kind === 'claude') void refreshClaudeOauth(c.id)

@@ -1,17 +1,24 @@
 import type { ModelOption, ProfileKind, ProfileState } from '@shared/types'
 import { EFFORT_LABEL, joinSpec, splitSpec } from '@shared/modelSpec'
-import { findModel } from '../state/models'
+import { findModel, getModelList } from '../state/models'
 import { t } from '../state/i18n'
 import { stripLatest } from '@shared/i18n'
 
+export const effortLabel = (effort: string, reasonix?: boolean): string => reasonix && effort === 'disabled' ? t('effort.disabled') : EFFORT_LABEL[effort] ?? effort
+
+const reasonixKind = (profileId?: string): 'reasonix' | undefined => profileId?.startsWith('reasonix-') ? 'reasonix' : undefined
+
 /** Display name for a model spec (`model` or `model:effort`), e.g. `Gemini 4 Neon · High`. */
 export const modelLabel = (spec: string | null | undefined, profileId?: string): string => {
-  const { model, effort } = splitSpec(spec)
-  if (!model) return t('common.default')
+  const { model, effort } = splitSpec(spec, reasonixKind(profileId))
+  if (!model) {
+    const configured = profileId && reasonixKind(profileId) ? getModelList(profileId)?.defaultModel : null
+    return configured ? t('wb.accountDefault', { model: configured }) : t('common.default')
+  }
   const f = findModel(model, profileId)
   const name = (f ? stripLatest(f.opt.label) : undefined) ?? model
   const e = effort ?? f?.effort
-  return e ? `${name} · ${EFFORT_LABEL[e] ?? e}` : name
+  return e ? `${name} · ${effortLabel(e, !!reasonixKind(profileId))}` : name
 }
 
 /**
@@ -19,7 +26,7 @@ export const modelLabel = (spec: string | null | undefined, profileId?: string):
  * (`gemini-4-neon-high` → base `gemini-4-neon` + `high`).
  */
 export function resolveSpec(spec: string | null | undefined, profileId?: string): { model: string | null; effort: string | null; opt: ModelOption | null } {
-  const { model, effort } = splitSpec(spec)
+  const { model, effort } = splitSpec(spec, reasonixKind(profileId))
   if (!model) return { model: null, effort: null, opt: null }
   const f = findModel(model, profileId)
   if (!f) return { model, effort, opt: null }
@@ -34,4 +41,4 @@ export const withEffort = (opt: ModelOption | null, model: string, effort: strin
 export const effectiveModel = (explicit: string | null | undefined, p: ProfileState | undefined): string | null =>
   explicit?.trim() || p?.defaultModel?.trim() || null
 
-export const defaultHint = (kind: ProfileKind): string => t(kind === 'claude' ? 'model.followClaude' : kind === 'codex' ? 'model.followCodex' : 'model.followAgy')
+export const defaultHint = (kind: ProfileKind): string => t(kind === 'claude' ? 'model.followClaude' : kind === 'codex' ? 'model.followCodex' : kind === 'reasonix' ? 'model.followReasonix' : 'model.followAgy')

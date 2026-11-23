@@ -2,12 +2,15 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import {
   IPC,
   KINDS,
+  REASONIX_MODELS,
   installSessionId,
   kindOfInstallSession,
   type AppInfo,
   type KindConfig,
   type KindState,
   type ProfileConfig,
+  type ProfileConnect,
+  type ReasonixModel,
   type ProfileId,
   type ProfileKind,
   type PtyMode,
@@ -18,6 +21,7 @@ import {
 import {
   KIND_LABEL,
   addProfile,
+  addReasonixProfile,
   buildInstallSpec,
   buildSpawnSpec,
   claudeDirs,
@@ -37,8 +41,10 @@ import {
   listConfigs,
   loginSignature,
   removeProfile,
+  reasonixCanImport,
   resetKindConfig,
   resetProfile,
+  setReasonixKey,
   updateKindConfig,
   updateProfile
 } from './profiles'
@@ -50,8 +56,16 @@ import { permissions } from './acp/permissions'
 import { ptyModeAllowed } from './apiKey'
 import type { ApiKeyConfig } from '@shared/types'
 
-/** Validates the renderer's `{ apiKey, key }` shape (contents are validated in addProfile). */
-function assertConnect(v: unknown): { apiKey: ApiKeyConfig; key: string } {
+function assertConnect(kind: ProfileKind, v: unknown): ProfileConnect {
+  if (kind === 'reasonix') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(t('reasonix.badConnection'))
+    const o = v as Record<string, unknown>
+    if (o.reasonix === 'import' && Object.keys(o).length === 1) return { reasonix: 'import' }
+    if (o.reasonix === 'managed' && Object.keys(o).length === 3 && typeof o.key === 'string' &&
+      typeof o.defaultModel === 'string' && REASONIX_MODELS.some((m) => m === o.defaultModel))
+      return { reasonix: 'managed', key: o.key, defaultModel: o.defaultModel as ReasonixModel }
+    throw new Error(t('reasonix.badConnection'))
+  }
   const o = v as { apiKey?: Partial<ApiKeyConfig>; key?: unknown }
   const a = o?.apiKey
   if (!a || typeof a !== 'object' || typeof a.provider !== 'string') throw new Error(t('apikey.badProvider'))
@@ -198,10 +212,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   // ---- accounts -------------------------------------------------------------------
   ipcMain.handle(IPC.stateGet, () => snapshot())
+  ipcMain.handle(IPC.reasonixCanImport, () => reasonixCanImport())
   ipcMain.handle(IPC.profilesAdd, (_e, kind: unknown, name?: string, connect?: unknown) => {
     const k = assertKind(kind)
-    const conn = connect === undefined || connect === null ? null : assertConnect(connect)
-    const p = addProfile(k, typeof name === 'string' ? name : undefined, conn?.apiKey)
+    const conn = k !== 'reasonix' && (connect === undefined || connect === null) ? null : assertConnect(k, connect)
+    const label = typeof name === 'string' ? name : undefined
+    if (conn && 'reasonix' in conn) {
+      const p = addReasonixProfile(label, conn)
+      broadcast()
+      return p.id
+    }
+    const p = addProfile(k, label, conn?.apiKey)
     if (conn) {
       try {
         secrets().set(p.id, conn.key)
@@ -215,11 +236,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.profilesSetKey, (_e, id: unknown, key: unknown) => {
     const pid = assertId(id)
-    if (!isApiKeyAccount(getConfig(pid))) throw new Error(t('apikey.notApiKeyAccount'))
-    try {
-      secrets().set(pid, typeof key === 'string' ? key : '')
-    } catch (e) {
-      throw keyError(e)
+    const cfg = getConfig(pid)
+    const value = typeof key === 'string' ? key : ''
+    if (cfg.kind === 'reasonix') setReasonixKey(cfg, value)
+    else {
+      if (!isApiKeyAccount(cfg)) throw new Error(t('apikey.notApiKeyAccount'))
+      try {
+        secrets().set(pid, value)
+      } catch (e) {
+        throw keyError(e)
+      }
     }
     forgetModels(pid)
     broadcast()
@@ -239,7 +265,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     ptys.forget(pid)
     ptys.forget(`run:${pid}`)
     forgetModels(pid)
-    removeProfile(pid) // config only; never deletes files on disk
+    removeProfile(pid)
     broadcast()
   })
   ipcMain.handle(IPC.profilesEnvPreview, (_e, id: unknown, mode: PtyMode) => envPreview(assertId(id), mode))

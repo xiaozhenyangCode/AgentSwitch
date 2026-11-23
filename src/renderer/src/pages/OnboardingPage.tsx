@@ -20,7 +20,7 @@ const btnQuiet = 'inline-flex h-9 items-center rounded-[10px] px-3 text-[13px] f
 const btnSmall = 'inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50'
 
 /** Folder each CLI uses by default: the first account created here shares it with the terminal. */
-const DEFAULT_DIR: Record<ProfileKind, string> = { claude: '~/.claude', codex: '~/.codex', gemini: '~' }
+const DEFAULT_DIR: Record<Exclude<ProfileKind, 'reasonix'>, string> = { claude: '~/.claude', codex: '~/.codex', gemini: '~' }
 
 type Stage = 'uninstalled' | 'installed' | 'ready'
 
@@ -174,7 +174,7 @@ function Engines() {
 }
 
 function EngineCard({ kind }: { kind: ProfileKind }) {
-  const { kinds, profiles, install, openLogin, loginId, refresh, info, toast } = useApp()
+  const { kinds, profiles, install, openLogin, openAddAccount, loginId, refresh, info, toast } = useApp()
   const ks = kinds.find((x) => x.kind === kind)
   const accounts = profiles.filter((p) => p.kind === kind)
   const stage = stageOf(kind, !!ks?.binaryPath, profiles)
@@ -193,6 +193,7 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
 
   /** Signs in the first account of this kind that is not ready, creating one if needed. */
   const doLogin = async () => {
+    if (kind === 'reasonix') return openAddAccount(kind)
     setBusy(true)
     try {
       let target = accounts.find((p) => !isReady(p) && !p.apiKey) // API-key accounts never use the OAuth sheet
@@ -250,11 +251,17 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
           ))}
         {stage === 'installed' && (
           <button className={btnSmall + ' bg-accent text-white hover:bg-accent-hover'} disabled={busy || loggingIn} onClick={() => void doLogin()}>
-            {busy || loggingIn ? <Spinner size={12} /> : null} {t('eng.login')}
+            {busy || loggingIn ? <Spinner size={12} /> : null} {t(kind === 'reasonix' ? 'add.add' : 'eng.login')}
           </button>
         )}
         {stage === 'ready' && <IconCheck size={18} className="shrink-0 text-ok" />}
       </div>
+      {kind === 'reasonix' && (
+        <p className="mt-2 text-[12px] text-ink-3">
+          {stage === 'uninstalled' && <code className="mr-2">npm i -g reasonix</code>}
+          {t('reasonix.unmaintained')}
+        </p>
+      )}
       {failed && stage === 'uninstalled' && !installing && (
         <div className="mt-3 rounded-xl bg-danger-soft/60 px-3 py-2.5">
           <div className="text-[12.5px] leading-relaxed text-danger">{failed}</div>

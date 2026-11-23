@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { KINDS } from '@shared/types'
 import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
@@ -945,7 +946,7 @@ export function parseThreadBundle(raw: string): ThreadBundle {
       thread: item.thread,
       projectName: typeof item.projectName === 'string' && item.projectName ? item.projectName : folderBase(item.thread.projectDir),
       sourceProjectDir: typeof item.sourceProjectDir === 'string' ? item.sourceProjectDir : item.thread.projectDir ?? null,
-      driverKind: item.driverKind === 'claude' || item.driverKind === 'codex' || item.driverKind === 'gemini' ? item.driverKind : null
+      driverKind: item.driverKind && KINDS.includes(item.driverKind) ? item.driverKind : null
     })
   }
   return { format: 'agentswitch-threads', version: 1, exportedAt: Number(j.exportedAt) || Date.now(), threads }

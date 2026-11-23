@@ -1,10 +1,11 @@
 import { app } from 'electron'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import {
   KINDS,
+  REASONIX_MODELS,
   type ApiKeyConfig,
   type EnvPreview,
   type KindConfig,
@@ -13,11 +14,13 @@ import {
   type ProfileKind,
   type ProfileState,
   type ProfileStatus,
+  type ReasonixConnect,
   type PtyMode
 } from '@shared/types'
 import { findOnPath, getBaseEnv, realHome, strippedVarNames } from './shellEnv'
 import { loadStore, saveStore, type StoreData } from './store'
-import { t } from './i18n'
+import { i18nState, t } from './i18n'
+import { keyEnvName, readReasonixConfig, reasonixHasKey, managedReasonixPath, removeReasonixKey, renderConfigToml, REASONIX_KEY_ENV, writeEnvFile } from './reasonix'
 import { apiKeyEnv, maskEnv, resolveApiKeyConfig, stripCredentials, validateApiKeyConfig } from './apiKey'
 import { secrets } from './secrets'
 import { agyAcpPool } from './acp/pool'
@@ -81,7 +84,7 @@ function linkFromRealHome(dir: string, rel: string): void {
   }
 }
 
-export const KIND_LABEL: Record<ProfileKind, string> = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }
+export const KIND_LABEL: Record<ProfileKind, string> = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', reasonix: 'Reasonix' }
 
 export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
   // claude --model accepts aliases for the latest model of a family (verified via `claude --help`)
@@ -106,6 +109,12 @@ export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
     installCommand: 'npm install -g @openai/codex',
     updateCommand: 'npm install -g @openai/codex@latest',
     models: ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6-luna']
+  },
+  reasonix: {
+    binary: 'reasonix',
+    installCommand: 'npm i -g reasonix',
+    updateCommand: '',
+    models: [...REASONIX_MODELS]
   }
 }
 
@@ -115,7 +124,8 @@ const COMMAND_DEFAULTS: Record<ProfileKind, Pick<ProfileConfig, 'loginCommand' |
   claude: { loginCommand: 'claude auth login', runCommand: 'claude' },
   // agy has no login subcommand: the interactive TUI prompts for sign-in (or `/login`).
   gemini: { loginCommand: 'agy', runCommand: 'agy' },
-  codex: { loginCommand: 'codex login', runCommand: 'codex' }
+  codex: { loginCommand: 'codex login', runCommand: 'codex' },
+  reasonix: { loginCommand: '', runCommand: 'reasonix' }
 }
 
 export function expandHome(p: string): string {
@@ -312,11 +322,12 @@ function suggestNameFrom(key: 'acct.deepseekName' | 'acct.customName'): string {
 
 /** True for accounts that connect with an API key instead of the CLI's own sign-in. */
 export function isApiKeyAccount(cfg: ProfileConfig): boolean {
-  return !!cfg.apiKey
+  return !!cfg.apiKey || (cfg.kind === 'reasonix' && !cfg.imported)
 }
 
 export function addProfile(kind: ProfileKind, name?: string, apiKey?: ApiKeyConfig): ProfileConfig {
   if (!KINDS.includes(kind)) throw new Error(`bad kind ${kind}`)
+  if (kind === 'reasonix') throw new Error(t('reasonix.badConnection'))
   let conn: ApiKeyConfig | undefined
   if (apiKey) {
     const c: ApiKeyConfig = { provider: apiKey.provider, baseUrl: apiKey.baseUrl, models: apiKey.models ? [...apiKey.models] : undefined }
@@ -345,6 +356,111 @@ export function addProfile(kind: ProfileKind, name?: string, apiKey?: ApiKeyConf
   return getConfig(id)
 }
 
+const REASONIX_IMPORT_DIR = '~/.reasonix'
+const reasonixProfilesRoot = () => join(app.getPath('userData'), 'profiles')
+
+export function reasonixCanImport(): boolean {
+  try {
+    return statSync(expandHome(REASONIX_IMPORT_DIR)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+export function reasonixManagedProfilePath(cfg: ProfileConfig): string | null {
+  if (cfg.imported) return null
+  try {
+    const actual = managedReasonixPath(expandHome(cfg.configDir), reasonixProfilesRoot(), cfg.id)
+    let imported = expandHome(REASONIX_IMPORT_DIR)
+    try {
+      imported = realpathSync(imported)
+    } catch {
+      // The external setup may not exist.
+    }
+    return actual === imported || actual.startsWith(imported + sep) ? null : actual
+  } catch {
+    return null
+  }
+}
+
+export function addReasonixProfile(name: string | undefined, connect: ReasonixConnect): ProfileConfig {
+  const id = newId('reasonix')
+  const imported = connect.reasonix === 'import'
+  const cfg: ProfileConfig = {
+    id,
+    name: name?.trim() || suggestName('reasonix'),
+    kind: 'reasonix',
+    configDir: imported ? REASONIX_IMPORT_DIR : managedDir(id, 'reasonix'),
+    imported,
+    ...COMMAND_DEFAULTS.reasonix,
+    extraEnv: {},
+    defaultModel: '',
+    autoApprove: 'cli',
+    createdAt: Date.now()
+  }
+  if (connect.reasonix === 'import') {
+    if (!reasonixCanImport()) throw new Error(t('reasonix.importUnavailable'))
+    const target = realpathSync(expandHome(REASONIX_IMPORT_DIR))
+    const duplicate = store.profiles.some((p) => {
+      const path = expandHome(p.configDir)
+      if (path === expandHome(REASONIX_IMPORT_DIR)) return true
+      try {
+        return realpathSync(path) === target
+      } catch {
+        return false
+      }
+    })
+    if (duplicate) throw new Error(t('reasonix.importDuplicate'))
+    store.profiles.push(cfg)
+    try {
+      persist()
+    } catch (e) {
+      store.profiles.pop()
+      throw e
+    }
+    return getConfig(id)
+  }
+
+  if (!REASONIX_MODELS.includes(connect.defaultModel)) throw new Error(t('reasonix.badConnection'))
+  validateReasonixKey(connect.key)
+  let created = false
+  try {
+    const root = reasonixProfilesRoot()
+    mkdirSync(root, { recursive: true, mode: 0o700 })
+    if (realpathSync(root) !== join(realpathSync(dirname(root)), 'profiles')) throw new Error('Invalid managed Reasonix root')
+    mkdirSync(cfg.configDir, { mode: 0o700 })
+    created = true
+    const dir = reasonixManagedProfilePath(cfg)
+    if (!dir) throw new Error('Invalid managed Reasonix directory')
+    writeFileSync(join(dir, 'config.toml'), renderConfigToml({ defaultModel: connect.defaultModel, language: i18nState().locale }), { flag: 'wx', mode: 0o600 })
+    writeEnvFile(dir, REASONIX_KEY_ENV, connect.key.trim(), root)
+    store.profiles.push(cfg)
+    persist()
+    return getConfig(id)
+  } catch {
+    store.profiles = store.profiles.filter((p) => p.id !== id)
+    if (created) rmSync(cfg.configDir, { recursive: true, force: true })
+    throw new Error(t('reasonix.writeFailed'))
+  }
+}
+
+function validateReasonixKey(key: string): void {
+  if (!key.trim()) throw new Error(t('apikey.empty'))
+  if (/[\r\n\0]/.test(key)) throw new Error(t('reasonix.invalidKey'))
+}
+
+export function setReasonixKey(cfg: ProfileConfig, key: string): void {
+  if (cfg.imported) throw new Error(t('reasonix.importedKeyReadonly'))
+  validateReasonixKey(key)
+  const dir = reasonixManagedProfilePath(cfg)
+  if (!dir) throw new Error(t('reasonix.writeFailed'))
+  try {
+    writeEnvFile(dir, REASONIX_KEY_ENV, key.trim(), reasonixProfilesRoot())
+  } catch {
+    throw new Error(t('reasonix.writeFailed'))
+  }
+}
+
 export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): ProfileConfig {
   const i = store.profiles.findIndex((p) => p.id === id)
   if (i < 0) throw new Error(`unknown account: ${id}`)
@@ -358,7 +474,14 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   if (cur.kind !== 'gemini') delete rest.agyTransport
   else if (rest.agyTransport !== undefined && rest.agyTransport !== 'acp') rest.agyTransport = 'print'
   delete rest.apiKey
-  if (cur.apiKey) delete rest.configDir // API-key accounts always live in their managed dir
+  if (cur.kind === 'reasonix') {
+    delete rest.loginCommand
+    if (rest.extraEnv) {
+      rest.extraEnv = stripCredentials('reasonix', rest.extraEnv)
+      delete rest.extraEnv.REASONIX_HOME
+    }
+  }
+  if (cur.apiKey || cur.kind === 'reasonix') delete rest.configDir // API-key accounts always live in their managed dir
   if (patch.apiKey?.models && cur.apiKey?.provider === 'custom') {
     const next: ApiKeyConfig = { ...cur.apiKey, models: [...patch.apiKey.models] }
     const err = validateApiKeyConfig(cur.kind, next)
@@ -378,10 +501,21 @@ export function resetProfile(id: ProfileId): ProfileConfig {
   return updateProfile(id, { ...COMMAND_DEFAULTS[p.kind], extraEnv: {} })
 }
 
-/** Removes the account from AgentSwitch only. Files on disk (incl. ~/.claude etc.) are left untouched. */
+/** Removes the account and any credential file owned by AgentSwitch. */
 export function removeProfile(id: ProfileId): void {
+  const cfg = store.profiles.find((p) => p.id === id)
+  if (cfg?.kind === 'reasonix') {
+    removeReasonixKey({
+      dir: expandHome(cfg.configDir),
+      accountId: id,
+      profilesRoot: reasonixProfilesRoot(),
+      importedDir: expandHome(REASONIX_IMPORT_DIR),
+      imported: cfg.imported
+    })
+  }
   store.profiles = store.profiles.filter((p) => p.id !== id)
   persist()
+  if (cfg?.kind === 'reasonix') return
   agyAcpPool.retire(id)
   try {
     secrets().remove(id)
@@ -481,7 +615,7 @@ function agyTokenFiles(home: string): string[] {
 
 /** Best-effort "has this account completed OAuth" check, by kind. */
 function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
-  if (isApiKeyAccount(cfg)) return secrets().has(cfg.id)
+  if (cfg.apiKey && cfg.kind !== 'reasonix') return secrets().has(cfg.id)
   switch (cfg.kind) {
     case 'claude': {
       // Default dir keeps its global config at ~/.claude.json; custom CLAUDE_CONFIG_DIR at <dir>/.claude.json.
@@ -495,6 +629,11 @@ function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
       return agyKeychainItem(dir) !== null || agyTokenFiles(dir).length > 0
     case 'codex':
       return existsSync(join(dir, 'auth.json'))
+    case 'reasonix': {
+      if (!cfg.imported && !reasonixManagedProfilePath(cfg)) return false
+      const name = keyEnvName(readReasonixConfig(dir))
+      return !!name && reasonixHasKey(dir, name, cfg.imported)
+    }
   }
 }
 
@@ -535,6 +674,8 @@ export function loginSignature(id: ProfileId): string {
       ].join('|')
     case 'codex':
       return stamp(join(dir, 'auth.json'))
+    case 'reasonix':
+      return [stamp(join(dir, 'config.toml')), stamp(join(dir, '.env'))].join('|')
   }
 }
 
@@ -623,6 +764,10 @@ export function ensureIsolatedKeychain(dir: string): void {
 /** Ensures the isolation dir exists. Never touches existing dirs/symlinks (e.g. ~/.claude2/projects). */
 export function prepareProfileDir(cfg: ProfileConfig): string {
   const dir = expandHome(cfg.configDir)
+  if (cfg.kind === 'reasonix') {
+    if (!cfg.imported && !reasonixManagedProfilePath(cfg)) throw new Error(t('reasonix.writeFailed'))
+    return dir
+  }
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   if (isIsolatedGemini(cfg, dir)) {
     for (const rel of [...HOME_LINKS, ...AGY_SHARED_LINKS]) linkFromRealHome(dir, rel)
@@ -661,6 +806,9 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
     case 'codex':
       env.CODEX_HOME = dir
       break
+    case 'reasonix':
+      env.REASONIX_HOME = dir
+      break
   }
   env.AGENTSWITCH_PROFILE = cfg.id
   return env
@@ -668,7 +816,7 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
 
 /** The account's key env, or {} (subscription account, or no key saved yet). */
 function accountKeyEnv(cfg: ProfileConfig): Record<string, string> {
-  if (!cfg.apiKey) return {}
+  if (!cfg.apiKey || cfg.kind === 'reasonix') return {}
   const key = secrets().get(cfg.id)
   return key ? apiKeyEnv(cfg.kind, cfg.apiKey, key, cfg.defaultModel) : {}
 }
@@ -711,7 +859,10 @@ export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>,
   if (isIsolatedGemini(cfg, dir)) for (const k of AGY_AUTH_LEAK_VARS) delete base[k]
   // Inherited credential vars are always dropped, so a global `export ANTHROPIC_BASE_URL=…`
   // can't redirect a subscription account, and an API-key account gets only its own key.
-  const added = { ...isolationEnv(cfg, dir), ...accountKeyEnv(cfg), ...cfg.extraEnv }
+  const isolation = isolationEnv(cfg, dir)
+  const added = cfg.kind === 'reasonix'
+    ? { ...stripCredentials('reasonix', cfg.extraEnv), ...isolation }
+    : { ...isolation, ...accountKeyEnv(cfg), ...cfg.extraEnv }
   const env = { ...stripCredentials(cfg.kind, base), ...added }
   const injected = maskEnv(added)
   const cwd = realHome
@@ -742,7 +893,9 @@ export function sessionStoreKeyOf(cfg: ProfileConfig): string {
       ? join(dir, 'projects')
       : cfg.kind === 'codex'
         ? join(dir, 'sessions')
-        : join(dir, '.gemini', 'antigravity-cli', 'conversations')
+        : cfg.kind === 'reasonix'
+          ? join(dir, 'projects')
+          : join(dir, '.gemini', 'antigravity-cli', 'conversations')
   let real: string
   try {
     real = realpathSync(sub)
