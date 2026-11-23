@@ -27,6 +27,7 @@ You probably pay for more than one AI coding subscription, and each one lives in
 - **Usage at a glance.** Context-window fill for the current model, plus 5-hour and 7-day quota windows where the CLI reports them, with a warning when you near your limit.
 - **Separate accounts.** Keep a work and a personal account for the same CLI, each with its own isolated sign-in.
 - **Extensions.** Manage the MCP servers, skills and rules each CLI loads.
+- **Git tools, opt-in.** Turn on **Settings → Developer → Show Git management** to see the current branch and ahead/behind under the composer, switch or create branches, fetch, pull (fast-forward only) and push, and stage, discard and commit from the File Changes panel. Off by default, so the panel stays a simple read-only view of what changed.
 - **Built-in terminal** for installing, signing in to and debugging each CLI.
 
 ## Supported agents
