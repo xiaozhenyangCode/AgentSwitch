@@ -4,11 +4,11 @@ import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSy
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, PriceRate, PriceRow, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
-import { candidates, cleanRate, costOf, findRate, isLong, type Match, type PriceTable } from './pricing'
+import { cleanRate, costOf, findRate, isLong, parseLiteLLM, type Match, type PriceTable, type PriceTables } from './pricing'
 import { claudeSessionLog } from './usageDelta'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
@@ -24,10 +24,10 @@ import { realHome } from './shellEnv'
  *  - quota: claude rate_limit_event (seen during runs) and codex rollout token_count
  *    rate_limits. Nothing is invented: accounts without such data have quota = null.
  *
- * Tokens are kept per day and model; cost is computed from the price table (built-in snapshot +
- * the user's overrides) when the snapshot is built, so a price change re-prices all history.
+ * Tokens are kept per day and model; cost is computed when the snapshot is built, at the vendors'
+ * API list prices (see pricing.ts), so a newer price table re-prices all history.
  *
- * Stats: userData/usage-stats.json · quota: userData/quota-cache.json · prices: userData/price-overrides.json.
+ * Stats: userData/usage-stats.json · quota: userData/quota-cache.json · prices: userData/prices-litellm.json.
  */
 
 const CLAUDE_DAYS = 30
@@ -61,7 +61,7 @@ interface Stats {
 
 const statsFile = (): string => join(app.getPath('userData'), 'usage-stats.json')
 const quotaFile = (): string => join(app.getPath('userData'), 'quota-cache.json')
-const pricesFile = (): string => join(app.getPath('userData'), 'price-overrides.json')
+const pricesFile = (): string => join(app.getPath('userData'), 'prices-litellm.json')
 
 const zero = (): Bucket => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, runs: 0 })
 const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0)
@@ -83,26 +83,62 @@ const tokensOf = (b: Partial<Bucket>): number => n(b.input) + n(b.output) + n(b.
 
 // ---- prices -----------------------------------------------------------------------------------------
 
-const BUILTIN = builtinPrices.models as PriceTable
-let overrides: PriceTable = loadOverrides()
+const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
+const PRICES_TTL = DAY
+
+const ccswitch: PriceTable = {}
+for (const [k, v] of Object.entries(builtinPrices.ccswitch)) {
+  const r = cleanRate(v)
+  if (r) ccswitch[k] = r
+}
+/** LiteLLM's table as last fetched (null: never; the built-in snapshot applies). */
+let live: { fetchedAt: number; models: PriceTable } | null = loadLive()
+let tables: PriceTables = { litellm: { ...parseLiteLLM(builtinPrices.litellm), ...(live?.models ?? {}) }, ccswitch }
 const matches = new Map<string, Match | null>()
 
-function loadOverrides(): PriceTable {
+function loadLive(): { fetchedAt: number; models: PriceTable } | null {
   try {
-    const raw = JSON.parse(readFileSync(pricesFile(), 'utf8')) as Record<string, unknown>
-    const out: PriceTable = {}
-    for (const [k, v] of Object.entries(raw)) {
+    const j = JSON.parse(readFileSync(pricesFile(), 'utf8'))
+    if (typeof j?.fetchedAt !== 'number' || !j.models) return null
+    const models: PriceTable = {}
+    for (const [k, v] of Object.entries(j.models)) {
       const r = cleanRate(v)
-      if (r) out[k] = r
+      if (r) models[k] = r
     }
-    return out
+    return { fetchedAt: j.fetchedAt, models }
   } catch {
-    return {}
+    return null
   }
 }
 
+let pricesPending: Promise<void> | null = null
+
+/** Fetches LiteLLM's table once a day (t3code does the same); failures keep the last table. */
+function refreshPrices(): Promise<void> {
+  if (pricesPending || (live && Date.now() - live.fetchedAt < PRICES_TTL)) return pricesPending ?? Promise.resolve()
+  pricesPending = (async () => {
+    try {
+      const res = await net.fetch(LITELLM_URL, { headers: { Accept: 'application/json' } })
+      if (!res.ok) return
+      const models = parseLiteLLM(await res.json())
+      if (Object.keys(models).length < 50) return // not the table we expect
+      live = { fetchedAt: Date.now(), models }
+      tables = { litellm: { ...parseLiteLLM(builtinPrices.litellm), ...models }, ccswitch }
+      matches.clear()
+      mkdirSync(app.getPath('userData'), { recursive: true })
+      writeFileSync(pricesFile(), JSON.stringify(live))
+      changed()
+    } catch {
+      /* offline: keep the last table */
+    } finally {
+      pricesPending = null
+    }
+  })()
+  return pricesPending
+}
+
 function priceOf(model: string): Match | null {
-  if (!matches.has(model)) matches.set(model, findRate(model, BUILTIN, overrides))
+  if (!matches.has(model)) matches.set(model, findRate(model, tables))
   return matches.get(model) ?? null
 }
 
@@ -117,25 +153,6 @@ function put(days: Days, ts: number, key: string, u: Partial<Bucket>): void {
   d[key] = add(d[key] ?? zero(), u)
 }
 
-/**
- * Sets (or with null: removes) the user's price for the model as shown in the usage page. It is
- * stored under the table key the model matched, so variants of the model share it.
- */
-export function setPrice(model: string, rate: PriceRate | null): UsageSnapshot {
-  const m = priceOf(model)
-  const key = m?.key ?? candidates(model)[0] ?? ''
-  if (rate === null) delete overrides[key]
-  else {
-    const r = cleanRate(rate)
-    if (!r) throw new Error('invalid price')
-    overrides[key] = r
-  }
-  mkdirSync(app.getPath('userData'), { recursive: true })
-  writeFileSync(pricesFile(), JSON.stringify(overrides, null, 2))
-  matches.clear()
-  changed()
-  return snapshot()
-}
 const pad = (x: number): string => String(x).padStart(2, '0')
 export const dayKey = (ts: number): string => {
   const d = new Date(ts)
@@ -257,7 +274,6 @@ export function snapshot(): UsageSnapshot {
   const per = new Map<ProfileId, Days[]>()
   for (const [id, days] of Object.entries(stats.runs)) per.set(id, [...(per.get(id) ?? []), days])
   for (const f of [...Object.values(stats.files), ...Object.values(stats.legacy)]) per.set(f.profileId, [...(per.get(f.profileId) ?? []), f.days])
-  const rows = new Map<string, PriceRow>()
   const configs = listConfigs()
   const kinds = new Map(configs.map((c) => [c.id, c.kind as string]))
   const modelOf = (key: string): string => (key.endsWith('|long') ? key.slice(0, -5) : key)
@@ -286,24 +302,14 @@ export function snapshot(): UsageSnapshot {
     const e = best ? priceOf(best.key) : null
     return e ? { ...e, estimate: true } : null
   }
+  const models: Record<string, ModelPrice> = {}
   const priced = (key: string, b: Bucket): Bucket => {
     const model = modelOf(key)
     const m = rateOf(model)
-    const cost = m ? costOf(b, m.rate, model !== key) : b.costUsd
-    const row = rows.get(model) ?? {
-      model,
-      key: m?.key ?? null,
-      source: m?.estimate ? 'estimate' : (m?.source ?? null),
-      rate: m?.rate ?? null,
-      builtin: m && !m.estimate ? (BUILTIN[m.key] ?? null) : null,
-      tokens: 0,
-      costUsd: 0
-    }
-    row.tokens += tokensOf(b)
-    row.costUsd += cost
-    rows.set(model, row)
-    return { ...b, costUsd: cost, unpriced: m ? 0 : tokensOf(b) }
+    models[model] ??= { key: m?.key ?? null, source: m?.estimate ? 'estimate' : (m?.source ?? null), rate: m?.rate ?? null }
+    return { ...b, costUsd: m ? costOf(b, m.rate, model !== key) : b.costUsd, unpriced: m ? 0 : tokensOf(b) }
   }
+  const daily = new Map<string, DailyUsage>()
   for (const c of configs) {
     const a: AccountUsage = {
       today: zero(),
@@ -314,17 +320,29 @@ export function snapshot(): UsageSnapshot {
       limitedAt: stats.limitedAt[c.id] ?? null
     }
     for (const days of per.get(c.id) ?? [])
-      for (const [k, models] of Object.entries(days))
-        for (const [model, b] of Object.entries(models)) {
-          const v = priced(model, b)
+      for (const [k, buckets] of Object.entries(days))
+        for (const [key, b] of Object.entries(buckets)) {
+          const v = priced(key, b)
+          const model = modelOf(key)
+          const id = `${k}\n${c.id}\n${model}`
+          const { cacheWrite1h: _, ...t } = v
+          daily.set(id, add(daily.get(id) ?? { ...zero(), day: k, profileId: c.id, model }, t))
           a.total = add(a.total, v)
           if (k >= weekFrom) a.week = add(a.week, v)
           if (k === today) a.today = add(a.today, v)
         }
     accounts[c.id] = a
   }
-  const prices = [...rows.values()].filter((r) => r.tokens > 0 && r.model !== '<synthetic>').sort((x, y) => y.tokens - x.tokens)
-  return { accounts, backfill, claudeDays: CLAUDE_DAYS, prices, pricesAt: builtinPrices.fetchedAt, updatedAt: Date.now() }
+  return {
+    accounts,
+    backfill,
+    claudeDays: CLAUDE_DAYS,
+    daily: [...daily.values()].filter((d) => tokensOf(d) > 0 || d.runs > 0),
+    models,
+    pricesAt: live ? dayKey(live.fetchedAt) : builtinPrices.fetchedAt,
+    pricesLive: !!live,
+    updatedAt: Date.now()
+  }
 }
 
 // ---- live updates from runs -------------------------------------------------------------------
@@ -1028,7 +1046,7 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
         recordRun(c.id, r.model ?? 'haiku', usage)
       })
   )
-  await Promise.all([codexTask, agyTask, claudeTask])
+  await Promise.all([codexTask, agyTask, claudeTask, refreshPrices()])
   void runBackfill()
   changed()
   return snapshot()
@@ -1046,5 +1064,7 @@ export function startUsage(): void {
     }
   }, 4000)
   setTimeout(() => void runBackfill(), 8000)
+  setTimeout(() => void refreshPrices(), 10_000)
+  setInterval(() => void refreshPrices(), 6 * 3600_000)
   setInterval(() => void runBackfill(), 30 * 60_000)
 }

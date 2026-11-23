@@ -88,14 +88,14 @@ import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
-import { onUsageChange, refreshUsage, setPrice, snapshot as usageSnapshot, startUsage } from './usage'
+import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { AttachmentText, OnboardingState, PriceRate, RunRequest } from '@shared/types'
+import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
 import { capTranscript } from '@shared/transcript'
 
@@ -393,7 +393,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   startUsage()
   ipcMain.handle(IPC.usageGet, () => usageSnapshot())
   ipcMain.handle(IPC.usageRefresh, (_e, probe?: boolean) => refreshUsage(probe === true))
-  ipcMain.handle(IPC.usageSetPrice, (_e, model: unknown, rate: unknown) => setPrice(typeof model === 'string' ? model : '', (rate ?? null) as PriceRate | null))
 
   // ---- local CLI history (read-only) ------------------------------------------------------
   ipcMain.handle(IPC.historyList, (_e, force?: boolean) => listHistory(force === true))

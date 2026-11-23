@@ -24,7 +24,6 @@ import {
   type EnvPreview,
   type HistoryEntry,
   type UsageSnapshot,
-  type PriceRate,
   type HistoryStat,
   type HistoryThread,
   type KindConfig,
@@ -110,8 +109,6 @@ const api = {
     get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),
     /** probe=true sends one tiny haiku message per claude account to pull fresh quota (uses quota). */
     refresh: (probe = false): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageRefresh, probe),
-    /** The user's price for a model (USD / 1M tokens); null restores the built-in one. */
-    setPrice: (model: string, rate: PriceRate | null): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSetPrice, model, rate),
     onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb)
   },
   history: {

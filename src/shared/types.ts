@@ -250,19 +250,24 @@ export interface PriceRate {
   long?: { threshold: number; input: number; output?: number; cacheRead?: number; cacheWrite?: number }
 }
 
-/** A model seen in the usage data, with the price it is billed at. */
-export interface PriceRow {
-  /** Model name as the CLI reported it ('' = unknown). */
-  model: string
+/** A model seen in the usage data and the price it is billed at. */
+export interface ModelPrice {
   /** Price-table key it matched (null: no price). */
   key: string | null
-  /** estimate: recorded without a model, priced as the engine's most used model (`key`). */
-  source: 'builtin' | 'custom' | 'estimate' | null
+  /**
+   * litellm: LiteLLM's public table (t3code's source) · ccswitch: CC Switch's built-in table ·
+   * estimate: recorded without a model, priced as the engine's most used model (`key`).
+   */
+  source: 'litellm' | 'ccswitch' | 'estimate' | null
   rate: PriceRate | null
-  /** Built-in rate for the key, to show / restore. */
-  builtin: PriceRate | null
-  tokens: number
-  costUsd: number
+}
+
+/** One account's usage of one model on one day (priced). */
+export interface DailyUsage extends UsageTotals {
+  day: string
+  profileId: ProfileId
+  /** As the CLI reported it ('?claude' …: recorded before models were). */
+  model: string
 }
 
 export interface AccountUsage {
@@ -281,10 +286,12 @@ export interface UsageSnapshot {
   backfill: 'idle' | 'running' | 'done'
   /** Days covered by the Claude history backfill. */
   claudeDays: number
-  /** Models in the data, most tokens first. */
-  prices: PriceRow[]
-  /** Built-in price table date (YYYY-MM-DD). */
+  /** Per day, account and model (for the period views). */
+  daily: DailyUsage[]
+  models: Record<string, ModelPrice>
+  /** Date of the LiteLLM table in use (YYYY-MM-DD); live: fetched (daily), otherwise the built-in snapshot. */
   pricesAt: string
+  pricesLive: boolean
   updatedAt: number
 }
 
@@ -580,7 +587,6 @@ export const IPC = {
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',
   usageChanged: 'usage:changed',
-  usageSetPrice: 'usage:setPrice',
   historyOpen: 'history:open',
   historyImport: 'history:import',
   historyStat: 'history:stat',

@@ -1,8 +1,9 @@
 import type { PriceRate } from '@shared/types'
 
 /**
- * Token -> USD at API list prices. Built-in table: scripts/update-prices.mjs (LiteLLM snapshot);
- * the user's overrides win. Rates are USD per million tokens.
+ * Token -> USD at the vendors' API list prices (USD per million tokens), from LiteLLM's public
+ * table (refreshed daily, as t3code does; offline: the snapshot in prices.builtin.json) and, for
+ * models it does not list yet, CC Switch's built-in table (snapshot).
  */
 
 export type PriceTable = Record<string, PriceRate>
@@ -39,21 +40,77 @@ export function candidates(model: string): string[] {
   return out
 }
 
+export type PriceSource = 'litellm' | 'ccswitch'
+
 export interface Match {
   key: string
   rate: PriceRate
-  source: 'builtin' | 'custom'
+  source: PriceSource
 }
 
-/** The rate a model is billed at (overrides first at every level of specificity). */
-export function findRate(model: string, builtin: PriceTable, overrides: PriceTable): Match | null {
-  if (FREE.has(model)) return { key: model, rate: { input: 0, output: 0 }, source: 'builtin' }
-  if (!model) return overrides[''] ? { key: '', rate: overrides[''], source: 'custom' } : null
-  for (const c of candidates(model)) {
-    if (overrides[c]) return { key: c, rate: overrides[c], source: 'custom' }
-    if (builtin[c]) return { key: c, rate: builtin[c], source: 'builtin' }
-  }
+export interface PriceTables {
+  litellm: PriceTable
+  ccswitch: PriceTable
+}
+
+/** The rate a model is billed at: LiteLLM's table first (t3code's source), then CC Switch's. */
+export function findRate(model: string, t: PriceTables): Match | null {
+  if (FREE.has(model)) return { key: model, rate: { input: 0, output: 0 }, source: 'litellm' }
+  const names = candidates(model)
+  for (const c of names) if (t.litellm[c]) return { key: c, rate: t.litellm[c], source: 'litellm' }
+  for (const c of names) if (t.ccswitch[c]) return { key: c, rate: t.ccswitch[c], source: 'ccswitch' }
   return null
+}
+
+const FIRST_PARTY = new Set(['anthropic', 'openai', 'gemini', 'vertex_ai-language-models', 'deepseek', 'xai'])
+const PREFIX = /^(deepseek|gemini|xai|openai|anthropic)\//
+
+/**
+ * LiteLLM's model_prices_and_context_window.json (whole, or filtered by scripts/update-prices.mjs)
+ * -> rates per million tokens. Keeps the model makers' own chat entries (bare names win over
+ * prefixed aliases) and the lowest long-context tier; entries without input/output rates are dropped.
+ */
+export function parseLiteLLM(doc: unknown): PriceTable {
+  const out: PriceTable = {}
+  if (!doc || typeof doc !== 'object') return out
+  const per = (v: unknown): number | undefined => (typeof v === 'number' && isFinite(v) && v >= 0 ? Math.round(v * 1e12) / 1e6 : undefined)
+  for (const [name, raw] of Object.entries(doc as Record<string, any>)) {
+    if (!raw || typeof raw !== 'object') continue
+    if (raw.litellm_provider !== undefined && !FIRST_PARTY.has(raw.litellm_provider)) continue
+    if (raw.mode && raw.mode !== 'chat' && raw.mode !== 'responses') continue
+    const bare = name.toLowerCase().replace(PREFIX, '')
+    if (bare.includes('/')) continue
+    const input = per(raw.input_cost_per_token)
+    const output = per(raw.output_cost_per_token)
+    if (input === undefined || output === undefined) continue
+    if (out[bare] && name.toLowerCase() !== bare) continue
+    const rate: PriceRate = { input, output }
+    const cr = per(raw.cache_read_input_token_cost)
+    const cw = per(raw.cache_creation_input_token_cost)
+    const cw1h = per(raw.cache_creation_input_token_cost_above_1hr)
+    if (cr !== undefined) rate.cacheRead = cr
+    if (cw) rate.cacheWrite = cw
+    if (cw1h) rate.cacheWrite1h = cw1h
+    const tier = Object.keys(raw)
+      .map((k) => Number(/^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1]))
+      .filter((x) => x > 0)
+      .sort((x, y) => x - y)[0]
+    if (tier) {
+      const sfx = `_above_${tier}k_tokens`
+      const li = per(raw[`input_cost_per_token${sfx}`])
+      if (li !== undefined) {
+        rate.long = { threshold: tier * 1000, input: li }
+        const lo = per(raw[`output_cost_per_token${sfx}`])
+        const lr = per(raw[`cache_read_input_token_cost${sfx}`])
+        const lw = per(raw[`cache_creation_input_token_cost${sfx}`])
+        if (lo !== undefined) rate.long.output = lo
+        if (lr !== undefined) rate.long.cacheRead = lr
+        if (lw) rate.long.cacheWrite = lw
+      }
+    }
+    out[bare] = rate
+  }
+  return out
 }
 
 /** The long-context tier applies to a request whose prompt (input incl. cache) exceeds the threshold. */
@@ -74,7 +131,7 @@ export function costOf(t: Tokens, rate: PriceRate, long = false): number {
   return (t.input * input + t.output * output + t.cacheRead * cacheRead + (t.cacheWrite - w1h) * cacheWrite + w1h * cacheWrite1h) / 1e6
 }
 
-/** A rate as typed by the user: finite, non-negative numbers only. */
+/** A rate read from a file: finite, non-negative numbers only. */
 export function cleanRate(v: unknown): PriceRate | null {
   if (!v || typeof v !== 'object') return null
   const r = v as Record<string, unknown>

@@ -1,10 +1,12 @@
-// Regenerates src/main/prices.builtin.json from LiteLLM's public price table (the source t3code uses).
-//   node scripts/update-prices.mjs            # fetch the current table
-//   node scripts/update-prices.mjs prices.json # or use a downloaded copy
-// Keeps the model makers' own first-party entries (bare names, plus deepseek/…) in chat mode,
-// with the rates AgentSwitch prices: input, output, cache read, cache write (5 min / 1 h) and the
-// lowest long-context tier. All rates are USD per million tokens.
-import { readFileSync, writeFileSync } from 'node:fs'
+// Regenerates src/main/prices.builtin.json, the offline fallback of the price table.
+//   node scripts/update-prices.mjs [litellm.json] [cc-switch.db]
+// - litellm: LiteLLM's public table (what t3code prices with; the app also refreshes it daily).
+//   Only the first-party chat entries are kept, raw, with the fields src/main/pricing.ts reads.
+// - ccswitch: CC Switch's built-in model_pricing table (~/.cc-switch/cc-switch.db), for models
+//   LiteLLM does not list yet (e.g. gemini-4-neon). Rates per million tokens.
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,47 +14,38 @@ const SRC = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'prices.builtin.json')
 const PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'vertex_ai-language-models', 'deepseek', 'xai'])
 const FAMILY = /^(claude-|gpt-|o\d|codex|gemini-|deepseek|grok-)/
+const FIELD = /^(input|output)_cost_per_token(_above_\d+k_tokens)?$|^cache_(read|creation)_input_token_cost(_above_1hr|_above_\d+k_tokens)?$/
 
-const arg = process.argv[2]
-const table = arg ? JSON.parse(readFileSync(arg, 'utf8')) : await (await fetch(SRC)).json()
+const [litellmArg, dbArg = join(homedir(), '.cc-switch', 'cc-switch.db')] = process.argv.slice(2)
+const table = litellmArg ? JSON.parse(readFileSync(litellmArg, 'utf8')) : await (await fetch(SRC)).json()
 
-const m = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 1e6 * 1e6) / 1e6 : null)
-const models = {}
+const litellm = {}
 for (const [name, e] of Object.entries(table)) {
   if (!e || typeof e !== 'object' || !PROVIDERS.has(e.litellm_provider)) continue
   if (e.mode && e.mode !== 'chat' && e.mode !== 'responses') continue
-  const key = name.toLowerCase().replace(/^deepseek\//, '')
-  if (key.includes('/') || !FAMILY.test(key)) continue
-  const input = m(e.input_cost_per_token)
-  const output = m(e.output_cost_per_token)
-  if (input === null || output === null) continue
-  const rate = { input, output }
-  const cr = m(e.cache_read_input_token_cost)
-  const cw = m(e.cache_creation_input_token_cost)
-  const cw1h = m(e.cache_creation_input_token_cost_above_1hr)
-  if (cr !== null) rate.cacheRead = cr
-  if (cw !== null && cw > 0) rate.cacheWrite = cw
-  if (cw1h !== null && cw1h > 0) rate.cacheWrite1h = cw1h
-  // long-context tier: the lowest `input_cost_per_token_above_<N>k_tokens`
-  const tiers = Object.keys(e)
-    .map((k) => /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1])
-    .filter(Boolean)
-    .map(Number)
-    .sort((a, b) => a - b)
-  if (tiers.length) {
-    const s = `_above_${tiers[0]}k_tokens`
-    const long = { threshold: tiers[0] * 1000, input: m(e[`input_cost_per_token${s}`]) }
-    const o = m(e[`output_cost_per_token${s}`])
-    const r = m(e[`cache_read_input_token_cost${s}`])
-    const w = m(e[`cache_creation_input_token_cost${s}`])
-    if (o !== null) long.output = o
-    if (r !== null) long.cacheRead = r
-    if (w !== null && w > 0) long.cacheWrite = w
-    if (long.input !== null) rate.long = long
-  }
-  // a first-party entry wins over an alias that maps to the same bare name
-  if (!models[key] || name === key) models[key] = rate
+  const bare = name.toLowerCase().replace(/^(deepseek|gemini|xai|openai|anthropic)\//, '')
+  if (bare.includes('/') || !FAMILY.test(bare)) continue
+  if (typeof e.input_cost_per_token !== 'number' || typeof e.output_cost_per_token !== 'number') continue
+  if (litellm[bare] && name.toLowerCase() !== bare) continue // the bare entry wins over a prefixed alias
+  litellm[bare] = Object.fromEntries(Object.entries(e).filter(([k, v]) => FIELD.test(k) && typeof v === 'number'))
 }
-const sorted = Object.fromEntries(Object.entries(models).sort(([a], [b]) => a.localeCompare(b)))
-writeFileSync(OUT, JSON.stringify({ source: 'LiteLLM model_prices_and_context_window.json', fetchedAt: new Date().toISOString().slice(0, 10), unit: 'USD per 1M tokens', models: sorted }, null, 1) + '\n')
-console.log(`wrote ${Object.keys(sorted).length} models to ${OUT}`)
+
+const ccswitch = {}
+if (existsSync(dbArg)) {
+  const rows = execFileSync('sqlite3', ['-readonly', '-json', dbArg, 'select * from model_pricing'], { encoding: 'utf8' })
+  for (const r of JSON.parse(rows || '[]')) {
+    const v = (x) => (x === undefined || x === null || x === '' ? undefined : Number(x))
+    const rate = { input: v(r.input_cost_per_million), output: v(r.output_cost_per_million), cacheRead: v(r.cache_read_cost_per_million), cacheWrite: v(r.cache_creation_cost_per_million) }
+    if (!(rate.input >= 0 && rate.output >= 0)) continue
+    if (!(rate.cacheWrite > 0)) delete rate.cacheWrite // 0 there means "not listed"
+    if (rate.cacheRead === undefined) delete rate.cacheRead
+    ccswitch[String(r.model_id).toLowerCase()] = rate
+  }
+}
+
+const sort = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)))
+writeFileSync(
+  OUT,
+  JSON.stringify({ fetchedAt: new Date().toISOString().slice(0, 10), litellm: sort(litellm), ccswitch: sort(ccswitch) }, null, 1) + '\n'
+)
+console.log(`wrote ${Object.keys(litellm).length} LiteLLM + ${Object.keys(ccswitch).length} CC Switch models to ${OUT}`)

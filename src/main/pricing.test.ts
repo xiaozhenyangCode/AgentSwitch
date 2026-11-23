@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import builtin from './prices.builtin.json'
-import { candidates, cleanRate, costOf, findRate, isLong, type PriceTable } from './pricing'
+import { candidates, cleanRate, costOf, findRate, isLong, parseLiteLLM, type PriceTable } from './pricing'
 
-const table = builtin.models as PriceTable
+const tables = {
+  litellm: parseLiteLLM(builtin.litellm),
+  ccswitch: Object.fromEntries(Object.entries(builtin.ccswitch).map(([k, v]) => [k, cleanRate(v)!])) as PriceTable
+}
 
 describe('model names', () => {
   it('normalizes the names CLIs report', () => {
@@ -18,24 +21,37 @@ describe('model names', () => {
   })
 })
 
-describe('price lookup', () => {
-  it('finds built-in prices, stripping variants', () => {
-    expect(findRate('claude-opus-5-5[1m]', table, {})).toMatchObject({ key: 'claude-opus-5-5', source: 'builtin', rate: { input: 4, output: 20 } })
-    expect(findRate('gpt-6.2-sol', table, {})?.rate.input).toBe(2)
-    expect(findRate('no-such-model', table, {})).toBeNull()
-    expect(findRate('<synthetic>', table, {})?.rate).toEqual({ input: 0, output: 0 })
+describe('LiteLLM table', () => {
+  it('reads per-token rates as per-million, with 1-hour writes and the long-context tier', () => {
+    expect(tables.litellm['claude-opus-5-5']).toEqual({ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8 })
+    expect(tables.litellm['gpt-6.2-sol']).toEqual({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, long: { threshold: 272000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 } })
   })
-  it('lets overrides win, also for unknown models', () => {
-    const o = { 'claude-opus-5-5': { input: 1, output: 2 }, 'my-model': { input: 3, output: 4 } }
-    expect(findRate('claude-opus-5-5', table, o)).toMatchObject({ source: 'custom', rate: { input: 1 } })
-    expect(findRate('my-model-20260101', table, o)).toMatchObject({ key: 'my-model', source: 'custom' })
+  it('keeps first-party chat entries only, bare names winning', () => {
+    const t = parseLiteLLM({
+      'bedrock/claude-x': { litellm_provider: 'bedrock', input_cost_per_token: 9e-6, output_cost_per_token: 9e-6 },
+      'deepseek/deepseek-y': { litellm_provider: 'deepseek', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+      'gpt-z': { litellm_provider: 'openai', mode: 'embedding', input_cost_per_token: 1e-6, output_cost_per_token: 0 },
+      'gpt-w': { litellm_provider: 'openai', input_cost_per_token: 1e-6 }
+    })
+    expect(t).toEqual({ 'deepseek-y': { input: 1, output: 2 } })
+  })
+})
+
+describe('price lookup', () => {
+  it('prefers LiteLLM, then CC Switch, stripping variants', () => {
+    expect(findRate('claude-opus-5-5[1m]', tables)).toMatchObject({ key: 'claude-opus-5-5', source: 'litellm', rate: { input: 4, output: 20 } })
+    expect(findRate('gemini-4-neon', tables)).toMatchObject({ key: 'gemini-4-neon', source: 'litellm', rate: { input: 3, output: 15, cacheRead: 0.15 } })
+    expect(findRate('deepseek-v4.1-flash', tables)).toMatchObject({ key: 'deepseek-v4.1-flash', source: 'ccswitch' })
+    expect(findRate('gemini-3.8-flash-tiered', tables)?.key).toBe('gemini-3.8-flash')
+    expect(findRate('claude-opus-4-6-thinking', tables)?.key).toBe('claude-opus-4-6')
+    expect(findRate('no-such-model', tables)).toBeNull()
+    expect(findRate('<synthetic>', tables)?.rate).toEqual({ input: 0, output: 0 })
   })
 })
 
 describe('cost', () => {
   const opus = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8 }
   it('bills every bucket at its rate', () => {
-    // 1M each: 4 + 20 + 0.2 + (0.5M x 5 + 0.5M x 8)
     expect(costOf({ input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6, cacheWrite1h: 5e5 }, opus)).toBeCloseTo(4 + 20 + 0.2 + 2.5 + 4, 9)
   })
   it('falls back to input for missing cache rates', () => {
@@ -48,7 +64,7 @@ describe('cost', () => {
     expect(isLong(r, 272000)).toBe(false)
     expect(costOf({ input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 0 }, r, true)).toBeCloseTo(4 + 15 + 0.2, 9)
   })
-  it('accepts only sane user rates', () => {
+  it('accepts only sane rates', () => {
     expect(cleanRate({ input: 1, output: 2, cacheRead: -1, cacheWrite: 'x' })).toEqual({ input: 1, output: 2 })
     expect(cleanRate({ input: NaN, output: 2 })).toBeNull()
   })
