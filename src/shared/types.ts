@@ -435,6 +435,7 @@ export const IPC = {
   profilesAdd: 'profiles:add',
   profilesUpdate: 'profiles:update',
   profilesRemove: 'profiles:remove',
+  profilesSetKey: 'profiles:setKey',
   profilesReset: 'profiles:reset',
   profilesEnvPreview: 'profiles:envPreview',
   kindsUpdate: 'kinds:update',

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
+  type ApiKeyConfig,
   type AppInfo,
   type FileChanges,
   type DeleteThreadRequest,
@@ -53,7 +54,10 @@ const api = {
   },
   profiles: {
     /** Returns the new account id. */
-    add: (kind: ProfileKind, name?: string): Promise<ProfileId> => ipcRenderer.invoke(IPC.profilesAdd, kind, name),
+    add: (kind: ProfileKind, name?: string, connect?: { apiKey: ApiKeyConfig; key: string }): Promise<ProfileId> =>
+      ipcRenderer.invoke(IPC.profilesAdd, kind, name, connect),
+    /** Replaces an API-key account's key (stored encrypted in the main process). */
+    setKey: (id: ProfileId, key: string): Promise<void> => ipcRenderer.invoke(IPC.profilesSetKey, id, key),
     update: (id: ProfileId, patch: Partial<ProfileConfig>): Promise<void> => ipcRenderer.invoke(IPC.profilesUpdate, id, patch),
     reset: (id: ProfileId): Promise<void> => ipcRenderer.invoke(IPC.profilesReset, id),
     /** Removes the account from AgentSwitch; files on disk are kept. */

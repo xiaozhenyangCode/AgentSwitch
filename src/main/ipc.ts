@@ -30,6 +30,7 @@ import {
   getState,
   hasProfile,
   installCommand,
+  isApiKeyAccount,
   missingInstallTool,
   isLoggedIn,
   kindBinaryPath,
@@ -44,6 +45,29 @@ import {
 import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, readExtFile, writeRuleFile } from './extensions'
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
+import { secrets } from './secrets'
+import type { ApiKeyConfig } from '@shared/types'
+
+/** Validates the renderer's `{ apiKey, key }` shape (contents are validated in addProfile). */
+function assertConnect(v: unknown): { apiKey: ApiKeyConfig; key: string } {
+  const o = v as { apiKey?: Partial<ApiKeyConfig>; key?: unknown }
+  const a = o?.apiKey
+  if (!a || typeof a !== 'object' || typeof a.provider !== 'string') throw new Error(t('apikey.badProvider'))
+  return {
+    apiKey: {
+      provider: a.provider as ApiKeyConfig['provider'],
+      baseUrl: typeof a.baseUrl === 'string' ? a.baseUrl : undefined,
+      models: Array.isArray(a.models) ? a.models.filter((m): m is string => typeof m === 'string') : undefined
+    },
+    key: typeof o.key === 'string' ? o.key : ''
+  }
+}
+
+/** SecretStore throws i18n codes; never includes the key itself. */
+function keyError(e: unknown): Error {
+  const code = e instanceof Error ? e.message : ''
+  return new Error(code.startsWith('apikey.') ? t(code as Parameters<typeof t>[0]) : t('apikey.noKeychain'))
+}
 import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
@@ -166,10 +190,31 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   // ---- accounts -------------------------------------------------------------------
   ipcMain.handle(IPC.stateGet, () => snapshot())
-  ipcMain.handle(IPC.profilesAdd, (_e, kind: unknown, name?: string) => {
-    const p = addProfile(assertKind(kind), name)
+  ipcMain.handle(IPC.profilesAdd, (_e, kind: unknown, name?: string, connect?: unknown) => {
+    const k = assertKind(kind)
+    const conn = connect === undefined || connect === null ? null : assertConnect(connect)
+    const p = addProfile(k, typeof name === 'string' ? name : undefined, conn?.apiKey)
+    if (conn) {
+      try {
+        secrets().set(p.id, conn.key)
+      } catch (e) {
+        removeProfile(p.id) // no half-created account
+        throw keyError(e)
+      }
+    }
     broadcast()
     return p.id
+  })
+  ipcMain.handle(IPC.profilesSetKey, (_e, id: unknown, key: unknown) => {
+    const pid = assertId(id)
+    if (!isApiKeyAccount(getConfig(pid))) throw new Error(t('apikey.notApiKeyAccount'))
+    try {
+      secrets().set(pid, typeof key === 'string' ? key : '')
+    } catch (e) {
+      throw keyError(e)
+    }
+    forgetModels(pid)
+    broadcast()
   })
   ipcMain.handle(IPC.profilesUpdate, (_e, id: unknown, patch: Partial<ProfileConfig>) => {
     updateProfile(assertId(id), patch)
