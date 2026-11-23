@@ -126,3 +126,79 @@ export function codexTurnUsage(after: CodexTotals, before: CodexTotals | null): 
     reasoning: after.reasoning_output_tokens === undefined ? undefined : d('reasoning_output_tokens')
   }
 }
+
+// ---- stopped runs ------------------------------------------------------------------------------
+
+/**
+ * Usage of a run that never sent its final report (stopped, killed, crashed): the sum over the API
+ * messages it streamed. A message is reported several times (message_start, message_delta, one
+ * `assistant` record per content block) with counts that only grow, so each field keeps its maximum.
+ */
+export class MessageUsage {
+  private msgs = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number }>()
+  /** Estimates for a message whose final count never arrived: streamed text tokens, thinking tokens. */
+  private est = new Map<string, { text: number; thinking: number }>()
+  private done = new Set<string>()
+
+  /** Tokens of streamed text / tool input (estimated, see estimateTextTokens). */
+  stream(id: string | null | undefined, tokens: number): void {
+    if (!id || !(tokens > 0) || this.done.has(id)) return
+    const e = this.est.get(id) ?? { text: 0, thinking: 0 }
+    this.est.set(id, { ...e, text: e.text + tokens })
+  }
+
+  /** The message finished (message_delta carries its final count): its estimate no longer applies. */
+  final(id: string | null | undefined): void {
+    if (id) {
+      this.est.delete(id)
+      this.done.add(id)
+    }
+  }
+
+  /** The CLI's running estimate of the message's thinking tokens. */
+  thinking(id: string | null | undefined, tokens: number): void {
+    if (!id || !(tokens > 0) || this.done.has(id)) return
+    const e = this.est.get(id) ?? { text: 0, thinking: 0 }
+    this.est.set(id, { ...e, thinking: Math.max(e.thinking, tokens) })
+  }
+
+  add(id: string | null | undefined, u: any): void {
+    if (!id || !u || typeof u !== 'object') return
+    const prev = this.msgs.get(id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+    this.msgs.set(id, {
+      input: Math.max(prev.input, num(u.input_tokens)),
+      output: Math.max(prev.output, num(u.output_tokens)),
+      cacheRead: Math.max(prev.cacheRead, num(u.cache_read_input_tokens)),
+      cacheWrite: Math.max(prev.cacheWrite, num(u.cache_creation_input_tokens)),
+      reasoning: Math.max(prev.reasoning, num(u.output_tokens_details?.thinking_tokens))
+    })
+  }
+
+  total(): Usage | null {
+    if (!this.msgs.size) return null
+    const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+    for (const [id, m] of this.msgs) {
+      const e = this.est.get(id)
+      // a reported count below the streamed estimate is the message_start placeholder of a cut-off message
+      const estOut = e ? e.text + e.thinking : 0
+      const cut = estOut > m.output
+      t.input += m.input
+      t.cacheRead += m.cacheRead
+      t.cacheWrite += m.cacheWrite
+      t.output += cut ? estOut : m.output
+      t.reasoning += cut ? Math.max(m.reasoning, e!.thinking) : m.reasoning
+    }
+    return t
+  }
+}
+
+const CJK_RE = /[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/g
+
+/**
+ * Rough token count of streamed text, for output that was cut off before the CLI reported it.
+ * Calibrated on claude (measured: Chinese ~1.25 tokens per character, English prose ~3.2 chars per token).
+ */
+export function estimateTextTokens(text: string): number {
+  const cjk = text.match(CJK_RE)?.length ?? 0
+  return Math.round(cjk * 1.25 + (text.length - cjk) / 3.2)
+}

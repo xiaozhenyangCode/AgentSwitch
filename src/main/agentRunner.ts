@@ -10,7 +10,7 @@ import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
-import { claudeCostBefore, codexTotalsBefore, codexTurnUsage, runCost } from './usageDelta'
+import { claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost } from './usageDelta'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -178,6 +178,9 @@ function claudeAdapter(s: RunSpec): Adapter {
   let lastContext = 0
   // total_cost_usd is the resumed session's running total: remember where this run starts
   const costBefore = claudeCostBefore(claudeUserDir(s.cfg), s.resume)
+  /** Per-message usage, reported instead when the run ends without its `result` (stopped / killed). */
+  const streamed = new MessageUsage()
+  let streamMsg: string | null = null
   const tools = new Map<string, { name: string; input: Record<string, any>; activity: Extract<AgentEvent, { t: 'activity' }> | null }>()
   const args = [
     '-p',
@@ -207,6 +210,12 @@ function claudeAdapter(s: RunSpec): Adapter {
     sessionId: () => session,
     model: () => model,
     result: () => result,
+    // no `result` (stopped, killed, crashed): what the streamed API messages reported; cost unknown
+    finish: (emit) => {
+      if (result) return
+      const u = streamed.total()
+      if (u) emit({ t: 'usage', usage: { ...u, context: lastContext || undefined } })
+    },
     onLine: (d, emit) => {
       switch (d.type) {
         case 'system':
@@ -215,6 +224,7 @@ function claudeAdapter(s: RunSpec): Adapter {
             model = d.model ?? model
             emit({ t: 'session', id: session ?? '', model })
           } else if (d.subtype === 'thinking_tokens') {
+            streamed.thinking(streamMsg, Number(d.estimated_tokens) || 0)
             emit({ t: 'thinking', delta: '', tokens: Number(d.estimated_tokens) || undefined })
           } else emit(other(`system/${d.subtype ?? '?'}`, d))
           break
@@ -223,6 +233,17 @@ function claudeAdapter(s: RunSpec): Adapter {
           if (ev.type === 'content_block_stop' && toolInput) {
             toolInput = null
             emit({ t: 'phase', tool: null, bytes: 0 })
+          }
+          if (ev.type === 'message_start') {
+            streamMsg = ev.message?.id ?? null
+            streamed.add(streamMsg, ev.message?.usage)
+          } else if (ev.type === 'message_delta') {
+            streamed.add(streamMsg, ev.usage)
+            streamed.final(streamMsg)
+          } else if (ev.type === 'content_block_delta') {
+            const dl = ev.delta ?? {}
+            streamed.stream(streamMsg, estimateTextTokens(String(dl.text ?? dl.partial_json ?? '')))
+            if (dl.estimated_tokens) streamed.thinking(streamMsg, Number(dl.estimated_tokens))
           }
           if (FRAMES.has(ev.type)) break
           if (ev.type === 'content_block_start') {
@@ -263,6 +284,7 @@ function claudeAdapter(s: RunSpec): Adapter {
         }
         case 'assistant': {
           const mu = d.message?.usage
+          streamed.add(d.message?.id, mu)
           if (mu) {
             const n = (Number(mu.input_tokens) || 0) + (Number(mu.cache_read_input_tokens) || 0) + (Number(mu.cache_creation_input_tokens) || 0)
             if (n > 0) lastContext = n + (Number(mu.output_tokens) || 0)
@@ -450,6 +472,7 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
   const own = s.cfg.autoApprove === 'cli' ? codexTopKeys(codexHome) : new Set<string>()
   // `exec resume` reports the session's running totals: remember where this turn starts
   const totalsBefore = s.resume ? codexTotalsBefore(codexRollout(codexHome, s.resume)) : null
+  let reported = false
   const policy =
     s.cfg.autoApprove === 'full'
       ? ['-c', 'sandbox_mode="danger-full-access"', '-c', 'approval_policy="never"']
@@ -570,6 +593,7 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
           itemEvent('completed', d.item, emit)
           break
         case 'turn.completed': {
+          reported = true
           emit({ t: 'usage', usage: codexTurnUsage(d.usage ?? {}, totalsBefore) })
           result = { ok: true, error: null }
           break
@@ -587,6 +611,12 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
     // Built-in image generation lands in $CODEX_HOME/generated_images/<thread>/: copy new files into the project.
     finish: (emit) => {
       if (!session) return
+      // stopped / failed turn (no turn.completed): the rollout still has the running totals
+      if (!reported) {
+        const after = codexTotalsBefore(codexRollout(codexHome, session))
+        const u = after ? codexTurnUsage(after, totalsBefore) : null
+        if (u && (u.input || u.output || u.cacheRead)) emit({ t: 'usage', usage: u })
+      }
       // `exec --json` only reports the turn's summed usage; the session log has the last request
       const ctx = codexContext(codexHome, session)
       if (ctx) emit({ t: 'usage', usage: { context: ctx.context, contextWindow: ctx.window } })
@@ -620,6 +650,8 @@ function agyAdapter(s: RunSpec): Adapter {
   let thinkingTokens = 0
   /** Context of the latest finished step (result.usage sums the whole turn). */
   let lastContext = 0
+  /** Usage of each finished step (one model call), reported when the run ends without its result. */
+  const stepUsage = new Map<number, Usage>()
   const args = ['--output-format', 'stream-json']
   // cli: agy's own default mode (runs commands in -p, measured 1.5.13)
   if (s.cfg.autoApprove === 'full') args.push('--dangerously-skip-permissions')
@@ -634,6 +666,13 @@ function agyAdapter(s: RunSpec): Adapter {
     sessionId: () => session,
     model: () => model,
     result: () => result,
+    // no result event (stopped, killed): the finished steps' own usage
+    finish: (emit) => {
+      if (result || !stepUsage.size) return
+      const t = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
+      for (const u of stepUsage.values()) for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += u[k] ?? 0
+      emit({ t: 'usage', usage: { ...t, cacheRead: t.cacheRead || undefined, context: lastContext || undefined } })
+    },
     onLine: (d, emit) => {
       switch (d.event) {
         case 'init':
@@ -662,6 +701,8 @@ function agyAdapter(s: RunSpec): Adapter {
               // each finished step is one request: its input is the context at that point
               const stepCtx = (Number(u.usage?.input_tokens) || 0) + (Number(u.usage?.output_tokens) || 0)
               if (u.state === 'DONE' && stepCtx > 0) lastContext = stepCtx
+              if (u.state === 'DONE' && u.usage && typeof u.step_index === 'number')
+                stepUsage.set(u.step_index, { input: Number(u.usage.input_tokens) || 0, output: Number(u.usage.output_tokens) || 0, cacheRead: Number(u.usage.cache_read_tokens) || 0, reasoning: Number(u.usage.thinking_tokens) || 0 })
               const tk = Number(u.usage?.thinking_tokens) || 0
               if (u.state === 'DONE' && tk > 0) {
                 thinkingTokens += tk

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexTurnUsage, lastClaudeSessionCost, lastCodexTotals, runCost } from './usageDelta'
+import { codexTurnUsage, estimateTextTokens, lastClaudeSessionCost, lastCodexTotals, MessageUsage, runCost } from './usageDelta'
 
 describe('claude session cost', () => {
   const cs = (v: number) => JSON.stringify({ type: 'cost-state', sessionId: 's', totalCostUSD: v, modelUsage: {} })
@@ -37,5 +37,47 @@ describe('codex turn usage', () => {
     const u = { input_tokens: 21548, cached_input_tokens: 14976, output_tokens: 5 }
     expect(codexTurnUsage(u, null)).toEqual({ input: 6572, output: 5, cacheRead: 14976, cacheWrite: undefined, reasoning: undefined })
     expect(codexTurnUsage(u, { input_tokens: 99999, cached_input_tokens: 99999, output_tokens: 999 })).toEqual(codexTurnUsage(u, null))
+  })
+})
+
+describe('message usage fallback (run stopped before its final report)', () => {
+  it('keeps one usage per API message, taking the latest counts of repeated reports', () => {
+    const acc = new MessageUsage()
+    acc.add('m1', { input_tokens: 2, cache_read_input_tokens: 9000, cache_creation_input_tokens: 300, output_tokens: 1 }) // message_start
+    acc.add('m1', { output_tokens: 120 }) // message_delta
+    acc.add('m1', { input_tokens: 2, cache_read_input_tokens: 9000, cache_creation_input_tokens: 300, output_tokens: 40 }) // assistant block (partial count)
+    acc.add('m2', { input_tokens: 3, cache_read_input_tokens: 9400, output_tokens: 15, output_tokens_details: { thinking_tokens: 5 } })
+    expect(acc.total()).toEqual({ input: 5, output: 135, cacheRead: 18400, cacheWrite: 300, reasoning: 5 })
+  })
+  it('is empty until a message reports usage', () => {
+    const acc = new MessageUsage()
+    acc.add(null, { output_tokens: 5 })
+    expect(acc.total()).toBeNull()
+  })
+})
+
+describe('output of a message cut off mid-stream', () => {
+  it('estimates tokens from streamed text (calibrated on claude: ~1.25/CJK char, ~3.2 chars per token otherwise)', () => {
+    expect(estimateTextTokens('黄河'.repeat(100))).toBe(250)
+    expect(estimateTextTokens('a'.repeat(320))).toBe(100)
+  })
+  it('uses the streamed estimate only while it exceeds the reported output', () => {
+    const acc = new MessageUsage()
+    acc.add('m1', { input_tokens: 2, cache_read_input_tokens: 9000, output_tokens: 1 }) // message_start, then killed
+    acc.stream('m1', 300)
+    acc.thinking('m1', 120)
+    acc.thinking('m1', 100) // estimates only grow
+    expect(acc.total()).toEqual({ input: 2, output: 420, cacheRead: 9000, cacheWrite: 0, reasoning: 120 })
+    acc.add('m1', { output_tokens: 500, output_tokens_details: { thinking_tokens: 90 } }) // the real count arrived
+    expect(acc.total()).toEqual({ input: 2, output: 500, cacheRead: 9000, cacheWrite: 0, reasoning: 90 })
+  })
+  it('drops the estimate once the message finished', () => {
+    const acc = new MessageUsage()
+    acc.add('m1', { input_tokens: 2, output_tokens: 1 })
+    acc.stream('m1', 300)
+    acc.add('m1', { output_tokens: 280 })
+    acc.final('m1')
+    acc.stream('m1', 50)
+    expect(acc.total()).toEqual({ input: 2, output: 280, cacheRead: 0, cacheWrite: 0, reasoning: 0 })
   })
 })

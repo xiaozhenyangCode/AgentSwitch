@@ -402,6 +402,8 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       model = modelOf(conn.session(id).options, model)
       if (stopped || response?.stopReason === 'cancelled') {
         stopped = true
+        // a cancelled prompt still reports what it used so far
+        if (response?.usage) events.usage(response)
         return result(false)
       }
       events.usage(response ?? {})
