@@ -411,6 +411,12 @@ export const zhTW: Dict = {
   'md.imageBroken': '圖片無法預覽',
 
   // ---- chat state
+  'chat.loading': '正在開啟對話…',
+  'chat.loadFailed': '無法開啟對話。請嘗試重新開啟應用程式。',
+  'chat.closeTitle': '對話內容尚未儲存',
+  'chat.closeUnsaved': '部分對話變更尚未儲存。現在離開會遺失這些變更。',
+  'chat.closeAnyway': '仍然離開',
+  'chat.saveFailed': '對話儲存失敗。新內容暫時只保留在記憶體中。請檢查磁碟空間和存取權限，並在提示消失前保持應用程式開啟。',
   'chat.newThread': '新對話',
   'chat.handoffSynced': '已向 {name} 同步交接文件',
   'chat.rateLimited': '帳號觸發了用量限制（rate limit）',

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type { ChatChanges, OpenChats } from '@shared/chat'
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
@@ -96,6 +97,11 @@ const api = {
     list: (id: ProfileId, refresh = false): Promise<ModelList> => ipcRenderer.invoke(IPC.modelsList, id, refresh)
   },
   chat: {
+    open: (legacy: string | null, aliasOnly = false): Promise<OpenChats> => ipcRenderer.invoke(IPC.chatStoreOpen, legacy, aliasOnly),
+    save: (session: number, revision: number, changes: ChatChanges): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.chatStoreSave, session, revision, changes),
+    flush: (session: number, revision: number, changes: ChatChanges): boolean =>
+      ipcRenderer.sendSync(IPC.chatStoreFlush, session, revision, changes),
     send: (req: RunRequest): Promise<void> => ipcRenderer.invoke(IPC.chatSend, req),
     stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
     /** Turns the main process is still running (after a window reload). */

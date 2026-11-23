@@ -78,7 +78,7 @@ const fullTime = (ts: number) => {
 }
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
-export function NavRail() {
+export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
   const { page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar } = useApp()
   const chat = useChat()
   const start = useStartThread()
@@ -170,7 +170,7 @@ export function NavRail() {
         <div className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentSwitch</div>
       </div>
 
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3" hidden={!chatsAvailable}>
         <button
           onClick={() => start(current?.projectDir ?? null)}
           className="no-drag flex h-9 w-full items-center justify-center gap-1.5 rounded-[10px] bg-surface text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:bg-surface-2 active:scale-[0.98]"
@@ -179,7 +179,7 @@ export function NavRail() {
         </button>
       </div>
 
-      <div className="no-drag space-y-2 px-3 pb-2">
+      <div className="no-drag space-y-2 px-3 pb-2" hidden={!chatsAvailable}>
         <Segmented
           size="sm"
           value={tab}
@@ -207,7 +207,7 @@ export function NavRail() {
         </div>
       </div>
 
-      {tab === 'history' ? (
+      {!chatsAvailable ? <div className="flex-1" /> : tab === 'history' ? (
         <HistoryList query={q} />
       ) : (
       <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">

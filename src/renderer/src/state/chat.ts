@@ -1,214 +1,136 @@
 import { useSyncExternalStore } from 'react'
 import { KINDS } from '@shared/types'
-import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
+import type { ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
+import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
+import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, Thinking, Thread, UserMessage } from '@shared/chat'
+import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
 import type { TranscriptEntry } from '@shared/transcript'
-import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission, type PendingPermission } from './permissionState'
+import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
- * switches), persisted to localStorage. Replies come from real CLI runs in the main process
+ * switches), saved by the main process. Replies come from real CLI runs in the main process
  * (src/main/orchestrator.ts) as ChatEvents.
  */
 
-export interface Attachment {
-  id: string
-  name: string
-  /** Absolute path on disk (dropped files, or staged copies of pasted images). */
-  path: string | null
-  size: number
-  isImage: boolean
-  /** Small JPEG data URL for images (≈160px). */
-  thumb: string | null
-}
+export type { Activity, AgentRef, AssistantMessage, Attachment, Message, Thinking, Thread, UserMessage } from '@shared/chat'
 
-/** Who speaks: account + sub-model (null = account/CLI default). */
-export interface AgentRef {
-  profileId: ProfileId
-  name: string
-  kind: ProfileKind
-  model: string | null
-}
-
-export interface UserMessage {
-  role: 'user'
-  id: string
-  turnId: string
-  text: string
-  attachments: Attachment[]
-  /** Driver account chosen in the composer. */
-  driver: AgentRef
-  /** @-mentioned accounts, in order of appearance. */
-  mentions: AgentRef[]
-  createdAt: number
-  /** 'handoff': the request that made the driver write a handoff document. */
-  kind?: 'handoff'
-  /** Small system line under the bubble (e.g. handoff synced). */
-  note?: string
-}
-
-export interface Activity {
-  id?: string
-  type: ActivityType
-  target: string
-  status?: 'running' | 'done' | 'error'
-  detail?: ActivityDetail
-  /** When it started running (live progress line). */
-  startedAt?: number
-}
-
-export interface Thinking {
-  text: string
-  /** Latest token estimate (claude live estimate, agy/codex totals). */
-  tokens: number | null
-  startedAt: number
-  /** Set when the answer (text or a tool call) starts. */
-  endedAt: number | null
-  /** false: only a token total was reported afterwards, so the duration is unknown. */
-  timed?: boolean
-}
-
-export interface AssistantMessage {
-  role: 'assistant'
-  id: string
-  turnId: string
-  agent: AgentRef
-  /** Model the CLI reported it actually used. */
-  actualModel: string | null
-  /** Set when this reply was dispatched by the driver rather than asked directly. */
-  dispatchedBy: AgentRef | null
-  status: 'queued' | 'streaming' | 'done' | 'stopped' | 'error'
-  /** Live only: tool-call arguments still being generated (e.g. a whole file for Write). */
-  phase?: { tool: string; bytes: number; since: number } | null
-  /** Live only: what the latest event was (drives the progress line at the bottom). */
-  tail?: 'text' | 'tool' | 'thinking'
-  /** Markdown. */
-  content: string
-  activity: Activity[]
-  permissions?: PendingPermission[]
-  thinking: Thinking | null
-  usage: Usage | null
-  /** Structured CLI events no adapter rule handles (kept visible, never dropped). */
-  others: { kind: string; payload: string }[]
-  /** Absolute paths of files this step produced. */
-  outputs: string[]
-  error: string | null
-  /** Non-fatal warnings (e.g. auto-denied tool calls). */
-  notices: string[]
-  review: boolean
-  retry: number
-  verdict: { status: 'PASS' | 'REJECT'; reason: string } | null
-  startedAt: number | null
-  endedAt: number | null
-}
-
-export type Message = UserMessage | AssistantMessage
-
-export interface Thread {
-  id: string
-  title: string
-  projectDir: string | null
-  /** Folder runs actually use (projectDir, or AgentSwitch's private workspace). */
-  workdir: string | null
-  /** Accounts allowed to take part in this thread. */
-  participants: ProfileId[]
-  driver: { profileId: ProfileId | null; model: string | null }
-  messages: Message[]
-  /** Running turn, if any. */
-  activeTurn: string | null
-  /** Review gave up after max retries; waiting for the user. */
-  pause: { turnId: string; reason: string } | null
-  createdAt: number
-  updatedAt: number
-  /** Imported from a local CLI session (read-only source; the same account resumes it). */
-  imported?: { key: string; profileId: ProfileId; kind: ProfileKind; nativeId: string; importedAt: number; notice: string | null }
-  /** Just viewing a CLI history entry: not listed or persisted; becomes a real thread on first send. */
-  preview?: boolean
-  /** Messages parsed from the CLI history (never persisted: re-read on demand). */
-  history?: Message[]
-  historyState?: 'loading' | 'error'
-  /** Handoff document waiting to be injected into the target account's first message. */
-  handoff?: { to: ProfileId; path: string; from: string } | null
-  /** Handoff generation failed for this target (offer the export fallback). */
-  handoffFailed?: { to: ProfileId; error: string } | null
-  /** Accounts the user chose to switch to without a handoff. */
-  handoffSkip?: ProfileId[]
-  /** Renamed by the user: the model's title marker no longer replaces it. */
-  titleLocked?: boolean
-  /** Turn whose title marker may replace the placeholder title (the first one). */
-  titleTurn?: string | null
-  /** Next input the model suggested at the end of its last reply (ghost text in the composer). */
-  suggestedInput?: string | null
-  /** User turn count when the user dismissed the long-context warning. */
-  contextWarnDismissedAt?: number
-  /** Unread completion badge for turns that finished in the background (or while unfocused). */
-  unread?: 'done' | 'error' | 'paused' | null
-  /** Kept at the top of its project group in the sidebar. */
-  pinned?: boolean
-}
-
-interface ChatState {
-  threads: Thread[]
-  activeId: string | null
-}
-
-const LS_KEY = 'agentswitch.threads.v2'
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
 const endThinking = (t: Thinking | null): Thinking | null => (t && !t.endedAt ? { ...t, endedAt: now() } : t)
 
-function load(): ChatState {
-  try {
-    const v = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as ChatState
-    // in-flight turns stay as they were until reattach() asks the main process which still run
-    for (const t of v.threads) {
-      t.pause = null
-      for (const m of t.messages) {
-        if (m.role === 'assistant' && m.status !== 'streaming' && m.permissions) {
-          m.permissions = reconcilePermissions(m.permissions, [], false)
-        }
-      }
-    }
-    // earlier versions turned every viewed history entry into a chat: drop the ones never written to
-    const viewedOnly = v.threads.filter((t) => t.imported && t.messages.length === 0)
-    if (viewedOnly.length) {
-      v.threads = v.threads.filter((t) => !viewedOnly.includes(t))
-      if (v.activeId && viewedOnly.some((t) => t.id === v.activeId)) v.activeId = v.threads[0]?.id ?? null
-      setTimeout(() => {
-        for (const t of viewedOnly) void window.agentswitch.chat.deleteThread({ threadId: t.id, projectDir: null, turnIds: [], purgeCli: false }).catch(() => {})
-      })
-    }
-    return v
-  } catch {
-    return { threads: [], activeId: null }
-  }
-}
-
-let state: ChatState = load()
+type ChatStatus = 'loading' | 'loadFailed' | 'ready' | 'saveFailed'
+let status: ChatStatus = 'loading'
+let state: ChatState = { threads: [], activeId: null }
 const listeners = new Set<() => void>()
+const statusListeners = new Set<() => void>()
+const writes = new ChatWrites()
+let session = 0
+let revision = 0
+let saving = false
+let pendingClose: ((decision: ChatCloseDecision) => void) | null = null
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let permissionEventsDuringRestore: Map<string, PermissionResolution | null> | null = new Map()
+let eventsDuringLoad: ChatEvent[] | null = []
 
-function persist() {
-  if (persistTimer) clearTimeout(persistTimer)
-  persistTimer = null
-  try {
-    // imported history is re-read from the CLI files; keep localStorage small
-    const threads = state.threads.filter((t) => !t.preview).map(({ history: _h, historyState: _s, ...t }) => t)
-    localStorage.setItem(LS_KEY, JSON.stringify({ ...state, threads, activeId: threads.some((t) => t.id === state.activeId) ? state.activeId : (threads[0]?.id ?? null) }))
-  } catch {
-    /* quota exceeded: keep in memory only */
-  }
+function setStatus(next: ChatStatus) {
+  if (status === next) return
+  status = next
+  statusListeners.forEach((listener) => listener())
 }
 
+export function useChatStatus(): ChatStatus {
+  return useSyncExternalStore(subscribeStatus, () => status)
+}
+
+function subscribeStatus(listener: () => void) {
+  statusListeners.add(listener)
+  return () => statusListeners.delete(listener)
+}
+
+function schedulePersist(delay = 400) {
+  if (persistTimer || saving || !session || !writes.hasChanges) return
+  persistTimer = setTimeout(persist, delay)
+}
+
+function clearPersistTimer() {
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = null
+}
+
+function persist() {
+  clearPersistTimer()
+  if (!session || saving) return
+  const batch = writes.snapshot()
+  if (!batch) return
+  const attempt = ++revision
+  saving = true
+  void window.agentswitch.chat.save(session, attempt, batch.changes).catch(() => false).then((saved) => {
+    saving = false
+    if (attempt === revision) {
+      if (saved) batch.acknowledge()
+      setStatus(saved ? 'ready' : 'saveFailed')
+    }
+    schedulePersist(status === 'saveFailed' ? 1500 : 400)
+  })
+}
+
+function flushPendingChats(): boolean {
+  const batch = writes.snapshot()
+  if (!session || !batch) return true
+  clearPersistTimer()
+  let saved = false
+  try {
+    saved = window.agentswitch.chat.flush(session, ++revision, batch.changes)
+  } catch {
+    // Keep the pending changes available if the synchronous IPC fails.
+  }
+  if (saved) {
+    batch.acknowledge()
+    setStatus('ready')
+    return true
+  }
+  setStatus('saveFailed')
+  schedulePersist(1500)
+  return false
+}
+
+export function useUnsavedChatClose(): boolean {
+  return useSyncExternalStore(subscribeStatus, () => pendingClose !== null)
+}
+
+export function resolveUnsavedChatClose(discard: boolean) {
+  const resolve = pendingClose
+  pendingClose = null
+  statusListeners.forEach((listener) => listener())
+  resolve?.(discard ? 'discarded' : 'cancelled')
+}
+
+window.addEventListener(CHAT_CLOSE_EVENT, (event) => {
+  const { detail: resolve } = event as CustomEvent<(decision: ChatCloseDecision) => void>
+  if (typeof resolve !== 'function' || flushPendingChats()) return
+  event.preventDefault()
+  pendingClose = resolve
+  statusListeners.forEach((listener) => listener())
+})
+
+// Reloads do not pass through the window's close handler.
+window.addEventListener('beforeunload', (event) => {
+  if (flushPendingChats()) return
+  event.preventDefault()
+  event.returnValue = ''
+})
+
 function set(next: ChatState) {
-  // a history preview only lives while it is on screen
+  if (!session) return
+  // A history preview only lives while it is on screen.
   if (next.threads.some((t) => t.preview && t.id !== next.activeId)) next = { ...next, threads: next.threads.filter((t) => !t.preview || t.id === next.activeId) }
+  writes.track(state, next)
   state = next
+  schedulePersist()
   listeners.forEach((l) => l())
-  if (persistTimer) return // streaming updates are frequent; persist at most every 400ms
-  persistTimer = setTimeout(persist, 400)
 }
 
 const patchThread = (id: string, fn: (t: Thread) => Thread) => set({ ...state, threads: state.threads.map((t) => (t.id === id ? fn(t) : t)) })
@@ -704,7 +626,10 @@ function onEvent(e: ChatEvent) {
   }
 }
 
-window.agentswitch.chat.onEvent(onEvent)
+window.agentswitch.chat.onEvent((event) => {
+  if (eventsDuringLoad) eventsDuringLoad.push(event)
+  else onEvent(event)
+})
 
 /**
  * A window reload (incl. dev hot reload) loses the event stream but not the runs in the main
@@ -760,7 +685,6 @@ async function reattach() {
     })
   })
 }
-void reattach()
 
 const titleFrom = (text: string) => {
   const t = text
@@ -1215,3 +1139,28 @@ export function syncExternal(threadId: string): Promise<ExternalSync> {
 window.addEventListener('focus', () => {
   if (state.activeId) void syncExternal(state.activeId)
 })
+
+async function initializeChats() {
+  try {
+    const api = window.agentswitch.chat
+    const loaded = await openChats(localStorage, api.open)
+    const { state: restored, viewedOnly } = restoreChats(loaded)
+
+    state = { threads: loaded.threads, activeId: loaded.activeId }
+    session = loaded.session
+    set(restored)
+    for (const thread of viewedOnly) {
+      void api.deleteThread({ threadId: thread.id, projectDir: null, turnIds: [], purgeCli: false }).catch(() => {})
+    }
+    const queued = eventsDuringLoad ?? []
+    eventsDuringLoad = null
+    for (const event of queued) onEvent(event)
+    setStatus('ready')
+    void reattach()
+  } catch {
+    eventsDuringLoad = null
+    setStatus('loadFailed')
+  }
+}
+
+void initializeChats()

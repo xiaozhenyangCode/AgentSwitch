@@ -54,6 +54,7 @@ import { t } from './i18n'
 import { secrets } from './secrets'
 import { permissions } from './acp/permissions'
 import { ptyModeAllowed } from './apiKey'
+import { ChatStore } from './chatStore'
 import type { ApiKeyConfig } from '@shared/types'
 
 function assertConnect(kind: ProfileKind, v: unknown): ProfileConnect {
@@ -357,6 +358,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   // ---- models / chat ------------------------------------------------------------------
   ipcMain.handle(IPC.modelsList, (_e, id: unknown, refresh?: boolean) => listModels(assertId(id), refresh === true))
+  const chatStore = new ChatStore(app.getPath('userData'))
+  ipcMain.handle(IPC.chatStoreOpen, (_e, legacy: unknown, aliasOnly: unknown) => {
+    if ((legacy !== null && typeof legacy !== 'string') || typeof aliasOnly !== 'boolean') throw new Error('bad request')
+    return chatStore.open(legacy, aliasOnly)
+  })
+  ipcMain.handle(IPC.chatStoreSave, (_e, session: unknown, revision: unknown, changes: unknown) => chatStore.save(session, revision, changes))
+  ipcMain.on(IPC.chatStoreFlush, (e, session: unknown, revision: unknown, changes: unknown) => {
+    e.returnValue = chatStore.save(session, revision, changes)
+  })
   ipcMain.handle(IPC.chatSend, (_e, req: RunRequest) => {
     if (!req || typeof req.threadId !== 'string' || typeof req.turnId !== 'string' || typeof req.text !== 'string') throw new Error('bad request')
     // files the user attached stay previewable in the chat (only those exact files)

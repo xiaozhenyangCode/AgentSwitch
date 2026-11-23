@@ -1,4 +1,7 @@
 import { AppProvider, useApp } from './state/AppContext'
+import { Modal } from './components/common'
+import { btnPrimary, btnSecondary } from './lib/ui'
+import { IconSidebar } from './components/icons'
 import { NavRail } from './components/NavRail'
 import { DebugDrawer, useDrawerLayout } from './components/DebugDrawer'
 import { LoginModal } from './components/LoginModal'
@@ -13,10 +16,10 @@ import { useOnboarding } from './state/onboarding'
 import { useEffect } from 'react'
 import { useI18n, t } from './state/i18n'
 import { useStartThread } from './state/threads'
-import { activeThread, clearUnread, onTurnFinished, selectThread, useChat } from './state/chat'
+import { activeThread, clearUnread, onTurnFinished, resolveUnsavedChatClose, selectThread, useChat, useChatStatus, useUnsavedChatClose } from './state/chat'
 
 /** Native menu bar → navigation (About / Settings… ⌘, / New Chat ⌘N / Search ⌘K). */
-function MenuBridge() {
+function MenuBridge({ chatsAvailable }: { chatsAvailable: boolean }) {
   const { openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen } = useApp()
   const start = useStartThread()
   const chat = useChat()
@@ -26,7 +29,7 @@ function MenuBridge() {
         if (cmd === 'about') openSettings('about')
         else if (cmd === 'settings') toggleSettings()
         else if (cmd === 'toggleSidebar') toggleSidebar()
-        else {
+        else if (chatsAvailable) {
           // chat commands act on the page under the dialog
           if (settingsOpen) closeSettings()
           navigate('workbench')
@@ -41,7 +44,7 @@ function MenuBridge() {
           }
         }
       }),
-    [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen, start, chat]
+    [openSettings, toggleSettings, closeSettings, settingsOpen, navigate, toggleSidebar, setSidebarOpen, start, chat, chatsAvailable]
   )
   return null
 }
@@ -131,11 +134,12 @@ function TurnNotifier() {
   return null
 }
 
-function Shell() {
-  const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState } = useApp()
+function Shell({ chatStatus }: { chatStatus: ReturnType<typeof useChatStatus> }) {
+  const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState, sidebarOpen, toggleSidebar } = useApp()
   const { height: drawerHeight, dragging: drawerDragging } = useDrawerLayout()
   const configProfile = configId ? byId(configId) : undefined
   const onboarding = useOnboarding()
+  const chatsAvailable = chatStatus === 'ready' || chatStatus === 'saveFailed'
 
   return (
     <div className="flex h-full">
@@ -143,7 +147,7 @@ function Shell() {
         <OnboardingPage />
       ) : (
         <>
-          <NavRail />
+          <NavRail chatsAvailable={chatsAvailable} />
           <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas">
             <div
               className={`min-h-0 flex-1 overflow-clip ${
@@ -151,7 +155,20 @@ function Shell() {
               }`}
               style={{ paddingBottom: drawer.open ? drawerHeight : 0 }}
             >
-              <WorkbenchPage />
+              {chatsAvailable ? <WorkbenchPage /> : (
+                <div className="grid h-full place-items-center px-8 text-center text-sm text-ink-2">
+                  {!sidebarOpen && (
+                    <button
+                      className="no-drag absolute top-3 left-24 rounded-lg p-1.5 hover:bg-surface-2"
+                      onClick={toggleSidebar}
+                      aria-label={t('nav.showSidebar')}
+                    >
+                      <IconSidebar size={16} />
+                    </button>
+                  )}
+                  {chatStatus === 'loading' ? <p role="status">{t('chat.loading')}</p> : <p role="alert">{t('chat.loadFailed')}</p>}
+                </div>
+              )}
             </div>
             <DebugDrawer />
           </main>
@@ -175,17 +192,53 @@ function Shell() {
       {confirmState && <ConfirmDialog />}
       <Toasts />
       <TurnNotifier />
-      <MenuBridge />
+      <MenuBridge chatsAvailable={chatsAvailable} />
     </div>
   )
 }
 
+function UnsavedChatDialog() {
+  const cancel = () => resolveUnsavedChatClose(false)
+  return (
+    <Modal onClose={cancel} width={420}>
+      <div className="p-7" role="alertdialog" aria-modal="true" aria-labelledby="chat-close-title" aria-describedby="chat-close-detail">
+        <h2 id="chat-close-title" className="text-[17px] font-semibold text-ink">{t('chat.closeTitle')}</h2>
+        <p id="chat-close-detail" className="mt-2 text-[14px] leading-relaxed text-ink-2">{t('chat.closeUnsaved')}</p>
+        <div className="mt-7 flex justify-end gap-2.5">
+          <button autoFocus className={btnSecondary} onClick={cancel}>{t('common.cancel')}</button>
+          <button className={btnPrimary} onClick={() => resolveUnsavedChatClose(true)}>{t('chat.closeAnyway')}</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function ChatShell({ locale }: { locale: string }) {
+  const status = useChatStatus()
+  const confirmClose = useUnsavedChatClose()
+  return (
+    <>
+      <div className="flex h-full flex-col" inert={confirmClose}>
+        {status === 'saveFailed' && (
+          <div role="alert" className="shrink-0 bg-warn-soft py-2 pr-4 pl-[100px] text-sm text-ink">
+            {t('chat.saveFailed')}
+          </div>
+        )}
+        <div className="min-h-0 flex-1">
+          <Shell key={locale} chatStatus={status} />
+        </div>
+      </div>
+      {confirmClose && <UnsavedChatDialog />}
+    </>
+  )
+}
+
 export default function App() {
-  // a language switch re-mounts the shell so every t() call re-renders in the new language
+  // A language switch remounts the shell so every t() call uses the new language.
   const { locale } = useI18n()
   return (
     <AppProvider>
-      <Shell key={locale} />
+      <ChatShell locale={locale} />
     </AppProvider>
   )
 }

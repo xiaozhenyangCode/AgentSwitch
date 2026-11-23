@@ -10,7 +10,7 @@ import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settin
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
-import { parseThreadBundle, type ThreadBundle } from '../state/chat'
+import { parseThreadBundle, useChatStatus, type ThreadBundle } from '../state/chat'
 import {
   IconAuto,
   IconCheck,
@@ -650,6 +650,8 @@ function ThresholdRow({ title }: { title: ReactNode }) {
 
 function TransferBlock({ title }: { title: ReactNode }) {
   const { toast } = useApp()
+  const chatStatus = useChatStatus()
+  const disabled = chatStatus === 'loading' || chatStatus === 'loadFailed'
   const [exportOpen, setExportOpen] = useState(false)
   const [importState, setImportState] = useState<{ bundle: ThreadBundle; filePath: string } | null>(null)
 
@@ -668,10 +670,10 @@ function TransferBlock({ title }: { title: ReactNode }) {
     <>
       <Row label={title} hint={t('set.transferHint')}>
         <div className="flex items-center gap-2">
-          <button className={btn} onClick={() => setExportOpen(true)}>
+          <button className={btn} disabled={disabled} onClick={() => setExportOpen(true)}>
             {t('set.exportChats')}
           </button>
-          <button className={btn} onClick={() => void openImport()}>
+          <button className={btn} disabled={disabled} onClick={() => void openImport()}>
             {t('set.importChats')}
           </button>
         </div>

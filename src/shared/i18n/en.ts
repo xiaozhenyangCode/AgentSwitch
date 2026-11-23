@@ -397,6 +397,12 @@ export const en: Dict = {
   'md.clickZoom': 'Click to enlarge',
   'md.imageBroken': 'Image cannot be previewed',
 
+  'chat.loading': 'Opening chats…',
+  'chat.loadFailed': 'Couldn’t open your chats. Try reopening the app.',
+  'chat.closeTitle': 'Unsaved chat changes',
+  'chat.closeUnsaved': 'Some changes haven’t been saved. If you leave now, those changes will be lost.',
+  'chat.closeAnyway': 'Leave Anyway',
+  'chat.saveFailed': 'Couldn’t save your chats. Changes are only stored in memory for now. Check disk space and permissions, and keep the app open until this message disappears.',
   'chat.newThread': 'New Chat',
   'chat.handoffSynced': 'Handoff document shared with {name}',
   'chat.rateLimited': 'The account hit its usage limit (rate limit)',

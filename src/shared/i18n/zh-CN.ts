@@ -413,6 +413,12 @@ export const zhCN = {
   'md.imageBroken': '图片无法预览',
 
   // ---- chat state
+  'chat.loading': '正在打开对话…',
+  'chat.loadFailed': '无法打开对话。请尝试重新打开应用。',
+  'chat.closeTitle': '对话内容还未保存',
+  'chat.closeUnsaved': '部分对话改动还没保存。现在退出会丢失这些改动。',
+  'chat.closeAnyway': '仍然退出',
+  'chat.saveFailed': '对话保存失败。新内容暂时只保留在内存中。请检查磁盘空间和访问权限，在提示消失前保持应用打开。',
   'chat.newThread': '新对话',
   'chat.handoffSynced': '已向 {name} 同步交接文档',
   'chat.rateLimited': '账号触发了用量限制（rate limit）',

@@ -397,6 +397,12 @@ export const ja: Dict = {
   'md.clickZoom': 'クリックで拡大',
   'md.imageBroken': '画像をプレビューできません',
 
+  'chat.loading': 'チャットを開いています…',
+  'chat.loadFailed': 'チャットを開けませんでした。アプリを開き直してください。',
+  'chat.closeTitle': '未保存のチャット内容',
+  'chat.closeUnsaved': '保存されていないチャットの変更があります。今閉じると、その変更は失われます。',
+  'chat.closeAnyway': 'そのまま閉じる',
+  'chat.saveFailed': 'チャットを保存できませんでした。変更は一時的にメモリに保持されています。ディスクの空き容量とアクセス権を確認し、このメッセージが消えるまでアプリを開いたままにしてください。',
   'chat.newThread': '新規チャット',
   'chat.handoffSynced': '{name} に引き継ぎ文書を共有しました',
   'chat.rateLimited': 'アカウントが使用量の上限に達しました（レート制限）',

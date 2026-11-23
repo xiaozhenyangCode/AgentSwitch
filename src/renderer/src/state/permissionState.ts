@@ -1,6 +1,7 @@
 import type { PermissionEvent, PermissionResolution } from '@shared/types'
+import type { PendingPermission } from '@shared/chat'
 
-export type PendingPermission = PermissionEvent & { resolved?: PermissionResolution; expired?: true }
+export type { PendingPermission } from '@shared/chat'
 export const isPendingPermission = (item: PendingPermission): boolean => !item.resolved && !item.expired
 
 export function addPermission(list: PendingPermission[] | undefined, event: PermissionEvent): PendingPermission[] {

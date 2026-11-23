@@ -1,5 +1,6 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
-import { app, BrowserWindow, nativeImage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, screen, shell } from 'electron'
+import { CHAT_CLOSE_EVENT } from '@shared/chat'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { readSettings, writeSettings } from './appSettings'
@@ -8,7 +9,7 @@ import { registerIpc } from './ipc'
 import { initShellEnv } from './shellEnv'
 import { handleFileProtocol, registerFileScheme } from './fileProtocol'
 import { initTheme } from './theme'
-import { initI18n } from './i18n'
+import { initI18n, t } from './i18n'
 import { buildMenu } from './menu'
 import { agyAcpPool } from './acp/pool'
 import { permissions } from './acp/permissions'
@@ -90,6 +91,49 @@ function trackWindowBounds(win: BrowserWindow): void {
 }
 
 let mainWindow: BrowserWindow | null = null
+let quitRequested = false
+
+function trackChatClose(win: BrowserWindow): void {
+  let checking = false
+  win.on('close', (event) => {
+    event.preventDefault()
+    if (checking) return
+    checking = true
+    void finishClose(win).catch((error) => console.error('[chatStore] close check failed', error)).finally(() => {
+      checking = false
+      quitRequested = false
+    })
+  })
+}
+
+async function finishClose(win: BrowserWindow): Promise<void> {
+  const contents = win.webContents
+  // Ask before unloading so the renderer stays available while the user decides.
+  let decision: unknown = contents.isCrashed() ? 'saved' : await contents.executeJavaScript(`
+    new Promise((resolve) => {
+      const event = new CustomEvent(${JSON.stringify(CHAT_CLOSE_EVENT)}, { cancelable: true, detail: resolve })
+      if (window.dispatchEvent(event)) resolve('saved')
+    })
+  `).catch(() => null)
+  if (win.isDestroyed() || decision === 'cancelled') return
+  if (decision !== 'saved' && decision !== 'discarded') {
+    // The main process can still offer a choice if it lost the renderer during the check.
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      message: t('chat.closeUnsaved'),
+      buttons: [t('common.cancel'), t('chat.closeAnyway')],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response !== 1 || win.isDestroyed()) return
+    decision = 'discarded'
+  }
+
+  // Skip a second unload check after the write or explicit confirmation.
+  win.destroy()
+  if (quitRequested || decision === 'discarded') app.quit()
+}
 
 function createWindow(): void {
   const saved = loadWindowBounds()
@@ -117,6 +161,7 @@ function createWindow(): void {
   })
 
   trackWindowBounds(mainWindow)
+  trackChatClose(mainWindow)
 
   mainWindow.once('ready-to-show', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return
@@ -156,7 +201,8 @@ app.whenReady().then(async () => {
   const ipc = registerIpc(() => mainWindow)
   const ptys = ipc.ptys
   broadcastAll = ipc.broadcastAll
-  app.on('before-quit', () => {
+  // A window can veto quitting while it still has unsaved chats.
+  app.on('will-quit', () => {
     ipc.orchestrator.stopAll()
     permissions.cancelAll(() => true)
     ptys.killAll()
@@ -167,6 +213,13 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('before-quit', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  event.preventDefault()
+  quitRequested = true
+  mainWindow.close()
 })
 
 app.on('window-all-closed', () => {
