@@ -1,8 +1,9 @@
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { MarkdownBase } from './Markdown'
-import type { Usage } from '@shared/types'
-import type { Activity, Thinking } from '../state/chat'
-import { IconCheck, IconChevronDown, IconCopy, IconTerminal, IconX, Spinner } from './icons'
+import { Markdown, MarkdownBase } from './Markdown'
+import type { PermissionOption, Usage } from '@shared/types'
+import { replyPermission, type Activity, type Thinking } from '../state/chat'
+import { isPendingPermission, type PendingPermission } from '../state/permissionState'
+import { IconAlert, IconCheck, IconChevronDown, IconCopy, IconTerminal, IconX, Spinner } from './icons'
 import { fmtDuration, t } from '../state/i18n'
 
 /**
@@ -13,13 +14,13 @@ import { fmtDuration, t } from '../state/i18n'
 const fmtSec = fmtDuration
 const fmtNum = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 
-function useNow(active: boolean): number {
+function useNow(active: boolean, interval = 500): number {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (!active) return
-    const t = setInterval(() => setNow(Date.now()), 500)
+    const t = setInterval(() => setNow(Date.now()), interval)
     return () => clearInterval(t)
-  }, [active])
+  }, [active, interval])
   return now
 }
 
@@ -99,6 +100,100 @@ export function ThinkingCard({ t: th, live }: { t: Thinking; live: boolean }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ---- permissions ----------------------------------------------------------------------------
+
+const permissionRoles = ['allow_once', 'allow_always', 'reject_once', 'reject_always'] as const
+const optionLabel = (option: PermissionOption): string =>
+  option.role === 'answer' ? option.label : t(`permission.${option.role}`)
+
+export function PermissionCard({ permission: p }: { permission: PendingPermission }) {
+  const [sending, setSending] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const inFlight = useRef(false)
+  const now = useNow(isPendingPermission(p), 1000)
+  const question = p.kind === 'question'
+  const seconds = Math.max(0, Math.ceil((p.expiresAt - now) / 1000))
+  const resolved = p.resolved
+  if (resolved || p.expired) {
+    const selected = p.options.find((option) => option.id === resolved?.optionId)
+    let status: string
+    if (!resolved) status = t('permission.expired')
+    else if (resolved.outcome === 'cancelled') status = t(question ? 'permission.skipped' : 'permission.cancelled')
+    else if (resolved.outcome === 'timeout') status = t(question ? 'permission.questionTimeout' : 'permission.approvalTimeout')
+    else if (question) status = t('permission.answered', { label: resolved.label ?? '' })
+    else status = t(selected?.role === 'allow_once' || selected?.role === 'allow_always' ? 'permission.allowed' : 'permission.denied')
+    return (
+      <div role="status" className="my-1.5 flex min-w-0 flex-wrap gap-x-2 rounded-md bg-fill px-2.5 py-1.5 text-[12px] text-ink-2">
+        <span className="min-w-0 truncate" title={p.title}>{p.title}</span>
+        <span className="min-w-0 break-words">{status}{!question && resolved?.by === 'auto' ? t('permission.auto') : ''}</span>
+      </div>
+    )
+  }
+  const reply = async (optionId: string | null) => {
+    if (inFlight.current || Date.now() >= p.expiresAt) return
+    inFlight.current = true
+    setSending(true)
+    setFailed(false)
+    try {
+      await replyPermission(p.requestId, optionId)
+    } catch {
+      inFlight.current = false
+      setSending(false)
+      setFailed(true)
+    }
+  }
+  const options = question ? p.options : permissionRoles.flatMap((role) => p.options.filter((o) => o.role === role))
+  const cancel = t(question ? 'permission.skip' : 'common.cancel')
+  const countdown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const action = 'min-h-7 max-w-full rounded-md px-2.5 py-1 text-left text-[12px] font-medium break-words transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50'
+  return (
+    <section aria-label={t(question ? 'permission.question' : 'permission.approval')} className="my-1.5 rounded-lg border border-hairline bg-surface px-3 py-2.5">
+      <div className="mb-1 flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 text-[13px] font-medium break-words text-ink">
+          {question ? <Markdown text={p.title} readOnly /> : p.title}
+        </div>
+        <span title={t('permission.countdown', { time: countdown })} className={`shrink-0 text-[12px] tabular-nums ${seconds <= 30 ? 'text-warn' : 'text-ink-3'}`}>
+          {countdown}
+        </span>
+      </div>
+      {!question && p.detail && (
+        <details className="my-1 text-[12px] text-ink-2">
+          <summary className="cursor-pointer break-all font-mono">{p.detail.split('\n', 1)[0]}</summary>
+          <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-fill p-2 font-mono break-words whitespace-pre-wrap select-text">{p.detail}</pre>
+        </details>
+      )}
+      <div className="mt-2 flex flex-wrap items-start gap-1.5">
+        {options.map((option) => {
+          const label = optionLabel(option)
+          return (
+            <div key={option.id} className="flex max-w-full flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                className={`${action} ${option.role === 'allow_once' ? 'bg-accent text-white enabled:hover:bg-accent-hover' : 'bg-fill text-ink enabled:hover:bg-fill-hover'}`}
+                aria-label={label}
+                disabled={sending || seconds === 0}
+                onClick={() => void reply(option.id)}
+              >
+                {label}
+              </button>
+              {option.warning && (
+                <span className="flex min-w-0 items-start gap-1 text-[11.5px] break-words text-warn">
+                  <IconAlert size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>{option.warning}</span>
+                </span>
+              )}
+            </div>
+          )
+        })}
+        <button type="button" className={`${action} text-ink-2 enabled:hover:bg-fill`} aria-label={cancel} disabled={sending || seconds === 0} onClick={() => void reply(null)}>
+          {cancel}
+        </button>
+      </div>
+      {failed && <div role="status" className="mt-1.5 text-[12px] text-danger">{t('permission.replyFailed')}</div>}
+    </section>
   )
 }
 
@@ -220,7 +315,7 @@ function StatusIcon({ s }: { s?: Activity['status'] }) {
   return <IconCheck size={12} className="text-ok" />
 }
 
-function ActivityRow({ a }: { a: Activity }) {
+function ActivityRow({ a, permissions }: { a: Activity; permissions?: PendingPermission[] }) {
   const [open, setOpen] = useState(false)
   const { baseDir } = useContext(MarkdownBase)
   // paths inside the project read better relative
@@ -252,6 +347,7 @@ function ActivityRow({ a }: { a: Activity }) {
           <ActivityDetailView a={a} />
         </div>
       )}
+      {permissions?.map((permission) => <PermissionCard key={permission.requestId} permission={permission} />)}
     </div>
   )
 }
@@ -287,12 +383,16 @@ function OthersRow({ others }: { others: { kind: string; payload: string }[] }) 
   )
 }
 
-export function ActivityBar({ items, others, live, openSeq = 0 }: { items: Activity[]; others: { kind: string; payload: string }[]; live: boolean; openSeq?: number }) {
-  const [open, setOpen] = useState(false)
+export function ActivityBar({ items, others, permissions, live, openSeq = 0 }: { items: Activity[]; others: { kind: string; payload: string }[]; permissions?: PendingPermission[]; live: boolean; openSeq?: number }) {
+  const waiting = permissions?.filter(isPendingPermission).at(-1)?.requestId
+  const [open, setOpen] = useState(!!waiting)
   // the live progress line asks for the details
   useEffect(() => {
     if (openSeq) setOpen(true)
   }, [openSeq])
+  useEffect(() => {
+    if (waiting) setOpen(true)
+  }, [waiting])
   const running = [...items].reverse().find((i) => i.status === 'running')
   const current = live ? (running ?? items[items.length - 1]) : null
   const errors = items.filter((i) => i.status === 'error').length
@@ -318,7 +418,7 @@ export function ActivityBar({ items, others, live, openSeq = 0 }: { items: Activ
       {open && (
         <div className="border-t border-black/[0.05] px-1.5 py-1.5">
           {items.map((a, i) => (
-            <ActivityRow key={a.id ?? i} a={a} />
+            <ActivityRow key={a.id ?? i} a={a} permissions={a.id ? permissions?.filter((p) => p.activityId === a.id) : undefined} />
           ))}
           {others.length > 0 && <OthersRow others={others} />}
         </div>

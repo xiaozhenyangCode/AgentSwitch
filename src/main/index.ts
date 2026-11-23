@@ -11,6 +11,7 @@ import { initTheme } from './theme'
 import { initI18n } from './i18n'
 import { buildMenu } from './menu'
 import { agyAcpPool } from './acp/pool'
+import { permissions } from './acp/permissions'
 
 registerFileScheme()
 
@@ -157,8 +158,9 @@ app.whenReady().then(async () => {
   broadcastAll = ipc.broadcastAll
   app.on('before-quit', () => {
     ipc.orchestrator.stopAll()
+    permissions.cancelAll(() => true)
     ptys.killAll()
-    agyAcpPool.shutdownAll()
+    queueMicrotask(() => agyAcpPool.shutdownAll())
   })
 
   createWindow()

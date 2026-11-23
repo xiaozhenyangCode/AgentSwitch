@@ -13,7 +13,7 @@ import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
 import { fmtTokens } from '../state/usage'
-import { ActivityBar, LiveProgress, ThinkingCard, UsageLine } from '../components/Process'
+import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
 import { CollapsibleBody } from '../components/CollapsibleBody'
@@ -53,6 +53,7 @@ import {
   saveComposerDraft
 } from '../state/chat'
 import { fmtDuration, t, tNode } from '../state/i18n'
+import { isPendingPermission } from '../state/permissionState'
 import { stripLatest } from '@shared/i18n'
 import { patchDraft, pickDriver, useDraft, type DraftCtx } from '../state/draft'
 import { sendKeys, useSettings } from '../state/settings'
@@ -936,6 +937,7 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
       {streaming ? (
         <span className="flex items-center gap-1.5 text-[12px] text-accent">
           <Spinner size={11} /> {t('wb.replying', { dur: msg.startedAt ? fmtDur(Date.now() - msg.startedAt) : '' })}
+          {msg.permissions?.some(isPendingPermission) && <span className="rounded-full bg-warn-soft px-2 py-0.5 font-medium text-warn">{t('permission.waiting')}</span>}
         </span>
       ) : msg.status === 'queued' ? (
         <span className="text-[12px] text-ink-3">{t('wb.queued')}</span>
@@ -968,6 +970,9 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
     scrollListTo(detailsRef.current)
   }
   const busy = msg.content || msg.activity.length > 0 || msg.thinking || msg.phase
+  const awaitingPermission = msg.permissions?.some(isPendingPermission)
+  const inlinePermissions = msg.permissions?.filter((p) => p.activityId && msg.activity.some((a) => a.id === p.activityId))
+  const standalonePermissions = msg.permissions?.filter((p) => !inlinePermissions?.includes(p))
   const copy = async () => {
     await window.agentswitch.sys.copy(stripMarks(msg.content))
     setCopied(true)
@@ -993,15 +998,16 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
           {msg.thinking && <ThinkingCard t={msg.thinking} live={streaming} />}
           <div ref={detailsRef}>
             {(msg.activity.length > 0 || (msg.others?.length ?? 0) > 0) && (
-              <ActivityBar items={msg.activity} others={msg.others ?? []} live={streaming && !msg.content} openSeq={detailsSeq} />
+              <ActivityBar items={msg.activity} others={msg.others ?? []} permissions={inlinePermissions} live={streaming && !msg.content} openSeq={detailsSeq} />
             )}
           </div>
+          {standalonePermissions?.map((permission) => <PermissionCard key={permission.requestId} permission={permission} />)}
           {msg.content ? (
             <CollapsibleBody threshold={REPLY_FOLD_AT} collapsedHeight={REPLY_FOLD_PX} defaultOpen={latest || streaming} disabled={streaming} anchor={rootRef}>
               <Markdown text={msg.content} />
             </CollapsibleBody>
           ) : streaming ? (
-            msg.activity.length === 0 && !(msg.thinking && !msg.thinking.endedAt) && (
+            msg.activity.length === 0 && !standalonePermissions?.length && !(msg.thinking && !msg.thinking.endedAt) && (
               <div className="flex h-6 items-center gap-1">
                 {[0, 1, 2].map((i) => (
                   <span key={i} className="h-1.5 w-1.5 animate-pulse rounded-full bg-ink-3" style={{ animationDelay: `${i * 160}ms` }} />
@@ -1011,7 +1017,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
           ) : (
             !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">{t('wb.noText')}</div>
           )}
-          {streaming && busy && (
+          {streaming && busy && !awaitingPermission && (
             <LiveProgress
               activity={msg.activity}
               phase={msg.phase}

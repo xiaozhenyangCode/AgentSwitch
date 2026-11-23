@@ -1,14 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import { constants, realpathSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve, sep } from 'node:path'
 import { joinSpec, splitSpec } from '@shared/modelSpec'
-import type { AgentEvent, AutoApprove } from '@shared/types'
+import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption } from '@shared/types'
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
 import { t } from '../i18n'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
 import { agyOutcomeReader } from './agyOutcome'
-import { agyAcpPool, cancelledPermission, type AcpConnection, type AcpFields, type PermissionReply } from './pool'
+import { agyAcpPool, type AcpConnection, type AcpFields } from './pool'
+import { cancelledPermission, permissions, PERMISSION_TIMEOUT, type PermissionReply } from './permissions'
 import { sanitize } from './stderr'
 
 type Emit = (event: AgentEvent) => void
@@ -62,20 +64,43 @@ export function insideProject(paths: string[], cwd: string): boolean {
 export class AgyAcpStartupError extends Error {}
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
-export function agyPermission(request: AcpFields, level: AutoApprove, emit: Emit, onLog: Log, stopped: () => boolean, cwd: string): PermissionReply {
-  const tool = request.toolCall
-  const name = String(tool?.name ?? tool?.title ?? tool?.toolCallId ?? 'tool')
-  const interaction = typeof tool?.toolCallId === 'string' && tool.toolCallId.startsWith('interaction_')
-  const editAllowed = EDIT_PERMISSIONS.has(tool?.kind) && (!WRITE_KINDS.has(tool?.kind) || insideProject(toolPaths(tool), cwd))
-  const kind = level === 'full' || (level === 'edits' && editAllowed) ? 'allow_once' : 'reject_once'
+function isQuestion(tool: AcpFields | undefined): boolean {
+  return typeof tool?.toolCallId === 'string' && tool.toolCallId.startsWith('interaction_')
+}
 
-  if (!stopped()) {
-    if (interaction) emit({ t: 'notice', message: t('main.acpInteraction') })
-    else if (kind === 'reject_once') emit({ t: 'notice', message: t('main.acpPermissionDenied', { name }) })
+export function autoDecision(request: AcpFields, level: AutoApprove, cwd: string): 'allow' | 'ask' {
+  const tool = request.toolCall
+  if (isQuestion(tool)) return 'ask'
+  if (level === 'full') return 'allow'
+  if (level === 'edits' && EDIT_PERMISSIONS.has(tool?.kind)) {
+    if (!WRITE_KINDS.has(tool.kind) || insideProject(toolPaths(tool), cwd)) return 'allow'
   }
-  const option = !interaction && Array.isArray(request.options) ? request.options.find((o) => o?.kind === kind && typeof o.optionId === 'string') : undefined
-  onLog(`[ACP permission] ${name} · ${!stopped() && option ? kind : 'cancelled'}\n`)
-  return !stopped() && option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : cancelledPermission()
+  return 'ask'
+}
+
+const APPROVAL_ROLES = ['allow_once', 'allow_always', 'reject_once', 'reject_always'] as const
+const nonblank = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
+
+function permissionOptions(request: AcpFields, question: boolean): PermissionOption[] {
+  const options = new Map<string, PermissionOption>()
+  for (const option of Array.isArray(request.options) ? request.options : []) {
+    const id = option?.optionId
+    if (typeof id !== 'string' || !id.trim() || options.has(id)) continue
+    if (!question && !APPROVAL_ROLES.includes(option.kind)) continue
+    const role = question ? 'answer' : option.kind
+    const warning = role === 'allow_always' ? option._meta?.['agy.security.warning'] : undefined
+    const warningText = nonblank(warning?.message) || nonblank(warning?.title)
+    options.set(id, { id, role, label: (nonblank(option.name) || id).slice(0, 200), ...(warningText && { warning: warningText.slice(0, 512) }) })
+  }
+  return [...options.values()]
+}
+
+function permissionDetail(tool: AcpFields): string | undefined {
+  const input = tool.rawInput ?? tool.args
+  const command = typeof input === 'string' ? input : Object.entries(input ?? {}).find(([key, value]) =>
+    /command|^cmd$/i.test(key) && typeof value === 'string')?.[1]
+  const lines = [...new Set([typeof command === 'string' ? command : '', ...toolPaths(tool)].filter(Boolean))]
+  return lines.length ? capText(lines.join('\n'), 4096).slice(0, 4096) : undefined
 }
 
 function toolOutput(call: AcpFields): unknown {
@@ -94,6 +119,7 @@ function turnEvents(emit: Emit) {
   let nextSegment = false
   let messageId: unknown
   return {
+    tool: (id: string) => tools.get(id)?.call,
     update(update: AcpFields): void {
       const kind = update.sessionUpdate
       switch (kind) {
@@ -228,6 +254,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
   let sessionId = spec.resume
   let model = spec.model
   let cancelTimer: NodeJS.Timeout | undefined
+  let cancelPermissions: (() => void) | undefined
   let finishPrompt: (() => void) | undefined
   let resolveStop!: (result: RunResult) => void
   const stop = new Promise<RunResult>((resolve) => { resolveStop = resolve })
@@ -300,15 +327,61 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     if (stopped) return result(false)
 
     const events = turnEvents(emit)
+    const turn = Symbol('agy turn')
+    cancelPermissions = () => permissions.cancelAll((entry) => entry.turn === turn)
+
+    function permission(request: AcpFields): PermissionReply | Promise<PermissionReply> {
+      if (stopped || !prompting) return cancelledPermission()
+      const tool = request.toolCall ?? {}
+      const question = isQuestion(tool)
+      const title = (question ? nonblank(tool.title) || t('permission.question') : nonblank(tool.name) || nonblank(tool.title) || t('permission.tool')).slice(0, 4096)
+      if (autoDecision(request, spec.cfg.autoApprove, spec.cwd) === 'allow') {
+        const allow = permissionOptions(request, false).find((option) => option.role === 'allow_once')
+        log(`[ACP permission] ${title} · ${allow ? 'allow_once' : 'cancelled'}\n`)
+        return allow && !stopped ? { outcome: { outcome: 'selected', optionId: allow.id } } : cancelledPermission()
+      }
+
+      const toolId = !question && typeof tool.toolCallId === 'string' && tool.toolCallId ? tool.toolCallId : undefined
+      const existing = toolId ? events.tool(toolId) : undefined
+      if (toolId && !existing) events.update({ ...tool, sessionUpdate: 'tool_call', status: 'pending' })
+      if (stopped || !prompting) return cancelledPermission()
+
+      const event: PermissionEvent = {
+        t: 'permission',
+        requestId: randomUUID(),
+        kind: question ? 'question' : 'approval',
+        activityId: toolId ? `agy:${toolId}` : undefined,
+        title,
+        detail: question ? undefined : permissionDetail(tool) ?? (existing && permissionDetail(existing)),
+        options: permissionOptions(request, question),
+        expiresAt: Date.now() + PERMISSION_TIMEOUT
+      }
+      return new Promise((resolve) => {
+        permissions.register({
+          ref: spec.ref, connection: conn, turn, event, resolve,
+          emit: (resolution) => {
+            emit(resolution)
+            log(`[ACP permission] ${title} · ${resolution.outcome}\n`)
+            if (resolution.outcome === 'timeout') {
+              notice(t(question ? 'main.acpQuestionTimeout' : 'main.acpPermissionTimeout', { name: title }))
+            }
+          }
+        })
+        emit(event)
+      })
+    }
+
     const unwatch = conn.watch(id, {
       update: (update) => { if (prompting) events.update(update) },
-      permission: (request) => agyPermission(request, spec.cfg.autoApprove, emit, log, () => stopped || !prompting, spec.cwd)
+      permission
     })
     const cleanup = (): void => {
       if (!finishPrompt) return
       finishPrompt = undefined
       prompting = false
       clearTimeout(cancelTimer)
+      cancelPermissions?.()
+      cancelPermissions = undefined
       unwatch()
       events.finish()
     }
@@ -414,8 +487,13 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
   const kill = (): void => {
     if (stopped || finished) return
     stopped = true
-    if (prompting && connection && sessionId) cancelPrompt(connection, sessionId)
-    else resolveStop(result(false))
+    cancelPermissions?.()
+    if (prompting && connection && sessionId) {
+      const conn = connection
+      const id = sessionId
+      // Resolving permissions schedules the RPC responses before the cancel notification.
+      queueMicrotask(() => { if (prompting && finishPrompt) cancelPrompt(conn, id) })
+    } else resolveStop(result(false))
   }
   return { done, kill }
 }

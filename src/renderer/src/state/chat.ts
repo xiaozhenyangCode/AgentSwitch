@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react'
-import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
+import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
+import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission, type PendingPermission } from './permissionState'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
@@ -83,6 +84,7 @@ export interface AssistantMessage {
   /** Markdown. */
   content: string
   activity: Activity[]
+  permissions?: PendingPermission[]
   thinking: Thinking | null
   usage: Usage | null
   /** Structured CLI events no adapter rule handles (kept visible, never dropped). */
@@ -158,7 +160,14 @@ function load(): ChatState {
   try {
     const v = JSON.parse(localStorage.getItem(LS_KEY) ?? '') as ChatState
     // in-flight turns stay as they were until reattach() asks the main process which still run
-    for (const t of v.threads) t.pause = null
+    for (const t of v.threads) {
+      t.pause = null
+      for (const m of t.messages) {
+        if (m.role === 'assistant' && m.status !== 'streaming' && m.permissions) {
+          m.permissions = reconcilePermissions(m.permissions, [], false)
+        }
+      }
+    }
     // earlier versions turned every viewed history entry into a chat: drop the ones never written to
     const viewedOnly = v.threads.filter((t) => t.imported && t.messages.length === 0)
     if (viewedOnly.length) {
@@ -177,6 +186,19 @@ function load(): ChatState {
 let state: ChatState = load()
 const listeners = new Set<() => void>()
 let persistTimer: ReturnType<typeof setTimeout> | null = null
+let permissionEventsDuringRestore: Map<string, PermissionResolution | null> | null = new Map()
+
+function persist() {
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = null
+  try {
+    // imported history is re-read from the CLI files; keep localStorage small
+    const threads = state.threads.filter((t) => !t.preview).map(({ history: _h, historyState: _s, ...t }) => t)
+    localStorage.setItem(LS_KEY, JSON.stringify({ ...state, threads, activeId: threads.some((t) => t.id === state.activeId) ? state.activeId : (threads[0]?.id ?? null) }))
+  } catch {
+    /* quota exceeded: keep in memory only */
+  }
+}
 
 function set(next: ChatState) {
   // a history preview only lives while it is on screen
@@ -184,16 +206,7 @@ function set(next: ChatState) {
   state = next
   listeners.forEach((l) => l())
   if (persistTimer) return // streaming updates are frequent; persist at most every 400ms
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    try {
-      // imported history is re-read from the CLI files; keep localStorage small
-      const threads = state.threads.filter((t) => !t.preview).map(({ history: _h, historyState: _s, ...t }) => t)
-      localStorage.setItem(LS_KEY, JSON.stringify({ ...state, threads, activeId: threads.some((t) => t.id === state.activeId) ? state.activeId : (threads[0]?.id ?? null) }))
-    } catch {
-      /* quota exceeded: keep in memory only */
-    }
-  }, 400)
+  persistTimer = setTimeout(persist, 400)
 }
 
 const patchThread = (id: string, fn: (t: Thread) => Thread) => set({ ...state, threads: state.threads.map((t) => (t.id === id ? fn(t) : t)) })
@@ -501,6 +514,21 @@ export function stop(threadId: string) {
   void window.agentswitch.chat.stop(threadId)
 }
 
+export async function replyPermission(requestId: string, optionId: string | null): Promise<void> {
+  if (await window.agentswitch.chat.permissionReply(requestId, optionId)) return
+  for (const thread of state.threads) {
+    const msg = thread.messages.find((m): m is AssistantMessage =>
+      m.role === 'assistant' && !!m.permissions?.some((p) => p.requestId === requestId && isPendingPermission(p)))
+    if (!msg) continue
+    patchMsg(thread.id, msg.id, (m) => ({
+      ...m,
+      permissions: m.permissions?.map((p) => p.requestId === requestId ? { ...p, expired: true } : p)
+    }))
+    persist()
+    break
+  }
+}
+
 export function resolvePause(threadId: string, action: 'retry' | 'skip' | 'stop') {
   const t = state.threads.find((x) => x.id === threadId)
   if (!t?.pause) return
@@ -549,8 +577,19 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: 'streaming', startedAt: now() }))
     case 'agent': {
       const ev = e.event
-      return patchMsg(e.threadId, e.stepId, (m) => {
+      if (ev.t === 'permission' && !permissionEventsDuringRestore?.has(ev.requestId)) permissionEventsDuringRestore?.set(ev.requestId, null)
+      if (ev.t === 'permission_resolved') {
+        const { t: _type, requestId, ...resolution } = ev
+        permissionEventsDuringRestore?.set(requestId, resolution)
+      }
+      patchMsg(e.threadId, e.stepId, (m) => {
         switch (ev.t) {
+          case 'permission':
+            return { ...m, permissions: addPermission(m.permissions, ev), thinking: endThinking(m.thinking), phase: null }
+          case 'permission_resolved': {
+            const { t: _type, requestId, ...resolution } = ev
+            return { ...m, permissions: resolvePermission(m.permissions, requestId, resolution) }
+          }
           case 'text':
             return { ...m, content: m.content + ev.delta, thinking: endThinking(m.thinking), phase: null, tail: 'text' }
           case 'phase':
@@ -592,6 +631,9 @@ function onEvent(e: ChatEvent) {
             return m // e.g. quota: consumed by the main process
         }
       })
+      // Reloads can happen before the normal streaming persistence interval has elapsed.
+      if (ev.t === 'permission' || ev.t === 'permission_resolved') persist()
+      return
     }
     case 'step-end': {
       // hidden title / next-step markers: strip them, then apply to the thread
@@ -671,9 +713,27 @@ window.agentswitch.chat.onEvent(onEvent)
 async function reattach() {
   const loaded = new Map(state.threads.filter((t) => t.activeTurn).map((t) => [t.id, t.activeTurn!]))
   const inflight = (m: Message) => m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')
-  if (!loaded.size && !state.threads.some((t) => t.messages.some(inflight))) return
-  const live = await window.agentswitch.chat.active().catch(() => [])
+  const recoverTurns = loaded.size > 0 || state.threads.some((t) => t.messages.some(inflight))
+  if (!recoverTurns && !state.threads.length) {
+    permissionEventsDuringRestore = null
+    return
+  }
+  const [live, pending] = await Promise.all([
+    recoverTurns ? window.agentswitch.chat.active().catch(() => []) : Promise.resolve([]),
+    window.agentswitch.chat.pendingPermissions().catch(() => [])
+  ])
+  const observed = permissionEventsDuringRestore ?? new Map()
+  permissionEventsDuringRestore = null
+  if (!recoverTurns && !pending.length && !observed.size) return
   const byThread = new Map(live.map((x) => [x.threadId, x]))
+  const pendingByStep = new Map<string, PermissionEvent[]>()
+  const stepKey = (threadId: string, turnId: string, stepId: string) => JSON.stringify([threadId, turnId, stepId])
+  for (const { threadId, turnId, stepId, event } of pending) {
+    const key = stepKey(threadId, turnId, stepId)
+    const events = pendingByStep.get(key) ?? []
+    events.push(event)
+    pendingByStep.set(key, events)
+  }
   set({
     ...state,
     threads: state.threads.map((t) => {
@@ -681,14 +741,19 @@ async function reattach() {
       const turnId = run && (!t.activeTurn || t.activeTurn === run.turnId) ? run.turnId : null
       // a turn started after this window loaded is not ours to settle
       if (t.activeTurn && t.activeTurn !== loaded.get(t.id) && t.activeTurn !== turnId) return t
-      if (!turnId && !t.activeTurn && !t.messages.some(inflight)) return t
+      if (!turnId && !t.activeTurn && !t.messages.some((m) => inflight(m) || (m.role === 'assistant' && m.permissions?.some(isPendingPermission)))) return t
       return {
         ...t,
         activeTurn: turnId,
         messages: t.messages.map((m) => {
-          if (m.role !== 'assistant' || !inflight(m)) return m
-          if (turnId && m.turnId === turnId && (m.status === 'queued' || run!.running.includes(m.id))) return m
-          return { ...m, status: 'stopped' as const, endedAt: m.endedAt ?? (m.startedAt ? now() : null), thinking: endThinking(m.thinking) }
+          if (m.role !== 'assistant') return m
+          const snapshot = pendingByStep.get(stepKey(t.id, m.turnId, m.id)) ?? []
+          const running = turnId === m.turnId && inflight(m) && !!run?.running.includes(m.id)
+          const permissions = reconcilePermissions(m.permissions, snapshot, running, observed)
+          const message = permissions === m.permissions ? m : { ...m, permissions }
+          if (running && m.status === 'queued' && permissions?.length) return { ...message, status: 'streaming' as const }
+          if (!inflight(m) || running || (turnId === m.turnId && m.status === 'queued')) return message
+          return { ...message, status: 'stopped' as const, endedAt: m.endedAt ?? (m.startedAt ? now() : null), thinking: endThinking(m.thinking) }
         })
       }
     })

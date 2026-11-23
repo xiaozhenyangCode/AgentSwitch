@@ -259,6 +259,39 @@ export interface Usage {
   contextWindow?: number
 }
 
+export interface PermissionOption {
+  id: string
+  label: string
+  role: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | 'answer'
+  warning?: string
+}
+
+export interface PermissionEvent {
+  t: 'permission'
+  requestId: string
+  kind: 'approval' | 'question'
+  activityId?: string
+  title: string
+  detail?: string
+  options: PermissionOption[]
+  expiresAt: number
+}
+
+export interface PermissionResolution {
+  outcome: 'selected' | 'cancelled' | 'timeout'
+  optionId?: string
+  label?: string
+  by: 'user' | 'auto'
+}
+
+export interface StepRef {
+  threadId: string
+  turnId: string
+  stepId: string
+}
+
+export type PendingPermissionEntry = StepRef & { event: PermissionEvent }
+
 /** Normalised event from any CLI adapter. */
 export type AgentEvent =
   | { t: 'session'; id: string; model: string | null }
@@ -277,6 +310,8 @@ export type AgentEvent =
   | { t: 'other_event'; kind: string; payload: string }
   | { t: 'output'; path: string }
   | { t: 'rate_limited' }
+  | PermissionEvent
+  | ({ t: 'permission_resolved'; requestId: string } & PermissionResolution)
   /** Non-fatal: e.g. tool calls auto-denied by the permission level. */
   | { t: 'notice'; message: string }
   | { t: 'error'; message: string }
@@ -483,6 +518,8 @@ export const IPC = {
   chatSend: 'chat:send',
   chatStop: 'chat:stop',
   chatActive: 'chat:active',
+  chatPermissionReply: 'chat:permissionReply',
+  chatPendingPermissions: 'chat:pendingPermissions',
   chatResume: 'chat:resume',
   chatEvent: 'chat:event',
   chatExportHandoff: 'chat:exportHandoff',

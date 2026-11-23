@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AutoApprove, ProfileConfig } from '@shared/types'
 import { runAgent, type RunSpec } from '../agentRunner'
 import { startAcpProcess } from './acpProcess'
-import { agyPermission } from './agySession'
+import { autoDecision } from './agySession'
 import { JsonRpc } from './jsonrpc'
 import { agyAcpPool } from './pool'
+import { permissions, PERMISSION_TIMEOUT } from './permissions'
 
 const stubs = vi.hoisted(() => ({ buildSpawnSpec: vi.fn(), getConfig: vi.fn(), spawn: vi.fn() }))
 
@@ -28,7 +29,8 @@ const cfg: ProfileConfig = {
   imported: false, loginCommand: 'agy', runCommand: 'agy', extraEnv: {}, defaultModel: '',
   autoApprove: 'cli', agyTransport: 'acp', createdAt: 0
 }
-const spec: RunSpec = { cfg, model: null, prompt: 'First', system: 'System', cwd: '/tmp/project', outDir: '/tmp/output', images: [], resume: null }
+const ref = { threadId: 'thread', turnId: 'turn', stepId: 'step' }
+const spec: RunSpec = { cfg, ref, model: null, prompt: 'First', system: 'System', cwd: '/tmp/project', outDir: '/tmp/output', images: [], resume: null }
 const sessionId = 'conversation'
 const text = (s: string, type = 'agent_message_chunk') => ({ sessionUpdate: type, content: { type: 'text', text: s } })
 const call = (status: string, extra = {}) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status, ...extra })
@@ -104,6 +106,124 @@ describe('agy ACP runs', () => {
     cli.send({ id: create.id, result: { sessionId } })
     return cli.request('session/prompt')
   }
+
+  const options = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }, {
+    optionId: 'always', name: 'Always allow', kind: 'allow_always',
+    _meta: { 'agy.security.warning': { title: 'Read carefully', message: 'Future commands may run without confirmation.' } }
+  }, { optionId: 'deny', name: 'Deny', kind: 'reject_once' }]
+  const command = { toolCallId: 'shell_1', kind: 'execute', name: 'run_command', rawInput: { CommandLine: 'echo p2-check' } }
+  const ask = (toolCall: object = command, choices: object[] = options): Message =>
+    ({ id: 51, method: 'session/request_permission', params: { sessionId, toolCall, options: choices } })
+  const permission = () => emit.mock.calls.map(([e]) => e).find((e) => e.t === 'permission')!
+  const cancelled = { outcome: { outcome: 'cancelled' } }
+
+  it('creates an activity before the approval card, exposes it on reload and returns the selected option', async () => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send(ask())
+    const event = permission()
+    expect(event).toMatchObject({
+      activityId: 'agy:shell_1', kind: 'approval', title: 'run_command', detail: 'echo p2-check',
+      options: [
+        { id: 'allow', label: 'Allow', role: 'allow_once' },
+        { id: 'always', role: 'allow_always', warning: 'Future commands may run without confirmation.' },
+        { id: 'deny', role: 'reject_once' }
+      ]
+    })
+    expect(emit.mock.calls.map(([e]) => e.t)).toEqual(['session', 'activity', 'permission'])
+    expect(emit.mock.calls[1][0]).toMatchObject({ t: 'activity', id: event.activityId, status: 'running' })
+    expect(permissions.pending()).toEqual([{ ...ref, event }])
+    expect(permissions.reply(event.requestId, 'allow', 'user')).toBe(true)
+    await vi.waitFor(() => expect(cli.sent.at(-1)).toMatchObject({ id: 51, result: { outcome: { outcome: 'selected', optionId: 'allow' } } }))
+    expect(emit).toHaveBeenCalledWith({ t: 'permission_resolved', requestId: event.requestId, outcome: 'selected', optionId: 'allow', label: 'Allow', by: 'user' })
+    cli.send({ id: prompt.id, result })
+    await run.done
+  })
+
+  it('asks questions in full mode, preserving answer IDs and bounding labels', async () => {
+    stubs.getConfig.mockReturnValue({ ...cfg, autoApprove: 'full' })
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send(ask({ ...command, toolCallId: 'interaction_1', title: 'Choose **one**.' }, [
+      { name: 'A'.repeat(240), optionId: 'alpha', kind: 'allow_once' },
+      { name: '  ', optionId: 'beta', kind: 'reject_once' }
+    ]))
+    const event = permission()
+    expect(event).toMatchObject({ kind: 'question', title: 'Choose **one**.', options: [
+      { id: 'alpha', label: 'A'.repeat(200), role: 'answer' }, { id: 'beta', label: 'beta', role: 'answer' }
+    ] })
+    expect(event.activityId).toBeUndefined()
+    expect(emit.mock.calls.map(([e]) => e.t)).toEqual(['session', 'permission'])
+    expect(permissions.reply(event.requestId, 'beta', 'user')).toBe(true)
+    await vi.waitFor(() => expect(cli.sent.at(-1)).toMatchObject({ id: 51, result: { outcome: { outcome: 'selected', optionId: 'beta' } } }))
+    cli.send({ id: prompt.id, result })
+    await run.done
+  })
+
+  it('writes every outstanding permission cancellation before session/cancel', async () => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send(ask(), { ...ask(), id: 52 })
+    expect(permissions.pending()).toHaveLength(2)
+    run.kill()
+    await cli.request('session/cancel')
+    expect(cli.sent.slice(-3)).toEqual([
+      { jsonrpc: '2.0', id: 51, result: cancelled },
+      { jsonrpc: '2.0', id: 52, result: cancelled },
+      { jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } }
+    ])
+    expect(emit.mock.calls.filter(([e]) => e.t === 'permission_resolved').map(([e]) => e)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ requestId: permission().requestId, outcome: 'cancelled', by: 'auto' })]))
+    expect(permissions.pending()).toHaveLength(0)
+    cli.send({ id: prompt.id, result: { stopReason: 'cancelled' } })
+    await expect(run.done).resolves.toMatchObject({ stopped: true })
+  })
+
+  it('rejects an expired approval and emits its notice', async () => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    vi.useFakeTimers()
+    cli.send(ask())
+    await vi.advanceTimersByTimeAsync(PERMISSION_TIMEOUT)
+    expect(cli.sent.at(-1)).toMatchObject({ id: 51, result: { outcome: { outcome: 'selected', optionId: 'deny' } } })
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'permission_resolved', outcome: 'timeout', by: 'auto' }))
+    expect(emit).toHaveBeenCalledWith({ t: 'notice', message: expect.stringContaining('5 minutes') })
+    cli.send({ id: prompt.id, result })
+    await run.done
+  })
+
+  it('cancels pending requests on child exit and cancels late requests without showing a card', async () => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send(ask(), { id: prompt.id, result }, { ...ask(), id: 52 })
+    await run.done
+    expect(cli.sent).toContainEqual({ jsonrpc: '2.0', id: 52, result: cancelled })
+    expect(emit.mock.calls.filter(([e]) => e.t === 'permission')).toHaveLength(1)
+    expect(permissions.pending()).toEqual([])
+
+    const next = runAgent({ ...spec, resume: sessionId }, emit, log)
+    await cli.request('session/prompt', 2)
+    cli.send({ ...ask(), id: 53 })
+    expect(permissions.pending()).toHaveLength(1)
+    cli.process.terminate()
+    await next.done
+    expect(permissions.pending()).toEqual([])
+    expect(emit.mock.calls.filter(([e]) => e.t === 'permission_resolved')).toHaveLength(2)
+  })
+
+  it('automatically allows full access without showing a card and cancels if allow_once is missing', async () => {
+    stubs.getConfig.mockReturnValue({ ...cfg, autoApprove: 'full' })
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send(ask(), { ...ask(command, [options[1]]), id: 52 })
+    expect(cli.sent.slice(-2)).toEqual([
+      { jsonrpc: '2.0', id: 51, result: { outcome: { outcome: 'selected', optionId: 'allow' } } },
+      { jsonrpc: '2.0', id: 52, result: cancelled }
+    ])
+    expect(permission()).toBeUndefined()
+    cli.send({ id: prompt.id, result })
+    await run.done
+  })
 
   it('maps the measured execute sequence and suppresses late events in the same frame', async () => {
     const { run, cli } = await begin()
@@ -283,46 +403,36 @@ describe('agy ACP runs', () => {
   })
 })
 
-describe('agy automatic permission replies', () => {
+describe('agy automatic permission decisions', () => {
   const project = mkdtempSync(join(tmpdir(), 'agy-perm-'))
-  const cases: [AutoApprove, string, string | null][] = [
-    ['full', 'execute', 'allow-27'], ['full', 'edit', 'reject-unused'], ['full', 'interaction_', null],
-    ['edits', 'execute', 'deny-19'], ['edits', 'edit', 'reject-unused'], ['edits', 'interaction_', null],
-    ['cli', 'execute', 'deny-19'], ['cli', 'edit', 'deny-19'], ['cli', 'interaction_', null]
+  const cases: [AutoApprove, string, 'allow' | 'ask'][] = [
+    ['full', 'command-or-external', 'allow'], ['full', 'project-edit', 'allow'], ['full', 'read', 'allow'], ['full', 'question', 'ask'],
+    ['edits', 'command-or-external', 'ask'], ['edits', 'project-edit', 'allow'], ['edits', 'read', 'allow'], ['edits', 'question', 'ask'],
+    ['cli', 'command-or-external', 'ask'], ['cli', 'project-edit', 'ask'], ['cli', 'read', 'ask'], ['cli', 'question', 'ask']
   ]
-  it.each(cases)('%s handling %s', (level, tool, optionId) => {
-    const emit = vi.fn()
-    const log = vi.fn()
-    const options = [{ kind: 'reject_once', optionId: 'deny-19' }, { kind: 'allow_once', optionId: tool === 'edit' ? 'reject-unused' : 'allow-27' }]
-    const req = { toolCall: { toolCallId: tool + 'id', kind: tool, title: 'Permission', locations: [{ path: join(project, 'a.ts') }] }, options }
-    expect(agyPermission(req, level, emit, log, () => false, project)).toEqual({
-      outcome: optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' }
-    })
-    expect(emit).toHaveBeenCalledTimes(tool === 'interaction_' || optionId === 'deny-19' ? 1 : 0)
-    expect(log).toHaveBeenCalledTimes(1)
-    expect(agyPermission(req, level, emit, log, () => true, project)).toEqual({ outcome: { outcome: 'cancelled' } })
+  it.each(cases)('%s handling %s', (level, tool, expected) => {
+    const kind = { 'command-or-external': 'execute', 'project-edit': 'edit', read: 'read', question: 'other' }[tool]
+    const toolCall = { toolCallId: tool === 'question' ? 'interaction_1' : 'tool_1', kind, locations: [{ path: join(project, 'a.ts') }] }
+    expect(autoDecision({ toolCall }, level, project)).toBe(expected)
+    if (kind === 'execute') {
+      const external = { ...toolCall, kind: 'edit', locations: [{ path: '/etc/hosts' }] }
+      expect(autoDecision({ toolCall: external }, level, project)).toBe(expected)
+    }
   })
 
   it.each([
-    ['outside the project', { locations: [{ path: '/etc/hosts' }] }, 'deny'],
-    ['escaping with ..', { rawInput: { TargetFile: '../outside.ts' } }, 'deny'],
-    ['with no path', {}, 'deny'],
+    ['outside the project', { locations: [{ path: '/etc/hosts' }] }, 'ask'],
+    ['escaping with ..', { rawInput: { TargetFile: '../outside.ts' } }, 'ask'],
+    ['with no path', {}, 'ask'],
     ['relative inside', { rawInput: { TargetFile: 'src/new.ts' } }, 'allow'],
-    ['one of two outside', { locations: [{ path: join(project, 'a.ts') }], rawInput: { DestinationPath: '/tmp/x' } }, 'deny']
+    ['one of two outside', { locations: [{ path: join(project, 'a.ts') }], rawInput: { DestinationPath: '/tmp/x' } }, 'ask']
   ])('edits: an edit %s', (_label, fields, expected) => {
-    const options = [{ kind: 'reject_once', optionId: 'deny' }, { kind: 'allow_once', optionId: 'allow' }]
-    const req = { toolCall: { toolCallId: 'e1', kind: 'edit', title: 'Edit', ...fields }, options }
-    expect(agyPermission(req, 'edits', vi.fn(), vi.fn(), () => false, project)).toEqual({ outcome: { outcome: 'selected', optionId: expected } })
+    const toolCall = { toolCallId: 'e1', kind: 'edit', title: 'Edit', ...fields }
+    expect(autoDecision({ toolCall }, 'edits', project)).toBe(expected)
   })
 
-  it('edits: reads outside the project stay allowed (agy never asks for them in -p either)', () => {
-    const options = [{ kind: 'reject_once', optionId: 'deny' }, { kind: 'allow_once', optionId: 'allow' }]
-    const req = { toolCall: { toolCallId: 'r1', kind: 'read', locations: [{ path: '/etc/hosts' }] }, options }
-    expect(agyPermission(req, 'edits', vi.fn(), vi.fn(), () => false, project)).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
-  })
-
-  it('cancels when the requested choice is absent', () => {
-    const req = { toolCall: { toolCallId: 'tool', kind: 'execute' }, options: [{ kind: 'allow_always', optionId: 'always' }] }
-    expect(agyPermission(req, 'full', vi.fn(), vi.fn(), () => false, project)).toEqual({ outcome: { outcome: 'cancelled' } })
+  it('edits: reads outside the project stay allowed', () => {
+    const toolCall = { toolCallId: 'r1', kind: 'read', locations: [{ path: '/etc/hosts' }] }
+    expect(autoDecision({ toolCall }, 'edits', project)).toBe('allow')
   })
 })

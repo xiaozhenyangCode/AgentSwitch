@@ -46,6 +46,7 @@ import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, 
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { secrets } from './secrets'
+import { permissions } from './acp/permissions'
 import { ptyModeAllowed } from './apiKey'
 import type { ApiKeyConfig } from '@shared/types'
 
@@ -160,7 +161,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
 
   const orchestrator = new Orchestrator(
-    (e) => send(IPC.chatEvent, e),
+    (e) => {
+      send(IPC.chatEvent, e)
+      if (e.kind === 'agent' && e.event.t === 'permission') {
+        const window = getWindow()
+        if (!window || window.isDestroyed() || !window.isFocused()) app.dock?.bounce('informational')
+      }
+    },
     (pid, text) => ptys.log(`run:${pid}`, text),
     () => broadcast()
   )
@@ -373,6 +380,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     if (typeof threadId === 'string' && typeof nativeId === 'string' && hasProfile(profileId)) importSession(threadId, profileId, nativeId)
   })
   ipcMain.handle(IPC.chatActive, () => orchestrator.active())
+  ipcMain.handle(IPC.chatPermissionReply, (_e, requestId: unknown, optionId: unknown) =>
+    typeof requestId === 'string' && (typeof optionId === 'string' || optionId === null) && permissions.reply(requestId, optionId, 'user'))
+  ipcMain.handle(IPC.chatPendingPermissions, () => permissions.pending())
   ipcMain.handle(IPC.chatStop, (_e, threadId: unknown) => typeof threadId === 'string' && orchestrator.stop(threadId))
   ipcMain.handle(IPC.chatResume, (_e, threadId: unknown, turnId: unknown, action: unknown) => {
     if (typeof threadId === 'string' && typeof turnId === 'string' && (action === 'retry' || action === 'skip' || action === 'stop'))

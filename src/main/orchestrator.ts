@@ -640,6 +640,7 @@ export class Orchestrator {
 
     const handle = runAgent(
       {
+        ref: ids,
         cfg,
         model: step.model || cfg.defaultModel || null,
         prompt,

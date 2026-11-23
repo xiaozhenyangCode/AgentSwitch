@@ -6,6 +6,7 @@ import { buildSpawnSpec, kindBinaryPath } from '../profiles'
 import { realHome } from '../shellEnv'
 import { startAcpProcess, type AcpProcess } from './acpProcess'
 import { JsonRpcError } from './jsonrpc'
+import { cancelledPermission, permissions, type PermissionReply } from './permissions'
 
 const IDLE_MS = 10 * 60_000
 const MAX_IDLE_DEFERRAL = 60 * 60_000
@@ -16,11 +17,8 @@ export type AcpFields = Record<string, any>
 type Log = (text: string) => void
 interface Listener {
   update: (update: AcpFields) => void
-  permission: (request: AcpFields) => PermissionReply
+  permission: (request: AcpFields) => PermissionReply | Promise<PermissionReply>
 }
-
-export type PermissionReply = { outcome: { outcome: 'cancelled' } | { outcome: 'selected'; optionId: string } }
-export const cancelledPermission = (): PermissionReply => ({ outcome: { outcome: 'cancelled' } })
 
 interface SessionState {
   active: boolean
@@ -76,7 +74,8 @@ export class AcpConnection {
     this.listeners.get(id)?.update(update)
   }
 
-  permission(request: AcpFields): PermissionReply {
+  permission(request: AcpFields): PermissionReply | Promise<PermissionReply> {
+    if (!this.process.alive) return cancelledPermission()
     return this.listeners.get(request.sessionId)?.permission(request) ?? cancelledPermission()
   }
 
@@ -163,6 +162,7 @@ class AcpPool {
     if (!entry || (expected && entry.connection !== expected)) return
     this.entries.delete(id)
     clearTimeout(entry.timer)
+    if (entry.connection) permissions.cancelAll((request) => request.connection === entry.connection)
     entry.abort.abort()
     entry.connection?.process.terminate()
   }

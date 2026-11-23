@@ -18,6 +18,7 @@ import {
   type ThemeState,
   type DeleteThreadResult,
   type ChatEvent,
+  type PendingPermissionEntry,
   type ModelList,
   type RunRequest,
   type EnvPreview,
@@ -93,6 +94,8 @@ const api = {
     stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
     /** Turns the main process is still running (after a window reload). */
     active: (): Promise<{ threadId: string; turnId: string; running: string[] }[]> => ipcRenderer.invoke(IPC.chatActive),
+    permissionReply: (requestId: string, optionId: string | null): Promise<boolean> => ipcRenderer.invoke(IPC.chatPermissionReply, requestId, optionId),
+    pendingPermissions: (): Promise<PendingPermissionEntry[]> => ipcRenderer.invoke(IPC.chatPendingPermissions),
     resume: (threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): Promise<void> =>
       ipcRenderer.invoke(IPC.chatResume, threadId, turnId, action),
     onEvent: (cb: (e: ChatEvent) => void) => subscribe(IPC.chatEvent, cb),

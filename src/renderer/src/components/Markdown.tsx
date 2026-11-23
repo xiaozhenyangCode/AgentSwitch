@@ -216,7 +216,14 @@ const urlTransform = (url: string, key: string) =>
 /** Driver's machine-readable dispatch block is shown as tags on the dispatched replies instead. */
 const visible = (text: string) => stripMarks(text.replace(/```(?:agentswitch|agentmux):dispatch[\s\S]*?(```|$)/g, '')).trimEnd()
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+const readOnlyComponents: Components = {
+  ...components,
+  pre: ({ children }) => <pre className="whitespace-pre-wrap">{children}</pre>,
+  a: ({ children }) => <>{children}</>,
+  img: ({ alt }) => <>{alt}</>
+}
+
+export const Markdown = memo(function Markdown({ text, readOnly = false }: { text: string; readOnly?: boolean }) {
   return (
     <div className="md">
       <ReactMarkdown
@@ -225,10 +232,10 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
           [rehypeKatex, { throwOnError: false, strict: 'ignore', output: 'htmlAndMathml' }],
           [rehypeHighlight, { detect: false, ignoreMissing: true, plainText: ['mermaid'] }]
         ]}
-        components={components}
+        components={readOnly ? readOnlyComponents : components}
         urlTransform={urlTransform}
       >
-        {visible(text)}
+        {readOnly ? text : visible(text)}
       </ReactMarkdown>
     </div>
   )

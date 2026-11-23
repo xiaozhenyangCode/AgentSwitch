@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow } from '@shared/types'
+import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, StepRef } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profiles'
 import { agyModelId } from './models'
@@ -22,6 +22,7 @@ import { agyAcpPool } from './acp/pool'
  */
 
 export interface RunSpec {
+  ref?: StepRef
   cfg: ProfileConfig
   model: string | null
   prompt: string
