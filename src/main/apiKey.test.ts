@@ -6,6 +6,8 @@ import {
   isInvalidKeyError,
   maskEnv,
   maskSecret,
+  hasSubscriptionQuota,
+  ptyModeAllowed,
   resolveApiKeyConfig,
   stripCredentials,
   validateApiKeyConfig
@@ -55,6 +57,24 @@ describe('stripCredentials (Review Focus 5)', () => {
     expect(stripCredentials('claude', base)).toEqual({ PATH: '/bin', CODEX_API_KEY: 'c', GEMINI_API_KEY: 'g' })
     expect(stripCredentials('codex', base)).not.toHaveProperty('CODEX_API_KEY')
     expect(stripCredentials('gemini', base)).not.toHaveProperty('GEMINI_API_KEY')
+  })
+})
+
+describe('final review fixes', () => {
+  it('strips Claude provider switches and OAuth tokens too', () => {
+    const base = { CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CODE_USE_FOUNDRY: '1', ANTHROPIC_CUSTOM_HEADERS: 'h', PATH: '/bin' }
+    expect(stripCredentials('claude', base)).toEqual({ PATH: '/bin' })
+    expect(stripCredentials('gemini', { GOOGLE_APPLICATION_CREDENTIALS: '/x.json' })).toEqual({})
+    expect(maskEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-abcdefgh' }).CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-…efgh')
+  })
+  it('API-key accounts never open the OAuth login pty', () => {
+    expect(ptyModeAllowed({ apiKey: { provider: 'official' } }, 'login')).toBe(false)
+    expect(ptyModeAllowed({ apiKey: { provider: 'official' } }, 'shell')).toBe(true)
+    expect(ptyModeAllowed({}, 'login')).toBe(true)
+  })
+  it('API-key accounts have no subscription quota to look up', () => {
+    expect(hasSubscriptionQuota({ apiKey: { provider: 'deepseek' } })).toBe(false)
+    expect(hasSubscriptionQuota({})).toBe(true)
   })
 })
 

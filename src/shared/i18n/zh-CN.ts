@@ -106,6 +106,7 @@ export const zhCN = {
   'apikey.empty': '请填写 API Key',
   'apikey.noKeychain': '无法使用系统钥匙串加密，API Key 没有保存',
   'apikey.notApiKeyAccount': '这个账号不是用 API Key 连接的',
+  'apikey.noLogin': '这个账号用 API Key 连接，请更换 Key，无需登录。',
   'apikey.checkKey': '请到账号设置里检查 API Key。',
   'install.verbInstall': '安装',
   'install.verbUpdate': '更新',

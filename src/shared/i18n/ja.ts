@@ -97,6 +97,7 @@ export const ja: Dict = {
   'apikey.empty': 'API キーを入力してください',
   'apikey.noKeychain': 'システムのキーチェーンを利用できないため、API キーを保存しませんでした',
   'apikey.notApiKeyAccount': 'このアカウントは API キーで接続していません',
+  'apikey.noLogin': 'このアカウントは API キーで接続します。サインインではなくキーを変更してください。',
   'apikey.checkKey': 'アカウント設定で API キーを確認してください。',
   'install.verbInstall': 'インストール',
   'install.verbUpdate': 'アップデート',

@@ -97,6 +97,7 @@ export const en: Dict = {
   'apikey.empty': 'Enter an API key',
   'apikey.noKeychain': 'The system keychain is unavailable, so the API key was not saved',
   'apikey.notApiKeyAccount': 'This account does not connect with an API key',
+  'apikey.noLogin': 'This account connects with an API key. Change the key instead of signing in.',
   'apikey.checkKey': 'Check the API key in the account settings.',
   'install.verbInstall': 'install',
   'install.verbUpdate': 'update',

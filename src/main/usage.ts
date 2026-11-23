@@ -8,6 +8,7 @@ import type { AccountQuota, AccountUsage, ProfileId, QuotaGroup, QuotaReport, Qu
 import { runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
+import { hasSubscriptionQuota } from './apiKey'
 import { realHome } from './shellEnv'
 
 /**
@@ -229,7 +230,7 @@ function codexWindow(w: any): QuotaWindow | null {
 
 /** Latest rate_limits any rollout of this CODEX_HOME recorded (zero API calls). */
 export function refreshCodexQuota(profileId: ProfileId): boolean {
-  if (!hasProfile(profileId)) return false
+  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId))) return false
   const home = expandHome(getConfig(profileId).configDir)
   let best: { at: number; rl: any } | null = null
   for (const f of newestRollouts(home, 8)) {
@@ -269,6 +270,7 @@ export function refreshCodexQuota(profileId: ProfileId): boolean {
 const codexPending = new Map<ProfileId, Promise<boolean>>()
 
 export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
+  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
   const running = codexPending.get(profileId)
   if (running) return running
   const p = new Promise<boolean>((resolve) => {
@@ -436,6 +438,7 @@ function fetchClaudeUsageJson(
 }
 
 export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
+  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
   const running = claudePending.get(profileId)
   if (running) return running
   const p = (async (): Promise<boolean> => {
@@ -490,6 +493,7 @@ const agyPending = new Map<ProfileId, Promise<boolean>>()
 
 /** false: no data (API-key login exits 2, not logged in, older agy, parse failure). */
 export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
+  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
   const running = agyPending.get(profileId)
   if (running) return running
   const p = new Promise<boolean>((resolve) => {

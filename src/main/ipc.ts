@@ -46,6 +46,7 @@ import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, 
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { secrets } from './secrets'
+import { ptyModeAllowed } from './apiKey'
 import type { ApiKeyConfig } from '@shared/types'
 
 /** Validates the renderer's `{ apiKey, key }` shape (contents are validated in addProfile). */
@@ -261,6 +262,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const id = assertId(req.profileId)
     if (!PROFILE_MODES.includes(req.mode)) throw new Error(`bad mode ${req.mode}`)
     if (req.mode === 'test' && !req.command?.trim()) throw new Error('test mode needs a command')
+    if (!ptyModeAllowed(getConfig(id), req.mode)) throw new Error(t('apikey.noLogin'))
     const spec = buildSpawnSpec(id, req.mode, req.command)
     // the chat's project folder, when it still exists
     if (typeof req.cwd === 'string' && isAbsolute(req.cwd)) {

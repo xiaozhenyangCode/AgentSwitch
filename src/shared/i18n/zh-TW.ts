@@ -104,6 +104,7 @@ export const zhTW: Dict = {
   'apikey.empty': '請填寫 API Key',
   'apikey.noKeychain': '無法使用系統鑰匙圈加密，API Key 未儲存',
   'apikey.notApiKeyAccount': '此帳號不是以 API Key 連線',
+  'apikey.noLogin': '這個帳號用 API Key 連線，請更換 Key，無需登入。',
   'apikey.checkKey': '請到帳號設定檢查 API Key。',
   'install.verbInstall': '安裝',
   'install.verbUpdate': '更新',

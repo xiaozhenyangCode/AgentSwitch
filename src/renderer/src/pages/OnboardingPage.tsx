@@ -195,7 +195,7 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
   const doLogin = async () => {
     setBusy(true)
     try {
-      let target = accounts.find((p) => !isReady(p))
+      let target = accounts.find((p) => !isReady(p) && !p.apiKey) // API-key accounts never use the OAuth sheet
       if (!target) {
         const id = await window.agentswitch.profiles.add(kind)
         const home = info?.realHome ?? ''

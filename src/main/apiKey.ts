@@ -32,14 +32,26 @@ export const CREDENTIAL_VARS: Record<ProfileKind, string[]> = {
     'ANTHROPIC_DEFAULT_SONNET_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL',
     'ANTHROPIC_SMALL_FAST_MODEL',
-    'CLAUDE_CODE_SUBAGENT_MODEL'
+    'CLAUDE_CODE_SUBAGENT_MODEL',
+    // these beat both a subscription sign-in and an API key, so a global export would hijack every account
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'ANTHROPIC_CUSTOM_HEADERS'
   ],
   codex: ['CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
-  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT']
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS']
 }
 
 /** Env vars whose values are secrets and must be masked wherever env is displayed. */
-export const SECRET_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY']
+export const SECRET_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY']
+
+/** API-key accounts connect via env only; the CLI's OAuth login would write a second credential. */
+export const ptyModeAllowed = (cfg: { apiKey?: ApiKeyConfig }, mode: string): boolean => !(cfg.apiKey && mode === 'login')
+
+/** Only subscription sign-ins have 5h/7d quota; probing an API-key account would spend the user's credits. */
+export const hasSubscriptionQuota = (cfg: { apiKey?: ApiKeyConfig }): boolean => !cfg.apiKey
 
 const isThirdParty = (cfg: ApiKeyConfig): boolean => cfg.provider === 'deepseek' || cfg.provider === 'custom'
 
