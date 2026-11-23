@@ -35,7 +35,8 @@ interface FileEntry {
   days: Days
 }
 interface Stats {
-  version: 1
+  /** 2: run usage is per run (v1 summed claude's cumulative session cost and codex's cumulative tokens). */
+  version: 1 | 2
   runs: Record<ProfileId, Days>
   files: Record<string, FileEntry>
   limitedAt: Record<ProfileId, number>
@@ -73,11 +74,27 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 function load(): Stats {
   try {
     const s = JSON.parse(readFileSync(statsFile(), 'utf8')) as Stats
-    if (s.version === 1) return { version: 1, runs: s.runs ?? {}, files: s.files ?? {}, limitedAt: s.limitedAt ?? {} }
+    if (s.version === 1 || s.version === 2) return { version: s.version, runs: s.runs ?? {}, files: s.files ?? {}, limitedAt: s.limitedAt ?? {} }
   } catch {
     /* fresh */
   }
-  return { version: 1, runs: {}, files: {}, limitedAt: {} }
+  return { version: 2, runs: {}, files: {}, limitedAt: {} }
+}
+
+/**
+ * v1 -> v2: v1 recorded claude's session-cumulative total_cost_usd and codex's session-cumulative
+ * tokens as each run's own, so every turn re-counted all earlier ones. The real per-run values
+ * cannot be recovered: drop those costs and codex run tokens (run counts and history stay).
+ * Runs lazily (needs the account list).
+ */
+function migrate(): void {
+  if (stats.version !== 1) return
+  const codex = new Set(listConfigs().filter((c) => c.kind === 'codex').map((c) => c.id))
+  for (const [id, days] of Object.entries(stats.runs))
+    for (const [k, v] of Object.entries(days))
+      days[k] = codex.has(id) ? { ...zero(), runs: v.runs } : { ...v, costUsd: 0 }
+  stats.version = 2
+  persist()
 }
 function loadQuota(): Record<ProfileId, AccountQuota> {
   try {
@@ -132,6 +149,7 @@ function setQuotaError(profileId: ProfileId, msg: string | null): void {
 }
 
 export function snapshot(): UsageSnapshot {
+  migrate()
   const now = new Date()
   const today = dayKey(now.getTime())
   const monday = new Date(now)
@@ -166,6 +184,7 @@ export function snapshot(): UsageSnapshot {
 
 /** One finished AgentSwitch step: the CLI's own usage report (cost included when the CLI gives it). */
 export function recordRun(profileId: ProfileId, u: Usage | null): void {
+  migrate()
   const key = dayKey(Date.now())
   const days = (stats.runs[profileId] ??= {})
   days[key] = add(days[key] ?? zero(), { ...(u ?? {}), runs: 1 })

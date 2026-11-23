@@ -1,3 +1,5 @@
+import type { TranscriptEntry } from './transcript'
+
 /** Dynamic account id, e.g. `claude-a1b2c3`. */
 export type ProfileId = string
 export type ProfileKind = 'claude' | 'gemini' | 'codex' | 'reasonix'
@@ -151,8 +153,8 @@ export interface RunRequest {
   mentions: RunAgentRef[]
   /** Accounts allowed to take part (driver may dispatch to these). */
   participants: ProfileId[]
-  /** Plain-text recap of the recent conversation, oldest first. */
-  transcript: string
+  /** Recap of the recent conversation, oldest first (each step only gets what its session has not seen). */
+  transcript: TranscriptEntry[]
   /** 'handoff': the driver only writes a handoff document (saved to .agentswitch/handoffs/). */
   mode?: 'chat' | 'handoff'
   /** Handoff target account (mode 'handoff'). */

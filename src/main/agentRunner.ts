@@ -10,6 +10,7 @@ import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
+import { claudeCostBefore, codexTotalsBefore, codexTurnUsage, runCost } from './usageDelta'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -135,9 +136,13 @@ const readJson = (p: string): any => {
 const CLAUDE_MODES = new Set(['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'])
 /** permissions.defaultMode as the terminal would see it (project local > project > user); 'auto' otherwise.
  *  'default' / 'manual' would only deny every prompt in -p mode, so they also map to auto. */
-function claudeCliMode(cfg: ProfileConfig, cwd: string): string {
+/** CLAUDE_CONFIG_DIR of the account (the default account keeps its data in ~/.claude). */
+function claudeUserDir(cfg: ProfileConfig): string {
   const home = expandHome(cfg.configDir)
-  const userDir = cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home
+  return cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home
+}
+function claudeCliMode(cfg: ProfileConfig, cwd: string): string {
+  const userDir = claudeUserDir(cfg)
   for (const f of [join(cwd, '.claude', 'settings.local.json'), join(cwd, '.claude', 'settings.json'), join(userDir, 'settings.json')]) {
     const m = readJson(f)?.permissions?.defaultMode
     if (typeof m === 'string' && m) return CLAUDE_MODES.has(m) ? m : 'auto'
@@ -171,6 +176,8 @@ function claudeAdapter(s: RunSpec): Adapter {
   let sawThinkingDelta = false
   /** Context size of the latest API request (result.usage sums all requests of the turn). */
   let lastContext = 0
+  // total_cost_usd is the resumed session's running total: remember where this run starts
+  const costBefore = claudeCostBefore(claudeUserDir(s.cfg), s.resume)
   const tools = new Map<string, { name: string; input: Record<string, any>; activity: Extract<AgentEvent, { t: 'activity' }> | null }>()
   const args = [
     '-p',
@@ -303,7 +310,7 @@ function claudeAdapter(s: RunSpec): Adapter {
               cacheRead: u.cache_read_input_tokens,
               cacheWrite: u.cache_creation_input_tokens,
               reasoning: u.output_tokens_details?.thinking_tokens,
-              costUsd: typeof d.total_cost_usd === 'number' ? d.total_cost_usd : undefined,
+              costUsd: runCost(d.total_cost_usd, costBefore),
               context: lastContext || undefined
             }
           })
@@ -441,6 +448,8 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
   let textSoFar = ''
   let thoughtSoFar = ''
   const own = s.cfg.autoApprove === 'cli' ? codexTopKeys(codexHome) : new Set<string>()
+  // `exec resume` reports the session's running totals: remember where this turn starts
+  const totalsBefore = s.resume ? codexTotalsBefore(codexRollout(codexHome, s.resume)) : null
   const policy =
     s.cfg.autoApprove === 'full'
       ? ['-c', 'sandbox_mode="danger-full-access"', '-c', 'approval_policy="never"']
@@ -561,18 +570,7 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
           itemEvent('completed', d.item, emit)
           break
         case 'turn.completed': {
-          const u = d.usage ?? {}
-          const cached = Number(u.cached_input_tokens) || 0
-          emit({
-            t: 'usage',
-            usage: {
-              input: typeof u.input_tokens === 'number' ? Math.max(0, u.input_tokens - cached) : undefined,
-              output: u.output_tokens,
-              cacheRead: cached || undefined,
-              cacheWrite: u.cache_write_input_tokens || undefined,
-              reasoning: u.reasoning_output_tokens
-            }
-          })
+          emit({ t: 'usage', usage: codexTurnUsage(d.usage ?? {}, totalsBefore) })
           result = { ok: true, error: null }
           break
         }

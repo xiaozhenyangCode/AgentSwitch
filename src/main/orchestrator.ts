@@ -12,6 +12,7 @@ import { KIND_LABEL, getConfig, hasProfile, sessionStoreKeyOf } from './profiles
 import { t } from './i18n'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
+import { transcriptText, unseenTranscript } from '@shared/transcript'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -33,6 +34,29 @@ import { maskCode } from '@shared/mentions'
 const MAX_RETRIES = 3
 const MAX_DISPATCH = 6
 const PREV_STEP_CHARS = 4000
+/** Resumed inline-system sessions get the fixed instructions again after this many compact turns. */
+const SYSTEM_RESEND_TURNS = 8
+
+interface StepPrompt {
+  prompt: string
+  /** Full system text. */
+  system: string
+  /** The part that stays the same across turns (identity, permissions, dispatch rules). */
+  fixed: string
+  /** This turn's lines only (hand-off / output dirs, reply language). */
+  turnOnly: string
+}
+
+/** sys[2..4] are per turn (run dir, output dir, reply language); the rest is fixed. */
+function stepPrompt(parts: string[], sys: string[]): StepPrompt {
+  const TURN_LINES = [2, 3, 4]
+  return {
+    prompt: parts.join('\n'),
+    system: sys.join('\n'),
+    fixed: sys.filter((_, i) => !TURN_LINES.includes(i)).join('\n'),
+    turnOnly: TURN_LINES.map((i) => sys[i]).join('\n')
+  }
+}
 const SNAPSHOT_MAX_FILES = 20000
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentswitch', LEGACY_PROJECT_DIR, 'dist', 'build', 'out', '.next', 'target', '.venv', 'venv', '__pycache__', '.cache', '.turbo'])
 const REVIEW_RE = /验收|审核|审查|复核|评审|检查|review/i
@@ -472,7 +496,14 @@ export class Orchestrator {
     this.add(turn, { profileId: review.profileId, model: review.model, task: review.task, kind: review.kind, dispatchedBy: review.dispatchedBy, allowDispatch: false, retry, review: true }, reviewIdx + 2)
   }
 
-  private prompt(turn: Turn, step: Step): { prompt: string; system: string } {
+  /**
+   * Engines that get the system text inlined into the user message (codex, reasonix, agy -p) keep it
+   * in their session history. Per resumed session: the fixed part it already holds, and how many
+   * turns ago it was sent (resent now and then: context compaction may have dropped it).
+   */
+  private sentSystem = new Map<string, { fixed: string; turns: number }>()
+
+  private prompt(turn: Turn, step: Step): StepPrompt {
     const cfg = getConfig(step.profileId)
     const rel = (p: string): string => relative(turn.cwd, p) || '.'
     const sys: string[] = [
@@ -514,12 +545,14 @@ export class Orchestrator {
     }
 
     const parts: string[] = []
-    const fresh = !resolveResumeSession(loadSessions(turn.req.threadId), cfg)
-    if (turn.req.transcript.trim() && (fresh || turn.req.mode !== 'handoff')) parts.push('## 之前的对话（节选）', turn.req.transcript.trim(), '')
+    // a resumed session already holds the conversation up to its own last reply: send only the rest
+    const resuming = !!resolveResumeSession(loadSessions(turn.req.threadId), cfg)
+    const recap = transcriptText(unseenTranscript(turn.req.transcript, cfg.id, resuming))
+    if (recap) parts.push(resuming ? '## 你上次回复之后的对话（节选）' : '## 之前的对话（节选）', recap, '')
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
       parts.push('## 你的任务', handoffPrompt(to))
-      return { prompt: parts.join('\n'), system: sys.join('\n') }
+      return stepPrompt(parts, sys)
     }
     if (turn.req.handoffDoc) {
       let doc = ''
@@ -586,7 +619,7 @@ export class Orchestrator {
       )
     // the prompt above is Chinese: restate the language last, where models weigh it most
     if (userLanguage(turn.req.text) === 'en') parts.push('', 'Language: the user writes in English. Reply in English.')
-    return { prompt: parts.join('\n'), system: sys.join('\n') }
+    return stepPrompt(parts, sys)
   }
 
   private async next(turn: Turn): Promise<void> {
@@ -610,8 +643,14 @@ export class Orchestrator {
     const baseline = new FileBaseline(turn.cwd)
     const reported = new Set<string>()
     const written = new Set<string>()
-    const { prompt, system } = this.prompt(turn, step)
+    const { prompt, system: fullSystem, fixed, turnOnly } = this.prompt(turn, step)
     const sessions = loadSessions(turn.req.threadId)
+    const resume = resolveResumeSession(sessions, cfg)
+    const inline = cfg.kind === 'codex' || cfg.kind === 'reasonix' || (cfg.kind === 'gemini' && cfg.agyTransport !== 'acp')
+    const sent = inline && resume ? this.sentSystem.get(resume) : undefined
+    // the resumed session already holds the fixed instructions: only this turn's lines go again
+    const compact = !!sent && sent.fixed === fixed && sent.turns < SYSTEM_RESEND_TURNS
+    const system = compact ? turnOnly : fullSystem
     let stepUsage: Usage | null = null
     const emit = (event: AgentEvent): void => {
       if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
@@ -655,7 +694,7 @@ export class Orchestrator {
         system,
         cwd: turn.cwd,
         images: turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)),
-        resume: resolveResumeSession(sessions, cfg),
+        resume,
         outDir: turn.outDir
       },
       emit,
@@ -676,6 +715,7 @@ export class Orchestrator {
       this.log(cfg.id, `[usage] ${String(e)}\n`)
     }
     if (r.sessionId) saveSession(turn.req.threadId, cfg.id, r.sessionId)
+    if (inline && r.ok && r.sessionId) this.sentSystem.set(r.sessionId, compact && sent ? { fixed, turns: sent.turns + 1 } : { fixed, turns: 0 })
 
     // files changed on disk but not reported by the CLI's own events
     const after = snapshot(turn.cwd, [turn.outDir])

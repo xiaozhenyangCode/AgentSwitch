@@ -3,6 +3,7 @@ import { KINDS } from '@shared/types'
 import type { ActivityDetail, ActivityType, ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment, Usage } from '@shared/types'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
+import type { TranscriptEntry } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission, type PendingPermission } from './permissionState'
 
 /**
@@ -366,18 +367,17 @@ export async function deleteThread(id: string, purgeCli = false) {
 const TRANSCRIPT_MSGS = 10
 const TRANSCRIPT_EACH = 800
 
-function transcriptOf(t: Thread): string {
+function transcriptOf(t: Thread): TranscriptEntry[] {
   return threadMessages(t)
     .filter((m) => !(m.role === 'user' && m.kind === 'handoff'))
     .slice(-TRANSCRIPT_MSGS)
-    .map((m) => {
-      if (m.role === 'user') return `用户：${m.text}${m.attachments.length ? `（附件 ${m.attachments.map((a) => a.name).join('、')}）` : ''}`
+    .map((m): TranscriptEntry | null => {
+      if (m.role === 'user') return { profileId: null, text: `用户：${m.text}${m.attachments.length ? `（附件 ${m.attachments.map((a) => a.name).join('、')}）` : ''}` }
       if (!m.content.trim()) return null
       const body = plainExcerpt(stripMarks(m.content))
-      return `${m.agent.name}：${body.length > TRANSCRIPT_EACH ? body.slice(0, TRANSCRIPT_EACH) + '…' : body}`
+      return { profileId: m.agent.profileId, text: `${m.agent.name}：${body.length > TRANSCRIPT_EACH ? body.slice(0, TRANSCRIPT_EACH) + '…' : body}` }
     })
-    .filter(Boolean)
-    .join('\n')
+    .filter((e): e is TranscriptEntry => !!e)
 }
 
 const errorMessage = (turnId: string, agent: AgentRef, error: string): AssistantMessage => ({
