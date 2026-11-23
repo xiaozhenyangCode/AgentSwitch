@@ -13,7 +13,14 @@ const run = (cmd) => execSync(cmd, { stdio: 'inherit' })
 const electronDir = dirname(require.resolve('electron/package.json'))
 if (!existsSync(join(electronDir, 'path.txt'))) {
   console.log('[postinstall] downloading Electron binary...')
-  run(`node "${join(electronDir, 'install.js')}"`)
+  // Electron's installer downloads with Node's built-in fetch, which ignores HTTP(S)_PROXY
+  // unless NODE_USE_ENV_PROXY=1 (Node 24+; older Node ignores the flag). Without it, a
+  // proxy-only network fails with "fetch failed".
+  const proxied = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].some((k) => process.env[k])
+  execSync(`node "${join(electronDir, 'install.js')}"`, {
+    stdio: 'inherit',
+    env: proxied ? { NODE_USE_ENV_PROXY: '1', ...process.env } : process.env
+  })
 }
 
 console.log('[postinstall] rebuilding node-pty for Electron...')
