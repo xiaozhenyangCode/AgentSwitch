@@ -26,6 +26,60 @@ const SHELL = '/bin/zsh'
 /** Files from the real HOME that get symlinked into an isolated HOME (gemini). */
 const HOME_LINKS = ['.gitconfig', '.npmrc', '.ssh']
 
+/**
+ * Global agy rules/skills shared from the real `~/.gemini` into an isolated HOME (only when present),
+ * so every account sees the same customizations. MCP servers, plugins, hooks and credentials stay per-account.
+ */
+const AGY_SHARED_LINKS = [
+  '.gemini/GEMINI.md',
+  '.gemini/AGENTS.md',
+  '.gemini/config/GEMINI.md',
+  '.gemini/config/AGENTS.md',
+  '.gemini/config/rules',
+  '.gemini/config/rules.json',
+  '.gemini/config/skills',
+  '.gemini/config/skills.json',
+  '.gemini/config/agents.json'
+]
+
+/**
+ * Host vars that make agy silently switch to API-key / Vertex auth or another billing project,
+ * bypassing the isolated account's OAuth login. Removed from isolated Gemini envs
+ * (an account's own extraEnv may still set them explicitly).
+ */
+const AGY_AUTH_LEAK_VARS = [
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_CLOUD_PROJECT_ID',
+  'GOOGLE_CLOUD_LOCATION',
+  'GOOGLE_CLOUD_QUOTA_PROJECT',
+  'GOOGLE_GENAI_USE_VERTEXAI',
+  'GOOGLE_GENAI_USE_GCA'
+]
+
+const isIsolatedGemini = (cfg: ProfileConfig, dir: string): boolean => cfg.kind === 'gemini' && dir !== realHome
+
+/** Symlinks `rel` (relative to both HOMEs) from the real HOME when it exists there and is absent here. */
+function linkFromRealHome(dir: string, rel: string): void {
+  const src = join(realHome, rel)
+  const dst = join(dir, rel)
+  if (!existsSync(src)) return // missing (or dangling link) in real HOME -> skip silently
+  try {
+    lstatSync(dst)
+    return // already present (file, dir or link) -> leave untouched
+  } catch {
+    /* not present */
+  }
+  try {
+    mkdirSync(dirname(dst), { recursive: true })
+    symlinkSync(src, dst)
+  } catch (e) {
+    console.warn(`[profiles] symlink ${dst} -> ${src} failed`, e)
+  }
+}
+
 export const KIND_LABEL: Record<ProfileKind, string> = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }
 
 export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
@@ -563,23 +617,8 @@ export function ensureIsolatedKeychain(dir: string): void {
 export function prepareProfileDir(cfg: ProfileConfig): string {
   const dir = expandHome(cfg.configDir)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  if (cfg.kind === 'gemini' && dir !== realHome) {
-    for (const name of HOME_LINKS) {
-      const src = join(realHome, name)
-      const dst = join(dir, name)
-      if (!existsSync(src)) continue // missing (or dangling link) in real HOME -> skip silently
-      try {
-        lstatSync(dst)
-        continue // already present (file, dir or link) -> leave untouched
-      } catch {
-        /* not present */
-      }
-      try {
-        symlinkSync(src, dst)
-      } catch (e) {
-        console.warn(`[profiles] symlink ${dst} -> ${src} failed`, e)
-      }
-    }
+  if (isIsolatedGemini(cfg, dir)) {
+    for (const rel of [...HOME_LINKS, ...AGY_SHARED_LINKS]) linkFromRealHome(dir, rel)
     ensureIsolatedKeychain(dir)
   }
   if (cfg.kind === 'gemini' && isApiKeyAccount(cfg)) ensureAgyGeminiProvider(dir)
@@ -609,6 +648,8 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
       break
     case 'gemini':
       if (dir !== realHome) env.HOME = dir
+      // Background calls (agy models, /usage, chat turns) must not stall on or trigger self-updates.
+      env.AGY_CLI_DISABLE_AUTO_UPDATE = '1'
       break
     case 'codex':
       env.CODEX_HOME = dir
@@ -660,6 +701,7 @@ export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>,
   const cfg = getConfig(id)
   const base = getBaseEnv()
   const dir = prepare ? prepareProfileDir(cfg) : expandHome(cfg.configDir)
+  if (isIsolatedGemini(cfg, dir)) for (const k of AGY_AUTH_LEAK_VARS) delete base[k]
   // Inherited credential vars are always dropped, so a global `export ANTHROPIC_BASE_URL=…`
   // can't redirect a subscription account, and an API-key account gets only its own key.
   const added = { ...isolationEnv(cfg, dir), ...accountKeyEnv(cfg), ...cfg.extraEnv }
@@ -674,8 +716,11 @@ export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>,
 }
 
 export function envPreview(id: ProfileId, mode: PtyMode): EnvPreview {
-  const s = mode === 'install' ? buildInstallSpec(getConfig(id).kind) : buildSpawnSpec(id, mode, undefined, false)
-  return { injected: s.injected, removed: strippedVarNames(), shell: s.shell, args: s.args, cwd: s.cwd }
+  const cfg = getConfig(id)
+  const s = mode === 'install' ? buildInstallSpec(cfg.kind) : buildSpawnSpec(id, mode, undefined, false)
+  const removed = strippedVarNames()
+  if (mode !== 'install' && isIsolatedGemini(cfg, expandHome(cfg.configDir))) removed.push(...AGY_AUTH_LEAK_VARS)
+  return { injected: s.injected, removed, shell: s.shell, args: s.args, cwd: s.cwd }
 }
 
 /**
