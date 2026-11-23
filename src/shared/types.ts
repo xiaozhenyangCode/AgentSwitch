@@ -547,6 +547,9 @@ export const IPC = {
   ptySessions: 'pty:sessions',
   ptyForget: 'pty:forget',
   gitChanges: 'git:changes',
+  gitStatus: 'git:status',
+  gitLog: 'git:log',
+  gitMutate: 'git:mutate',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
   ptyUrl: 'pty:url',
@@ -804,11 +807,17 @@ export interface FileChange {
   status: 'M' | 'A' | 'D' | 'U' | 'R'
   added: number
   removed: number
+  staged?: boolean
+  unstaged?: boolean
+  stagedChange?: FileChangePreview
+  unstagedChange?: FileChangePreview
   /** Unified diff (may be cut short); empty for binary files. */
   diff: string
   binary?: boolean
   truncated?: boolean
 }
+
+export type FileChangePreview = Pick<FileChange, 'status' | 'added' | 'removed' | 'diff' | 'binary' | 'truncated'>
 
 export interface FileChanges {
   /** The folder is inside a git work tree. */
@@ -819,6 +828,52 @@ export interface FileChanges {
   /** More changed files than listed. */
   more?: number
 }
+
+export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode }
+
+export type GitErrorCode = 'invalidBranch' | 'busy' | 'switchChanges' | 'diverged' | 'noUpstream' | 'auth' | 'pushRejected' | 'indexLocked'
+
+export type GitMutationResult = GitResult<{ outcome?: GitMutationOutcome }>
+
+type GitMutationOutcome =
+  | { kind: 'switch' | 'createBranch'; branch: string }
+  | { kind: 'pull'; count: number | null }
+  | { kind: 'push'; target: string; count: number | null; published: boolean }
+  | { kind: 'commit'; sha: string; subject: string }
+
+export interface GitBranch {
+  name: string
+  remote: string | null
+}
+
+export type GitStatus = { repo: false } | {
+  repo: true
+  branch: string | null
+  detached: string | null
+  upstream: string | null
+  ahead: number
+  behind: number
+  dirty: boolean
+  staged: number
+  unstaged: number
+  atRoot: boolean
+  branches: GitBranch[]
+}
+
+export interface GitCommit {
+  sha: string
+  subject: string
+  author: string
+  authoredAt: number
+}
+
+export type GitMutation =
+  | { kind: 'switch'; name: string; remote: string | null }
+  | { kind: 'createBranch'; name: string }
+  | { kind: 'fetch' | 'pull' | 'push' | 'stageAll' | 'unstageAll' }
+  | { kind: 'stage' | 'unstage'; path: string }
+  | { kind: 'discard'; path: string; untracked: boolean }
+  | { kind: 'commit' | 'stageAndCommit'; message: string }
 
 /** Read-only preview of an attached file (64 KB cap). */
 export interface AttachmentText extends ExtFileText {

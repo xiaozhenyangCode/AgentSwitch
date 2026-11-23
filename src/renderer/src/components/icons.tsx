@@ -14,6 +14,14 @@ const base = ({ size = 16, ...rest }: P) => ({
   ...rest
 })
 
+export const IconBranch = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="6" cy="5" r="2" />
+    <circle cx="6" cy="19" r="2" />
+    <circle cx="18" cy="5" r="2" />
+    <path d="M6 7v10m12-10a8 8 0 0 1-8 8H6" />
+  </svg>
+)
 export const IconWorkflow = (p: P) => (
   <svg {...base(p)}>
     <rect x="3" y="3" width="6" height="6" rx="1.5" />
@@ -135,6 +143,16 @@ export const IconArrowUp = (p: P) => (
 export const IconPlus = (p: P) => (
   <svg {...base(p)}>
     <path d="M12 5v14M5 12h14" />
+  </svg>
+)
+export const IconMinus = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M5 12h14" />
+  </svg>
+)
+export const IconUndo = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 10a8 8 0 1 1 1 7M4 5v5h5" />
   </svg>
 )
 export const IconStop = ({ size = 16, ...rest }: P) => (

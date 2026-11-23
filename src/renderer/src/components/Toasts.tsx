@@ -35,8 +35,8 @@ export function Toasts() {
         >
           {ICON[t.kind]}
           <div className="min-w-0 flex-1 pt-0.5">
-            <div className="text-[14px] leading-5 font-semibold text-ink">{t.title}</div>
-            {t.desc && <div className="mt-0.5 text-[13px] leading-relaxed break-words text-ink-2">{t.desc}</div>}
+            <div className="text-[14px] leading-5 font-semibold break-words text-ink">{t.title}</div>
+            {t.desc && <div className="mt-0.5 max-h-48 overflow-y-auto text-[13px] leading-relaxed break-words whitespace-pre-wrap text-ink-2">{t.desc}</div>}
             {t.action && (
               <button
                 className="mt-1.5 text-[13px] font-medium text-accent hover:text-accent-hover"
