@@ -7,6 +7,7 @@ import { EFFORT_SUFFIX_RE, effortRank } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, getKindConfig, kindBinaryPath } from './profiles'
 import { realHome } from './shellEnv'
 import { t } from './i18n'
+import { displayModel } from './apiKey'
 
 /**
  * Sub-model lists, per account (each account sees its own entitlements).
@@ -195,6 +196,10 @@ export function agyModelId(id: ProfileId, model: string, effort: string | null):
 async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<ModelList, 'profileId'>> {
   switch (cfg.kind) {
     case 'claude': {
+      if (cfg.apiKey?.provider === 'deepseek' || cfg.apiKey?.provider === 'custom') {
+        const models: ModelOption[] = (cfg.apiKey.models ?? []).map((id) => ({ id, label: displayModel(id), group: 'main' }))
+        return { models, source: 'catalog', fetchedAt: Date.now() }
+      }
       const c = claudeCatalog(cfg)
       if (!c) throw new Error(t('main.noClaudeCatalog'))
       return { models: c.models, source: 'catalog', fetchedAt: c.fetchedAt || Date.now() }

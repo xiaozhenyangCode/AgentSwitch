@@ -6,6 +6,7 @@ import { splitSpec } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profiles'
 import { agyModelId } from './models'
 import { t } from './i18n'
+import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -771,6 +772,7 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
       } catch (e) {
         onLog(`[finish] ${String(e)}\n`)
       }
+      if (error && cfg.apiKey && isInvalidKeyError(error)) error = `${error}\n${t('apikey.checkKey')}`
       resolve({ ok: ok && !stopped, stopped, text: '', sessionId: adapter.sessionId(), model: adapter.model(), error: stopped ? null : error, rateLimited })
     }
     if (!bin) return finish(false, t('main.cliNotInstalled', { kind: cfg.kind }))
@@ -817,7 +819,9 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
     })
     child.stderr!.on('data', (chunk: string) => {
       onLog(chunk)
-      errTail = (errTail + chunk).slice(-4000)
+      // Claude Code warns on stderr about every third-party model id; that's not an error.
+      const kept = cfg.apiKey ? chunk.split('\n').filter((l) => !isClaudeModelWarning(l)).join('\n') : chunk
+      errTail = (errTail + kept).slice(-4000)
       if (!rateLimited && RATE_LIMIT_RE.test(chunk)) wrapped({ t: 'rate_limited' })
     })
     child.on('error', (e) => finish(false, e.message))

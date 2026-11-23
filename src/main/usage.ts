@@ -731,7 +731,8 @@ export function runBackfill(): Promise<void> {
  *            OAuth token expired or is unavailable fall back to a tiny haiku message.
  */
 export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
-  const configs = listConfigs()
+  // API-key accounts have no subscription quota, and a probe would spend the user's credits.
+  const configs = listConfigs().filter((c) => !c.apiKey)
   const codexTask = Promise.all(
     configs
       .filter((c) => c.kind === 'codex')
