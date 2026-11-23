@@ -218,6 +218,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.profilesUpdate, (_e, id: unknown, patch: Partial<ProfileConfig>) => {
     updateProfile(assertId(id), patch)
+    if (patch?.apiKey) forgetModels(assertId(id)) // custom endpoint's model list changed
     broadcast()
   })
   ipcMain.handle(IPC.profilesReset, (_e, id: unknown) => {

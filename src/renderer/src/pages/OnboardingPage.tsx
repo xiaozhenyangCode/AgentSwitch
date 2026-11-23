@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { KINDS, type ProfileKind, type ProfileState } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { KIND_META, isReady } from '../lib/ui'
-import { BrandMark, KindAvatar } from '../components/common'
+import { BrandMark, KindAvatar, ProfileAvatar } from '../components/common'
 import { IconCheck, IconCopy, IconDownload, Spinner } from '../components/icons'
 import { finishOnboarding } from '../state/onboarding'
 import { t } from '../state/i18n'
@@ -130,7 +130,7 @@ function Detect({ ready, onNext }: { ready: ProfileState[]; onNext: () => void }
             <div className="mt-2 space-y-1.5">
               {ready.map((p) => (
                 <div key={p.id} className="flex items-center gap-2.5 text-[13px]">
-                  <KindAvatar kind={p.kind} size={20} />
+                  <ProfileAvatar profile={p} size={20} />
                   <span className="min-w-0 truncate text-ink">{p.name}</span>
                   <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3">{p.configDir}</span>
                   <IconCheck size={14} className="shrink-0 text-ok" />

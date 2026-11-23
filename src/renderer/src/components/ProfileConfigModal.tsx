@@ -2,7 +2,8 @@ import { useApp } from '../state/AppContext'
 import { useEffect, useState, type ReactNode } from 'react'
 import type { EnvPreview, ProfileConfig, ProfileKind, ProfileState, PtyMode } from '@shared/types'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
-import { KindAvatar, Modal, Segmented } from './common'
+import { Modal, ProfileAvatar, Segmented } from './common'
+import { ChangeKeyModal } from './dialogs'
 import { IconFolder, IconX } from './icons'
 import { modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { EffortBar } from './EffortBar'
@@ -53,6 +54,9 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   const [previewMode, setPreviewMode] = useState<PtyMode>('login')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const conn = profile.apiKey
+  const [modelsText, setModelsText] = useState((conn?.models ?? []).join('\n'))
+  const [changingKey, setChangingKey] = useState(false)
 
   useEffect(() => {
     void window.agentswitch.profiles.envPreview(profile.id, previewMode).then(setPreview)
@@ -75,7 +79,11 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
     try {
       await window.agentswitch.profiles.update(profile.id, {
         name: form.name,
-        configDir: form.configDir,
+        ...(conn
+          ? conn.provider === 'custom'
+            ? { apiKey: { ...conn, models: modelsText.split(/[,\n]/).map((m) => m.trim()).filter(Boolean) } }
+            : {}
+          : { configDir: form.configDir }),
         loginCommand: form.loginCommand,
         runCommand: form.runCommand,
         defaultModel: form.defaultModel ?? '',
@@ -110,7 +118,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   return (
     <Modal onClose={onClose} width={640}>
       <div className="flex items-center gap-3.5 border-b border-hairline px-7 py-5">
-        <KindAvatar kind={profile.kind} size={36} />
+        <ProfileAvatar profile={profile} size={36} />
         <div className="flex-1">
           <div className="text-[17px] font-semibold text-ink">{profile.name}</div>
           <div className="text-[13px] text-ink-2">{t('cfg.subtitle', { cli: KIND_META[profile.kind].cli })}{profile.imported ? t('cfg.imported') : ''}</div>
@@ -125,6 +133,35 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           <input className={inputCls} value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
 
+        {conn && (
+          <div className="space-y-4 rounded-xl bg-fill p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[13px] font-medium text-ink">{t('apikey.section')}</div>
+                <div className="mt-0.5 text-[13px] text-ink-2">
+                  {conn.provider === 'deepseek' ? t('add.conn.deepseek') : conn.provider === 'custom' ? t('add.conn.custom') : t(`add.conn.official.${profile.kind}`)}
+                  {' · '}
+                  {profile.loggedIn ? t('apikey.saved') : t('apikey.noKey')}
+                </div>
+              </div>
+              <button className={btnSecondary} onClick={() => setChangingKey(true)}>
+                {t('apikey.change')}
+              </button>
+            </div>
+            {conn.baseUrl && (
+              <Field label={t('apikey.baseUrl')}>
+                <input className={mono} value={conn.baseUrl} readOnly />
+              </Field>
+            )}
+            {conn.provider === 'custom' && (
+              <Field label={t('apikey.models')} hint={t('apikey.modelsHint')}>
+                <textarea className={mono + ' h-20 resize-y py-2 leading-relaxed'} value={modelsText} onChange={(e) => setModelsText(e.target.value)} spellCheck={false} />
+              </Field>
+            )}
+          </div>
+        )}
+
+        {!conn && (
         <Field label={t('cfg.dir')} hint={dirHint(profile.kind)}>
           <div className="flex gap-2">
             <input className={mono} value={form.configDir} onChange={(e) => set('configDir', e.target.value)} />
@@ -149,6 +186,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             ))}
           </div>
         </Field>
+        )}
 
         <Field
           label={t('cfg.defaultModel')}
@@ -203,6 +241,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           />
         </Field>
 
+        {!conn && (
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('cfg.loginCmd')}>
             <input className={mono} value={form.loginCommand} onChange={(e) => set('loginCommand', e.target.value)} />
@@ -211,6 +250,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             <input className={mono} value={form.runCommand} onChange={(e) => set('runCommand', e.target.value)} />
           </Field>
         </div>
+        )}
         <Field label={t('cfg.extraEnv')} hint={t('cfg.extraEnvHint')}>
           <textarea
             className={mono + ' h-24 resize-y py-2 leading-relaxed'}
@@ -262,6 +302,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </button>
         </div>
       </div>
+      {changingKey && <ChangeKeyModal profile={profile} onClose={() => setChangingKey(false)} />}
     </Modal>
   )
 }

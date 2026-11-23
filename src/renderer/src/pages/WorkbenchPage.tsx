@@ -6,7 +6,7 @@ import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
-import { KindAvatar } from '../components/common'
+import { KindAvatar, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
@@ -674,7 +674,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
       <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-1.5 pr-2.5 pl-1.5'} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
         {active[0] ? (
           <span className="relative">
-            <KindAvatar kind={(active.find((p) => p.id === driverId) ?? active[0]).kind} size={22} />
+            <ProfileAvatar profile={active.find((p) => p.id === driverId) ?? active[0]} size={22} />
           </span>
         ) : (
           <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20 dark:border-white/25" />
@@ -700,7 +700,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
                 <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && ready ? 'bg-accent text-white' : 'bg-surface shadow-[inset_0_0_0_1.5px_var(--ring)]'} ${!ready ? 'opacity-40' : ''}`}>
                   {on && ready && <IconCheck size={12} strokeWidth={3} />}
                 </span>
-                <KindAvatar kind={p.kind} size={22} />
+                <ProfileAvatar profile={p} size={22} />
                 <span className={`min-w-0 flex-1 truncate text-[14px] ${ready ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
                 {isDriver ? <span className="text-[11px] text-ink-3">{t('wb.driver')}</span> : !ready && <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span>}
               </button>
@@ -741,7 +741,7 @@ function EmptyState({ projectDir, onPickProject, participants }: { projectDir: s
         <div className="mt-8 flex items-center gap-1.5">
           {ready.map((p) => (
             <span key={p.id} className="flex items-center gap-1.5 rounded-full bg-surface py-1 pr-3 pl-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring)]" title={t('wb.readyHint', { name: p.name })}>
-              <KindAvatar kind={p.kind} size={20} />
+              <ProfileAvatar profile={p} size={20} />
               {p.name}
             </span>
           ))}
@@ -862,7 +862,7 @@ function UserBubble({ msg }: { msg: UserMessage }) {
             {tNode('wb.sentTo', {
               who: (
                 <>
-                  <KindAvatar kind={msg.driver.kind} size={13} /> {msg.driver.name}
+                  <RefAvatar r={msg.driver} size={13} /> {msg.driver.name}
                 </>
               )
             })}
@@ -977,7 +977,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
   if (msg.status === 'queued' || (msg.status === 'stopped' && !msg.startedAt))
     return (
       <div className="flex items-center gap-2.5 opacity-55">
-        <KindAvatar kind={msg.agent.kind} size={28} />
+        <RefAvatar r={msg.agent} size={28} />
         <SpeakerLine msg={msg} />
       </div>
     )
@@ -985,7 +985,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
   return (
     <div ref={rootRef} className="flex gap-3 pr-10">
       <div className="pt-0.5">
-        <KindAvatar kind={msg.agent.kind} size={28} />
+        <RefAvatar r={msg.agent} size={28} />
       </div>
       <div className="min-w-0 flex-1">
         <SpeakerLine msg={msg} />
@@ -1097,7 +1097,7 @@ function AccountRow({ p, active, selected, trailing, onClick }: { p: ProfileStat
       onClick={onClick}
       className={`flex h-10 w-full cursor-default items-center gap-2.5 rounded-[10px] px-2.5 transition-colors ${active ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}
     >
-      <KindAvatar kind={p.kind} size={24} />
+      <ProfileAvatar profile={p} size={24} />
       <span className={`min-w-0 flex-1 truncate text-[14px] ${isReady(p) ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
       {trailing}
       {!isReady(p) ? <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span> : selected && <IconCheck size={15} className="text-accent" />}
@@ -1117,7 +1117,7 @@ function DriverPicker({ driver, onPick }: { driver: ProfileState | null; onPick:
         className={`flex h-8 items-center gap-2 rounded-full pr-2 pl-1 text-[13px] font-medium text-ink transition-colors hover:bg-fill ${open ? 'bg-fill' : ''}`}
         title={t('wb.driverHint')}
       >
-        {driver ? <KindAvatar kind={driver.kind} size={22} /> : <span className="h-[22px] w-[22px] rounded-[6px] border border-dashed border-black/20" />}
+        {driver ? <ProfileAvatar profile={driver} size={22} /> : <span className="h-[22px] w-[22px] rounded-[6px] border border-dashed border-black/20" />}
         <span className="max-w-[150px] truncate">{driver?.name ?? t('wb.pickModel')}</span>
         <IconChevronDown size={13} className="text-ink-3" />
       </button>
@@ -1899,4 +1899,11 @@ function Composer({
       </div>
     </div>
   )
+}
+
+/** Avatar for a message's agent/driver ref, using the live account when it still exists. */
+function RefAvatar({ r, size }: { r: { profileId: string | null; kind: 'claude' | 'codex' | 'gemini' }; size: number }) {
+  const { profiles } = useApp()
+  const p = profiles.find((x) => x.id === r.profileId)
+  return <ProfileAvatar profile={p ?? { kind: r.kind }} size={size} />
 }

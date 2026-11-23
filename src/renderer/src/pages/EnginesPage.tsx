@@ -3,6 +3,7 @@ import { KINDS, installSessionId, type ProfileKind, type ProfileState } from '@s
 import { useApp } from '../state/AppContext'
 import { KIND_META } from '../lib/ui'
 import { KindAvatar } from '../components/common'
+import { ChangeKeyModal } from '../components/dialogs'
 import { IconDownload, IconGear, IconSliders, Spinner } from '../components/icons'
 import { tildePath } from '../components/ProjectBar'
 import { modelLabel } from '../lib/models'
@@ -194,7 +195,22 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   useEffect(() => setName(a.name), [a.name])
   const loggingIn = a.sessionMode === 'login'
   const alert = alertOf(loggingIn ? 'login' : a.status)
-  const where = (a.imported ? t('eng.whereImported', { dir: tildePath(a.resolvedConfigDir) }) : t('eng.whereOwn', { dir: tildePath(a.resolvedConfigDir) }))
+  const [changingKey, setChangingKey] = useState(false)
+  const keyAcct = !!a.apiKey
+  const host = (u?: string) => {
+    try {
+      return u ? new URL(u).host : ''
+    } catch {
+      return u ?? ''
+    }
+  }
+  const where = keyAcct
+    ? a.apiKey!.provider === 'deepseek'
+      ? `DeepSeek · ${t('apikey.badge')}`
+      : a.apiKey!.provider === 'custom'
+        ? `${t('acct.customName', { n: '' }).trim()} · ${host(a.apiKey!.baseUrl)}`
+        : t('apikey.badge')
+    : (a.imported ? t('eng.whereImported', { dir: tildePath(a.resolvedConfigDir) }) : t('eng.whereOwn', { dir: tildePath(a.resolvedConfigDir) }))
   const perm = PERM[a.autoApprove === 'full' || a.autoApprove === 'edits' ? a.autoApprove : 'cli']
 
   const commitRename = async () => {
@@ -259,7 +275,11 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
 
       {/* actions */}
       <div className="flex items-center justify-end gap-0.5">
-        {a.loggedIn ? (
+        {keyAcct && !a.loggedIn ? (
+          <button className={btnSolid} onClick={() => setChangingKey(true)}>
+            {t('apikey.change')}
+          </button>
+        ) : a.loggedIn ? (
           <button className={btnIcon} onClick={() => openConfig(a.id)} title={t('eng.accountSettings')}>
             <IconSliders size={15} />
           </button>
@@ -270,7 +290,11 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
         )}
         <RowMenu
           items={[
-            ...(a.loggedIn ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }] : []),
+            ...(keyAcct
+              ? [{ label: t('apikey.change'), run: () => setChangingKey(true) }]
+              : a.loggedIn
+                ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }]
+                : []),
             ...(a.loggedIn ? [] : [{ label: t('eng.accountSettings'), run: () => openConfig(a.id) }]),
             { label: t('eng.openTerminal'), run: () => void openTerminal() },
             { label: t('common.rename'), run: () => setEditing(true) },
@@ -278,6 +302,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
           ]}
         />
       </div>
+      {changingKey && <ChangeKeyModal profile={a} onClose={() => setChangingKey(false)} />}
     </div>
   )
 }

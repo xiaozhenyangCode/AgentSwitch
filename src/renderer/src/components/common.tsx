@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
-import type { ProfileKind, ProfileState } from '@shared/types'
+import type { ProfileConfig, ProfileKind, ProfileState } from '@shared/types'
 import { KIND_META, accountBadge, type BadgeMeta } from '../lib/ui'
-import { BrandIcon } from './brandIcons'
+import { BrandIcon, DeepSeekIcon } from './brandIcons'
 
 export function Pill({ meta, size = 'md' }: { meta: Pick<BadgeMeta, 'label' | 'cls' | 'dot'>; size?: 'sm' | 'md' }) {
   return (
@@ -30,6 +30,33 @@ export function KindAvatar({ kind, size = 32 }: { kind: ProfileKind; size?: numb
       aria-label={KIND_META[kind].name}
     >
       <BrandIcon kind={kind} size={Math.round(size * (kind === 'codex' ? 0.78 : 0.66))} />
+    </div>
+  )
+}
+
+const TILE = 'flex shrink-0 items-center justify-center bg-tile shadow-[inset_0_0_0_0.5px_var(--ring),0_0.5px_1px_rgba(0,0,0,0.06)]'
+
+/** A concrete account's avatar: DeepSeek logo, or the CLI's mark (+ "API" badge for a custom endpoint). */
+export function ProfileAvatar({ profile, size = 32 }: { profile: Pick<ProfileConfig, 'kind' | 'apiKey'>; size?: number }) {
+  const provider = profile.apiKey?.provider
+  if (provider === 'deepseek')
+    return (
+      <div className={TILE} style={{ width: size, height: size, borderRadius: size * 0.28 }} aria-label="DeepSeek">
+        <DeepSeekIcon size={Math.round(size * 0.7)} />
+      </div>
+    )
+  if (provider !== 'custom') return <KindAvatar kind={profile.kind} size={size} />
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <KindAvatar kind={profile.kind} size={size} />
+      {size >= 18 && (
+        <span
+          className="absolute -right-1 -bottom-1 rounded-[4px] bg-ink px-[3px] font-semibold leading-none text-surface"
+          style={{ fontSize: Math.max(7, Math.round(size * 0.26)), paddingTop: 2, paddingBottom: 2 }}
+        >
+          API
+        </span>
+      )}
     </div>
   )
 }

@@ -18,7 +18,7 @@ import {
   tokenSum,
   useUsage
 } from '../state/usage'
-import { KindAvatar } from './common'
+import { KindAvatar, ProfileAvatar } from './common'
 import { IconChevronDown, IconRefresh, Spinner } from './icons'
 
 const STALE = 6 * 3600_000
@@ -225,7 +225,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   return (
     <div className={`${CARD} px-4 py-3.5`}>
       <div className="flex min-w-0 items-center gap-2">
-        <KindAvatar kind={p.kind} size={22} />
+        <ProfileAvatar profile={p} size={22} />
         <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
         {idlest && (
           <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
@@ -267,7 +267,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
               {u.quotaError}
             </div>
           ) : (
-            <div className="mt-2 text-[11px] text-ink-3">{t('usage.noQuotaNote')}</div>
+            <div className="mt-2 text-[11px] text-ink-3">{t(p.apiKey ? 'apikey.noQuota' : 'usage.noQuotaNote')}</div>
           )}
         </>
       )}
@@ -341,7 +341,7 @@ export function UsageView() {
                     <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2.5">
-                          <KindAvatar kind={p.kind} size={22} />
+                          <ProfileAvatar profile={p} size={22} />
                           <span className="truncate font-medium text-ink">{p.name}</span>
                         </div>
                       </td>
@@ -444,7 +444,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
               }}
               className="mt-2.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-full bg-accent font-medium text-white hover:bg-accent/90"
             >
-              {t('usage.switchTo')} <KindAvatar kind={alt.kind} size={14} /> {alt.name}
+              {t('usage.switchTo')} <ProfileAvatar profile={alt} size={14} /> {alt.name}
             </button>
           ) : (
             <div className="mt-2 text-ink-3">{t('usage.noAlt')}</div>

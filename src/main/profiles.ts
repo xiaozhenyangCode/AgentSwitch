@@ -300,6 +300,7 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   // custom endpoint's model list may change.
   const cur = store.profiles[i]
   delete rest.apiKey
+  if (cur.apiKey) delete rest.configDir // API-key accounts always live in their managed dir
   if (patch.apiKey?.models && cur.apiKey?.provider === 'custom') {
     const next: ApiKeyConfig = { ...cur.apiKey, models: [...patch.apiKey.models] }
     const err = validateApiKeyConfig(cur.kind, next)

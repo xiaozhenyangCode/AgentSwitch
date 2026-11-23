@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { API_KEY_PAGES, type ApiKeyConfig, type ProfileKind } from '@shared/types'
+import { API_KEY_PAGES, type ApiKeyConfig, type ProfileKind, type ProfileState } from '@shared/types'
 import { ipcError, useApp } from '../state/AppContext'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
-import { KindAvatar, Modal } from './common'
+import { KindAvatar, Modal, ProfileAvatar } from './common'
 import { IconX } from './icons'
 import { t } from '../state/i18n'
 
@@ -198,6 +198,80 @@ export function AddAccountModal() {
               {t('add.add')}
             </button>
           )}
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+/** Vendor page where the account's kind of key is created. */
+export const keyPageOf = (p: Pick<ProfileState, 'kind' | 'apiKey'>): string | null =>
+  p.apiKey?.provider === 'deepseek' ? API_KEY_PAGES.deepseek : p.apiKey?.provider === 'official' ? API_KEY_PAGES[p.kind] : null
+
+/** Replace an API-key account's key. The old key is never shown. */
+export function ChangeKeyModal({ profile, onClose }: { profile: ProfileState; onClose: () => void }) {
+  const { toast } = useApp()
+  const [key, setKey] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const page = keyPageOf(profile)
+  const submit = async () => {
+    if (!key.trim()) return setError(t('apikey.empty'))
+    setBusy(true)
+    try {
+      await window.agentswitch.profiles.setKey(profile.id, key)
+      setKey('')
+      onClose()
+      toast({ kind: 'success', title: t('apikey.changed') })
+    } catch (e) {
+      setError(ipcError(e))
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal onClose={onClose} width={420}>
+      <form
+        className="p-7"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <div className="flex items-start gap-3.5">
+          <ProfileAvatar profile={profile} size={36} />
+          <div className="flex-1">
+            <div className="text-[17px] font-semibold text-ink">{t('apikey.changeTitle', { name: profile.name })}</div>
+            <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{t('apikey.changeDesc')}</div>
+          </div>
+        </div>
+        <div className="mt-5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[13px] font-medium text-ink">{t('apikey.key')}</span>
+            {page && (
+              <button type="button" className="text-[13px] font-medium text-accent hover:text-accent-hover" onClick={() => void window.agentswitch.sys.openExternal(page)}>
+                {t('apikey.getKey')}
+              </button>
+            )}
+          </div>
+          <input
+            autoFocus
+            type="password"
+            className={inputCls + ' h-10'}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder={t('apikey.keyPlaceholder')}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+        {error && <div className="mt-3 text-[13px] text-danger">{error}</div>}
+        <div className="mt-6 flex justify-end gap-2.5">
+          <button type="button" className={btnSecondary} onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+          <button type="submit" className={btnPrimary} disabled={busy}>
+            {t('common.save')}
+          </button>
         </div>
       </form>
     </Modal>
