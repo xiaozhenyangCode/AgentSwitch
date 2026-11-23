@@ -135,7 +135,7 @@ export function codexTurnUsage(after: CodexTotals, before: CodexTotals | null): 
  * `assistant` record per content block) with counts that only grow, so each field keeps its maximum.
  */
 export class MessageUsage {
-  private msgs = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number }>()
+  private msgs = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; reasoning: number }>()
   /** Estimates for a message whose final count never arrived: streamed text tokens, thinking tokens. */
   private est = new Map<string, { text: number; thinking: number }>()
   private done = new Set<string>()
@@ -164,19 +164,20 @@ export class MessageUsage {
 
   add(id: string | null | undefined, u: any): void {
     if (!id || !u || typeof u !== 'object') return
-    const prev = this.msgs.get(id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+    const prev = this.msgs.get(id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0 }
     this.msgs.set(id, {
       input: Math.max(prev.input, num(u.input_tokens)),
       output: Math.max(prev.output, num(u.output_tokens)),
       cacheRead: Math.max(prev.cacheRead, num(u.cache_read_input_tokens)),
       cacheWrite: Math.max(prev.cacheWrite, num(u.cache_creation_input_tokens)),
+      cacheWrite1h: Math.max(prev.cacheWrite1h, num(u.cache_creation?.ephemeral_1h_input_tokens)),
       reasoning: Math.max(prev.reasoning, num(u.output_tokens_details?.thinking_tokens))
     })
   }
 
   total(): Usage | null {
     if (!this.msgs.size) return null
-    const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+    const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0 }
     for (const [id, m] of this.msgs) {
       const e = this.est.get(id)
       // a reported count below the streamed estimate is the message_start placeholder of a cut-off message
@@ -185,10 +186,12 @@ export class MessageUsage {
       t.input += m.input
       t.cacheRead += m.cacheRead
       t.cacheWrite += m.cacheWrite
+      t.cacheWrite1h += m.cacheWrite1h
       t.output += cut ? estOut : m.output
       t.reasoning += cut ? Math.max(m.reasoning, e!.thinking) : m.reasoning
     }
-    return t
+    const { cacheWrite1h, ...rest } = t
+    return cacheWrite1h ? t : rest
   }
 }
 

@@ -226,10 +226,43 @@ export interface UsageTotals {
   cacheRead: number
   cacheWrite: number
   reasoning: number
-  /** Only from AgentSwitch's own runs (CLI-reported total_cost_usd). */
+  /**
+   * API-price equivalent (USD) from the price table (built-in + the user's overrides). For a
+   * model without a price: what the CLI reported, if anything.
+   */
   costUsd: number
   /** AgentSwitch runs counted. */
   runs: number
+  /** Tokens of models without a price (not in costUsd). */
+  unpriced?: number
+}
+
+/** USD per million tokens. Missing cache rates fall back to the input rate. */
+export interface PriceRate {
+  input: number
+  output: number
+  cacheRead?: number
+  /** Cache write (5-minute TTL). */
+  cacheWrite?: number
+  /** Cache write with 1-hour TTL (claude). */
+  cacheWrite1h?: number
+  /** Rates once a request's prompt exceeds `threshold` tokens. */
+  long?: { threshold: number; input: number; output?: number; cacheRead?: number; cacheWrite?: number }
+}
+
+/** A model seen in the usage data, with the price it is billed at. */
+export interface PriceRow {
+  /** Model name as the CLI reported it ('' = unknown). */
+  model: string
+  /** Price-table key it matched (null: no price). */
+  key: string | null
+  /** estimate: recorded without a model, priced as the engine's most used model (`key`). */
+  source: 'builtin' | 'custom' | 'estimate' | null
+  rate: PriceRate | null
+  /** Built-in rate for the key, to show / restore. */
+  builtin: PriceRate | null
+  tokens: number
+  costUsd: number
 }
 
 export interface AccountUsage {
@@ -248,6 +281,10 @@ export interface UsageSnapshot {
   backfill: 'idle' | 'running' | 'done'
   /** Days covered by the Claude history backfill. */
   claudeDays: number
+  /** Models in the data, most tokens first. */
+  prices: PriceRow[]
+  /** Built-in price table date (YYYY-MM-DD). */
+  pricesAt: string
   updatedAt: number
 }
 
@@ -257,6 +294,8 @@ export interface Usage {
   output?: number
   cacheRead?: number
   cacheWrite?: number
+  /** Part of cacheWrite with a 1-hour TTL (claude; billed higher). */
+  cacheWrite1h?: number
   /** Thinking / reasoning tokens (part of output). */
   reasoning?: number
   costUsd?: number
@@ -541,6 +580,7 @@ export const IPC = {
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',
   usageChanged: 'usage:changed',
+  usageSetPrice: 'usage:setPrice',
   historyOpen: 'history:open',
   historyImport: 'history:import',
   historyStat: 'history:stat',

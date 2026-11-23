@@ -4,9 +4,12 @@ import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSy
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import type { AccountQuota, AccountUsage, PriceRate, PriceRow, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { runAgent } from './agentRunner'
-import { agyConversationDb, claudePath, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
+import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
+import builtinPrices from './prices.builtin.json'
+import { candidates, cleanRate, costOf, findRate, isLong, type Match, type PriceTable } from './pricing'
+import { claudeSessionLog } from './usageDelta'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
 import { realHome } from './shellEnv'
@@ -21,13 +24,19 @@ import { realHome } from './shellEnv'
  *  - quota: claude rate_limit_event (seen during runs) and codex rollout token_count
  *    rate_limits. Nothing is invented: accounts without such data have quota = null.
  *
- * Stats: userData/usage-stats.json · quota: userData/quota-cache.json.
+ * Tokens are kept per day and model; cost is computed from the price table (built-in snapshot +
+ * the user's overrides) when the snapshot is built, so a price change re-prices all history.
+ *
+ * Stats: userData/usage-stats.json · quota: userData/quota-cache.json · prices: userData/price-overrides.json.
  */
 
 const CLAUDE_DAYS = 30
 const DAY = 86400_000
 
-type Days = Record<string, UsageTotals>
+/** One model's tokens on one day; costUsd is only what a CLI reported (used for models without a price). */
+type Bucket = UsageTotals & { cacheWrite1h?: number }
+/** day -> model key (`<model as reported>`, `|long` when billed at the long-context tier) -> tokens */
+type Days = Record<string, Record<string, Bucket>>
 interface FileEntry {
   mtime: number
   size: number
@@ -35,28 +44,97 @@ interface FileEntry {
   days: Days
 }
 interface Stats {
-  /** 2: run usage is per run (v1 summed claude's cumulative session cost and codex's cumulative tokens). */
-  version: 1 | 2
+  /**
+   * 3: per model. 2: per run, no model. 1: summed claude's cumulative session cost and codex's
+   * cumulative tokens. On the way to 3, run tokens before the upgrade are re-read from the CLIs'
+   * own logs of AgentSwitch's sessions (`legacy`), which carry the model of every message.
+   */
+  version: 3
   runs: Record<ProfileId, Days>
   files: Record<string, FileEntry>
+  /** AgentSwitch's own sessions up to `legacyUntil` (read once). */
+  legacy: Record<string, FileEntry>
+  legacyUntil: number
+  legacyDone: boolean
   limitedAt: Record<ProfileId, number>
 }
 
 const statsFile = (): string => join(app.getPath('userData'), 'usage-stats.json')
 const quotaFile = (): string => join(app.getPath('userData'), 'quota-cache.json')
+const pricesFile = (): string => join(app.getPath('userData'), 'price-overrides.json')
 
-const zero = (): UsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, runs: 0 })
+const zero = (): Bucket => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, runs: 0 })
 const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0)
-function add(a: UsageTotals, b: Partial<UsageTotals>): UsageTotals {
+function add<T extends Bucket>(a: T, b: Partial<Bucket>): T {
   return {
+    ...a,
     input: a.input + n(b.input),
     output: a.output + n(b.output),
     cacheRead: a.cacheRead + n(b.cacheRead),
     cacheWrite: a.cacheWrite + n(b.cacheWrite),
     reasoning: a.reasoning + n(b.reasoning),
     costUsd: a.costUsd + n(b.costUsd),
-    runs: a.runs + n(b.runs)
+    runs: a.runs + n(b.runs),
+    ...(a.cacheWrite1h || b.cacheWrite1h ? { cacheWrite1h: n(a.cacheWrite1h) + n(b.cacheWrite1h) } : {}),
+    ...(a.unpriced || b.unpriced ? { unpriced: n(a.unpriced) + n(b.unpriced) } : {})
   }
+}
+const tokensOf = (b: Partial<Bucket>): number => n(b.input) + n(b.output) + n(b.cacheRead) + n(b.cacheWrite)
+
+// ---- prices -----------------------------------------------------------------------------------------
+
+const BUILTIN = builtinPrices.models as PriceTable
+let overrides: PriceTable = loadOverrides()
+const matches = new Map<string, Match | null>()
+
+function loadOverrides(): PriceTable {
+  try {
+    const raw = JSON.parse(readFileSync(pricesFile(), 'utf8')) as Record<string, unknown>
+    const out: PriceTable = {}
+    for (const [k, v] of Object.entries(raw)) {
+      const r = cleanRate(v)
+      if (r) out[k] = r
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function priceOf(model: string): Match | null {
+  if (!matches.has(model)) matches.set(model, findRate(model, BUILTIN, overrides))
+  return matches.get(model) ?? null
+}
+
+/** Bucket key of a request (or run) of `model` whose prompt was `prompt` tokens. */
+function modelKey(model: string | null | undefined, prompt: number): string {
+  const m = (model ?? '').trim()
+  return isLong(priceOf(m)?.rate, prompt) ? `${m}|long` : m
+}
+
+function put(days: Days, ts: number, key: string, u: Partial<Bucket>): void {
+  const d = (days[dayKey(ts)] ??= {})
+  d[key] = add(d[key] ?? zero(), u)
+}
+
+/**
+ * Sets (or with null: removes) the user's price for the model as shown in the usage page. It is
+ * stored under the table key the model matched, so variants of the model share it.
+ */
+export function setPrice(model: string, rate: PriceRate | null): UsageSnapshot {
+  const m = priceOf(model)
+  const key = m?.key ?? candidates(model)[0] ?? ''
+  if (rate === null) delete overrides[key]
+  else {
+    const r = cleanRate(rate)
+    if (!r) throw new Error('invalid price')
+    overrides[key] = r
+  }
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  writeFileSync(pricesFile(), JSON.stringify(overrides, null, 2))
+  matches.clear()
+  changed()
+  return snapshot()
 }
 const pad = (x: number): string => String(x).padStart(2, '0')
 export const dayKey = (ts: number): string => {
@@ -64,6 +142,9 @@ export const dayKey = (ts: number): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/** Stats as stored, plus the pre-3 formats (runs: day -> totals, no model). Set by load(). */
+type Stored = Omit<Stats, 'version' | 'runs'> & { version: 1 | 2 | 3; runs: Record<ProfileId, Record<string, any>> }
+let old: Stored | null = null
 let stats: Stats = load()
 let quotas: Record<ProfileId, AccountQuota> = loadQuota()
 let backfill: UsageSnapshot['backfill'] = 'idle'
@@ -73,27 +154,43 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 function load(): Stats {
   try {
-    const s = JSON.parse(readFileSync(statsFile(), 'utf8')) as Stats
-    if (s.version === 1 || s.version === 2) return { version: s.version, runs: s.runs ?? {}, files: s.files ?? {}, limitedAt: s.limitedAt ?? {} }
+    const s = JSON.parse(readFileSync(statsFile(), 'utf8')) as Stored
+    if (s.version === 3)
+      return { version: 3, runs: s.runs ?? {}, files: s.files ?? {}, legacy: s.legacy ?? {}, legacyUntil: s.legacyUntil ?? 0, legacyDone: s.legacyDone ?? true, limitedAt: s.limitedAt ?? {} }
+    if (s.version === 1 || s.version === 2) old = s
   } catch {
     /* fresh */
   }
-  return { version: 2, runs: {}, files: {}, limitedAt: {} }
+  return { version: 3, runs: {}, files: {}, legacy: {}, legacyUntil: 0, legacyDone: true, limitedAt: old?.limitedAt ?? {} }
 }
 
+/** Bucket of tokens recorded before models were (`?claude` …): priced only by the user's override. */
+export const UNRECORDED = '?'
+const unrecorded = (kind: string | undefined): string => UNRECORDED + (kind ?? '')
+
 /**
- * v1 -> v2: v1 recorded claude's session-cumulative total_cost_usd and codex's session-cumulative
- * tokens as each run's own, so every turn re-counted all earlier ones. The real per-run values
- * cannot be recovered: drop those costs and codex run tokens (run counts and history stay).
- * Runs lazily (needs the account list).
+ * v1/v2 -> v3 (lazily: needs the account list). Old totals have no model:
+ *  - history files that still exist are re-read (with models) by the next backfill; those the CLI
+ *    has since deleted keep their totals under `?<kind>`.
+ *  - run totals go under `?<kind>`; the next backfill re-reads AgentSwitch's own sessions from the
+ *    CLIs' logs (`legacy`, up to now) and drops the old totals of every day those logs cover.
  */
 function migrate(): void {
-  if (stats.version !== 1) return
-  const codex = new Set(listConfigs().filter((c) => c.kind === 'codex').map((c) => c.id))
-  for (const [id, days] of Object.entries(stats.runs))
-    for (const [k, v] of Object.entries(days))
-      days[k] = codex.has(id) ? { ...zero(), runs: v.runs } : { ...v, costUsd: 0 }
-  stats.version = 2
+  if (!old) return
+  const kinds = new Map(listConfigs().map((c) => [c.id, c.kind as string]))
+  // v1 costs summed cumulative session totals
+  const v1 = old.version === 1
+  const kindOf = (id: ProfileId): string | undefined => kinds.get(id) ?? /^(claude|codex|gemini|reasonix)-/.exec(id)?.[1]
+  const convert = (id: ProfileId, days: Record<string, any>): Days => {
+    const out: Days = {}
+    for (const [k, v] of Object.entries(days ?? {})) out[k] = { [unrecorded(kindOf(id))]: add(zero(), { ...v, costUsd: v1 ? 0 : v?.costUsd }) }
+    return out
+  }
+  for (const [id, days] of Object.entries(old.runs ?? {})) stats.runs[id] = convert(id, days)
+  for (const [path, f] of Object.entries(old.files ?? {})) if (f?.days && !existsSync(path)) stats.files[path] = { ...f, days: convert(f.profileId, f.days) }
+  stats.legacyUntil = Date.now()
+  stats.legacyDone = false
+  old = null
   persist()
 }
 function loadQuota(): Record<ProfileId, AccountQuota> {
@@ -159,8 +256,55 @@ export function snapshot(): UsageSnapshot {
   const accounts: Record<ProfileId, AccountUsage> = {}
   const per = new Map<ProfileId, Days[]>()
   for (const [id, days] of Object.entries(stats.runs)) per.set(id, [...(per.get(id) ?? []), days])
-  for (const f of Object.values(stats.files)) per.set(f.profileId, [...(per.get(f.profileId) ?? []), f.days])
-  for (const c of listConfigs()) {
+  for (const f of [...Object.values(stats.files), ...Object.values(stats.legacy)]) per.set(f.profileId, [...(per.get(f.profileId) ?? []), f.days])
+  const rows = new Map<string, PriceRow>()
+  const configs = listConfigs()
+  const kinds = new Map(configs.map((c) => [c.id, c.kind as string]))
+  const modelOf = (key: string): string => (key.endsWith('|long') ? key.slice(0, -5) : key)
+  // tokens recorded without a model (`?claude` …) are estimated at the engine's most used priced model
+  const usedMost = new Map<string, { key: string; tokens: number }>()
+  {
+    const byKind = new Map<string, number>()
+    for (const [id, list] of per)
+      for (const days of list)
+        for (const models of Object.values(days))
+          for (const [key, b] of Object.entries(models)) {
+            const m = modelOf(key)
+            if (m.startsWith(UNRECORDED) || !priceOf(m)) continue
+            const k = `${kinds.get(id) ?? ''}\n${m}`
+            byKind.set(k, (byKind.get(k) ?? 0) + tokensOf(b))
+          }
+    for (const [k, tokens] of byKind) {
+      const [kind, model] = k.split('\n')
+      if (tokens > (usedMost.get(kind)?.tokens ?? 0)) usedMost.set(kind, { key: model, tokens })
+    }
+  }
+  const rateOf = (model: string): (Match & { estimate?: boolean }) | null => {
+    const m = priceOf(model)
+    if (m || !model.startsWith(UNRECORDED)) return m
+    const best = usedMost.get(model.slice(UNRECORDED.length))
+    const e = best ? priceOf(best.key) : null
+    return e ? { ...e, estimate: true } : null
+  }
+  const priced = (key: string, b: Bucket): Bucket => {
+    const model = modelOf(key)
+    const m = rateOf(model)
+    const cost = m ? costOf(b, m.rate, model !== key) : b.costUsd
+    const row = rows.get(model) ?? {
+      model,
+      key: m?.key ?? null,
+      source: m?.estimate ? 'estimate' : (m?.source ?? null),
+      rate: m?.rate ?? null,
+      builtin: m && !m.estimate ? (BUILTIN[m.key] ?? null) : null,
+      tokens: 0,
+      costUsd: 0
+    }
+    row.tokens += tokensOf(b)
+    row.costUsd += cost
+    rows.set(model, row)
+    return { ...b, costUsd: cost, unpriced: m ? 0 : tokensOf(b) }
+  }
+  for (const c of configs) {
     const a: AccountUsage = {
       today: zero(),
       week: zero(),
@@ -170,24 +314,29 @@ export function snapshot(): UsageSnapshot {
       limitedAt: stats.limitedAt[c.id] ?? null
     }
     for (const days of per.get(c.id) ?? [])
-      for (const [k, v] of Object.entries(days)) {
-        a.total = add(a.total, v)
-        if (k >= weekFrom) a.week = add(a.week, v)
-        if (k === today) a.today = add(a.today, v)
-      }
+      for (const [k, models] of Object.entries(days))
+        for (const [model, b] of Object.entries(models)) {
+          const v = priced(model, b)
+          a.total = add(a.total, v)
+          if (k >= weekFrom) a.week = add(a.week, v)
+          if (k === today) a.today = add(a.today, v)
+        }
     accounts[c.id] = a
   }
-  return { accounts, backfill, claudeDays: CLAUDE_DAYS, updatedAt: Date.now() }
+  const prices = [...rows.values()].filter((r) => r.tokens > 0 && r.model !== '<synthetic>').sort((x, y) => y.tokens - x.tokens)
+  return { accounts, backfill, claudeDays: CLAUDE_DAYS, prices, pricesAt: builtinPrices.fetchedAt, updatedAt: Date.now() }
 }
 
 // ---- live updates from runs -------------------------------------------------------------------
 
-/** One finished AgentSwitch step: the CLI's own usage report (cost included when the CLI gives it). */
-export function recordRun(profileId: ProfileId, u: Usage | null): void {
+/**
+ * One finished AgentSwitch step: the CLI's own usage report for `model` (the run's model as the
+ * CLI reported it). Its long-context tier is judged by the prompt of the run's last request.
+ */
+export function recordRun(profileId: ProfileId, model: string | null, u: Usage | null): void {
   migrate()
-  const key = dayKey(Date.now())
   const days = (stats.runs[profileId] ??= {})
-  days[key] = add(days[key] ?? zero(), { ...(u ?? {}), runs: 1 })
+  put(days, Date.now(), modelKey(model, n(u?.context)), { ...(u ?? {}), runs: 1 })
   changed()
 }
 
@@ -583,9 +732,12 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
 
 // ---- history backfill ---------------------------------------------------------------------------
 
+/** Messages in [since, cut] count (cut 0: no upper bound). */
+const inWindow = (ts: number, since: number, cut: number): boolean => !!ts && ts >= since && (cut <= 0 || ts <= cut)
+
 async function claudeFileDays(path: string, since: number, cut: number): Promise<Days> {
   // the same API message is split over several records with the same usage: keep one per id
-  const msgs = new Map<string, { ts: number; u: any }>()
+  const msgs = new Map<string, { ts: number; model: string; u: any }>()
   const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity })
   for await (const line of rl) {
     if (!line || line.startsWith('{"type":') || !line.includes('"usage"')) continue
@@ -597,28 +749,39 @@ async function claudeFileDays(path: string, since: number, cut: number): Promise
     }
     if (d.type !== 'assistant' || !d.message?.usage || d.message.model === '<synthetic>') continue
     const ts = toMs(d.timestamp)
-    if (!ts || ts < since || (cut > 0 && ts > cut)) continue
-    msgs.set(String(d.message.id ?? d.uuid), { ts, u: d.message.usage })
+    if (!inWindow(ts, since, cut)) continue
+    msgs.set(String(d.message.id ?? d.uuid), { ts, model: String(d.message.model ?? ''), u: d.message.usage })
   }
   const days: Days = {}
-  for (const { ts, u } of msgs.values()) {
-    const k = dayKey(ts)
-    days[k] = add(days[k] ?? zero(), {
+  for (const { ts, model, u } of msgs.values()) {
+    const prompt = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens)
+    put(days, ts, modelKey(model, prompt), {
       input: u.input_tokens,
       output: u.output_tokens,
       cacheRead: u.cache_read_input_tokens,
-      cacheWrite: u.cache_creation_input_tokens
+      cacheWrite: u.cache_creation_input_tokens,
+      cacheWrite1h: u.cache_creation?.ephemeral_1h_input_tokens
     })
   }
   return days
 }
 
-async function codexFileDays(path: string, cut: number): Promise<Days> {
-  // token_count carries running totals: attribute each increase to its day
+async function codexFileDays(path: string, since: number, cut: number): Promise<Days> {
+  // token_count carries running totals: attribute each increase to its day and the turn's model
   const days: Days = {}
   let prev: any = null
+  let model = ''
   const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity })
   for await (const line of rl) {
+    if (line.includes('"turn_context"')) {
+      try {
+        const d = JSON.parse(line)
+        if (d.type === 'turn_context' && d.payload?.model) model = String(d.payload.model)
+      } catch {
+        /* partial line */
+      }
+      continue
+    }
     if (!line.includes('"token_count"') || !line.includes('"total_token_usage"')) continue
     let d: any
     try {
@@ -632,21 +795,22 @@ async function codexFileDays(path: string, cut: number): Promise<Days> {
     const delta = (k: string): number => Math.max(0, n(t[k]) - n(prev?.[k]))
     const inc = { input: delta('input_tokens'), cached: delta('cached_input_tokens'), cw: delta('cache_write_input_tokens'), out: delta('output_tokens'), rs: delta('reasoning_output_tokens') }
     prev = t
-    if (!ts || (cut > 0 && ts > cut)) continue
+    if (!inWindow(ts, since, cut)) continue
     if (!inc.input && !inc.out) continue
-    const k = dayKey(ts)
-    days[k] = add(days[k] ?? zero(), { input: Math.max(0, inc.input - inc.cached), cacheRead: inc.cached, cacheWrite: inc.cw, output: inc.out, reasoning: inc.rs })
+    const prompt = n(d.payload.info.last_token_usage?.input_tokens)
+    put(days, ts, modelKey(model, prompt), { input: Math.max(0, inc.input - inc.cached), cacheRead: inc.cached, cacheWrite: inc.cw, output: inc.out, reasoning: inc.rs })
   }
   return days
 }
 
 /**
  * agy: conversations/<id>.db gen_metadata = one row per model call; protobuf 1.4 is its usage
- * (2 uncached input · 3 output incl. thinking · 5 cache read · 9 thinking). Reverse-engineered
- * from agy 1.5.13 (checked: 3 == 9 + 10 on every row); unknown layouts simply count nothing.
+ * (2 uncached input · 3 output incl. thinking · 5 cache read · 9 thinking), 1.19 the model
+ * (e.g. gemini-3.8-flash-tiered). Reverse-engineered from agy 1.5.13 (checked: 3 == 9 + 10 on
+ * every row); unknown layouts simply count nothing.
  * Time: 1.20 {last_step_index} -> steps.step_payload 5.1.1 (seconds).
  */
-function agyFileDays(path: string, cut: number, fallbackTs: number): Days {
+function agyFileDays(path: string, since: number, cut: number, fallbackTs: number): Days {
   const days: Days = {}
   const rows =
     withDb(path, (db) => ({
@@ -674,14 +838,88 @@ function agyFileDays(path: string, cut: number, fallbackTs: number): Days {
       const v = pbAll(kv, [2])[0]
       if (Buffer.isBuffer(k) && k.toString() === 'last_step_index' && Buffer.isBuffer(v)) ts = stepTime.get(Number(v.toString())) ?? ts
     }
-    if (cut > 0 && ts > cut) continue
+    if (!inWindow(ts, since, cut)) continue
     const input = int(b, 2)
     const output = int(b, 3)
     if (!input && !output) continue
-    const k = dayKey(ts)
-    days[k] = add(days[k] ?? zero(), { input, output, cacheRead: int(b, 5), reasoning: int(b, 9) })
+    const m = pbAll(b, [1, 19])[0]
+    const model = Buffer.isBuffer(m) ? m.toString() : ''
+    put(days, ts, modelKey(model, input + int(b, 5)), { input, output, cacheRead: int(b, 5), reasoning: int(b, 9) })
   }
   return days
+}
+
+/**
+ * AgentSwitch's own sessions as the CLIs logged them, for the v3 upgrade (see migrate): each
+ * thread's native session per account, from its import time if it was imported.
+ */
+function ownSessionFiles(): { path: string; profileId: ProfileId; kind: string; since: number }[] {
+  const dir = join(app.getPath('userData'), 'threads')
+  const out = new Map<string, { path: string; profileId: ProfileId; kind: string; since: number }>()
+  let files: string[] = []
+  try {
+    files = readdirSync(dir)
+  } catch {
+    return []
+  }
+  for (const f of files) {
+    let j: { sessions?: Record<string, string>; imported?: string[]; importedAt?: Record<string, number> }
+    try {
+      j = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+    } catch {
+      continue
+    }
+    for (const [profileId, sid] of Object.entries(j.sessions ?? {})) {
+      if (!sid || !hasProfile(profileId)) continue
+      const cfg = getConfig(profileId)
+      let path: string | null = null
+      try {
+        if (cfg.kind === 'claude') {
+          const home = expandHome(cfg.configDir)
+          path = claudeSessionLog(cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home, sid)
+        } else if (cfg.kind === 'codex') path = codexRollout(cfg, sid)
+        else if (cfg.kind === 'gemini') path = agyConversationDb(cfg, sid)
+      } catch {
+        path = null
+      }
+      if (!path || !existsSync(path)) continue
+      // accounts sharing one session store (symlinked projects/) list the same file: count it once
+      path = safeRealpath(path)
+      const since = (j.imported ?? []).includes(sid) ? n(j.importedAt?.[sid]) : 0
+      const prev = out.get(path)
+      out.set(path, { path, profileId: prev?.profileId ?? profileId, kind: cfg.kind, since: prev ? Math.min(prev.since, since) : since })
+    }
+  }
+  return [...out.values()]
+}
+
+async function readLegacy(): Promise<void> {
+  const since30 = Date.now() - CLAUDE_DAYS * DAY
+  for (const f of ownSessionFiles()) {
+    try {
+      const st = statSync(f.path)
+      const days =
+        f.kind === 'claude'
+          ? await claudeFileDays(f.path, Math.max(f.since, since30), stats.legacyUntil)
+          : f.kind === 'codex'
+            ? await codexFileDays(f.path, f.since, stats.legacyUntil)
+            : agyFileDays(f.path, f.since, stats.legacyUntil, st.mtimeMs)
+      stats.legacy[f.path] = { mtime: st.mtimeMs, size: st.size, profileId: f.profileId, days }
+      changed()
+    } catch {
+      /* unreadable: skip */
+    }
+    await new Promise((r) => setImmediate(r))
+  }
+  // the logs replace the old run totals of the days they cover (run counts stay)
+  const covered = new Set<string>()
+  for (const f of Object.values(stats.legacy)) for (const [day, models] of Object.entries(f.days)) if (Object.values(models).some((b) => tokensOf(b) > 0)) covered.add(`${f.profileId}|${day}`)
+  for (const [id, days] of Object.entries(stats.runs))
+    for (const [day, models] of Object.entries(days))
+      for (const [key, b] of Object.entries(models))
+        if (key.startsWith(UNRECORDED) && covered.has(`${id}|${day}`)) models[key] = { ...zero(), runs: b.runs }
+  stats.legacyDone = true
+  changed()
 }
 
 let backfillRunning: Promise<void> | null = null
@@ -693,6 +931,8 @@ export function runBackfill(): Promise<void> {
     backfill = 'running'
     changed()
     try {
+      migrate()
+      if (!stats.legacyDone) await readLegacy()
       const entries = listHistory(true)
       const cuts = importedCutoffs()
       const since = Date.now() - CLAUDE_DAYS * DAY
@@ -725,7 +965,7 @@ export function runBackfill(): Promise<void> {
         if (prev && prev.mtime === st.mtimeMs && prev.size === st.size && prev.profileId === e.profileId) continue
         const cut = cuts.get(e.nativeId) ?? 0
         try {
-          const days = e.kind === 'claude' ? await claudeFileDays(path, since, cut) : e.kind === 'codex' ? await codexFileDays(path, cut) : agyFileDays(path, cut, e.updatedAt || st.mtimeMs)
+          const days = e.kind === 'claude' ? await claudeFileDays(path, since, cut) : e.kind === 'codex' ? await codexFileDays(path, 0, cut) : agyFileDays(path, 0, cut, e.updatedAt || st.mtimeMs)
           stats.files[path] = { mtime: st.mtimeMs, size: st.size, profileId: e.profileId, days }
           changed()
         } catch {
@@ -784,8 +1024,8 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
           },
           () => {}
         )
-        await h.done
-        recordRun(c.id, usage)
+        const r = await h.done
+        recordRun(c.id, r.model ?? 'haiku', usage)
       })
   )
   await Promise.all([codexTask, agyTask, claudeTask])

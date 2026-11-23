@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { AccountUsage, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
-import { KIND_META, isReady } from '../lib/ui'
+import type { AccountUsage, PriceRate, PriceRow, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import { KIND_META, btnGhost, inputCls, isReady } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import { getSettings, useSettings } from '../state/settings'
@@ -15,6 +15,7 @@ import {
   quotaLevel,
   recommendSwitch,
   refreshUsage,
+  setPrice,
   tokenSum,
   useUsage
 } from '../state/usage'
@@ -275,6 +276,148 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   )
 }
 
+const RATE_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const
+type RateField = (typeof RATE_FIELDS)[number]
+const fmtRate = (v: number | undefined) => (v === undefined ? '' : String(Math.round(v * 1e6) / 1e6))
+
+/** `?claude`: tokens recorded before models were (see main/usage.ts UNRECORDED). */
+const modelLabel = (m: string): string =>
+  m.startsWith('?') ? t('usage.priceUnrecorded', { kind: KIND_META[m.slice(1) as ProfileKind]?.name ?? '' }).trim() : m || t('usage.priceUnknownModel')
+
+/** One model of the price table: its rates (USD / 1M tokens), editable in place. */
+function PriceRowView({ row }: { row: PriceRow }) {
+  const [draft, setDraft] = useState<Record<RateField, string> | null>(null)
+  const [busy, setBusy] = useState(false)
+  const r = row.rate
+  const start = () => setDraft(Object.fromEntries(RATE_FIELDS.map((f) => [f, fmtRate(r?.[f] ?? (f === 'input' || f === 'output' ? undefined : r?.input))])) as Record<RateField, string>)
+  const parsed = draft
+    ? Object.fromEntries(RATE_FIELDS.map((f) => [f, draft[f].trim() === '' ? undefined : Number(draft[f])]))
+    : null
+  const valid = !!parsed && RATE_FIELDS.every((f) => parsed[f] === undefined || (isFinite(parsed[f]!) && parsed[f]! >= 0)) && parsed.input !== undefined && parsed.output !== undefined
+  const save = async (rate: PriceRate | null) => {
+    setBusy(true)
+    try {
+      await setPrice(row.model, rate)
+      setDraft(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const submit = () => {
+    if (!valid || !parsed) return
+    // the form does not show the 1-hour cache write and the long-context tier: they stay, the
+    // 1-hour write following a changed 5-minute one (Anthropic: 2x vs 1.25x input)
+    const next: PriceRate = { ...(r ?? { input: 0, output: 0 }) }
+    for (const f of RATE_FIELDS) {
+      if (parsed[f] === undefined) delete next[f]
+      else next[f] = parsed[f]!
+    }
+    if (next.cacheWrite1h !== undefined && next.cacheWrite !== r?.cacheWrite) next.cacheWrite1h = next.cacheWrite === undefined ? undefined : next.cacheWrite * 1.6
+    if (next.cacheWrite1h === undefined) delete next.cacheWrite1h
+    void save(next)
+  }
+  const badge =
+    row.source === 'custom' ? (
+      <span className="shrink-0 whitespace-nowrap rounded bg-accent/10 px-1.5 py-px text-[10.5px] font-medium text-accent">{t('usage.priceCustom')}</span>
+    ) : row.source === 'estimate' ? (
+      <span className="shrink-0 whitespace-nowrap rounded bg-fill px-1.5 py-px text-[10.5px] text-ink-3" title={t('usage.priceEstimateTip')}>
+        {t('usage.priceEstimate')}
+      </span>
+    ) : row.source === 'builtin' ? (
+      <span className="shrink-0 whitespace-nowrap rounded bg-fill px-1.5 py-px text-[10.5px] text-ink-3">{t('usage.priceBuiltin')}</span>
+    ) : (
+      <span className="shrink-0 whitespace-nowrap rounded bg-[var(--orange)]/15 px-1.5 py-px text-[10.5px] font-medium text-[var(--orange)]">{t('usage.priceNone')}</span>
+    )
+  const num = 'px-3 py-2 text-right tabular-nums'
+  return (
+    <tr className="border-b border-black/[0.05] last:border-0">
+      <td className="px-4 py-2">
+        <div className="flex items-center gap-2">
+          <span className={`truncate text-[12px] text-ink ${row.model.startsWith('?') || !row.model ? '' : 'font-mono'}`}>{modelLabel(row.model)}</span>
+          {badge}
+        </div>
+        {row.key && row.key !== row.model.toLowerCase() && (row.source === 'estimate' || !row.model.startsWith('?')) && <div className="mt-0.5 font-mono text-[10.5px] text-ink-3">{t('usage.priceMatched', { key: row.key })}</div>}
+      </td>
+      {RATE_FIELDS.map((f) => (
+        <td key={f} className={num}>
+          {draft ? (
+            <input
+              className={inputCls + ' h-7 w-[72px] px-2 text-right text-[12px]'}
+              value={draft[f]}
+              inputMode="decimal"
+              onChange={(e) => setDraft({ ...draft, [f]: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+                if (e.key === 'Escape') setDraft(null)
+              }}
+            />
+          ) : (
+            <span className={r ? 'text-ink-2' : 'text-ink-3'}>{r ? fmtRate(r[f] ?? r.input) : '—'}</span>
+          )}
+        </td>
+      ))}
+      <td className={num}>
+        <div className="text-[12.5px] text-ink">{fmtTokens(row.tokens)}</div>
+        <div className="text-[11px] text-ink-3">{row.rate ? fmtCost(row.costUsd) : '—'}</div>
+      </td>
+      <td className="px-3 py-2 text-right whitespace-nowrap">
+        {draft ? (
+          <>
+            <button className={btnGhost + ' h-7 text-accent'} disabled={!valid || busy} onClick={submit}>
+              {t('usage.priceSave')}
+            </button>
+            <button className={btnGhost + ' h-7'} disabled={busy} onClick={() => setDraft(null)}>
+              {t('usage.priceCancel')}
+            </button>
+          </>
+        ) : (
+          <>
+            <button className={btnGhost + ' h-7'} onClick={start}>
+              {t('usage.priceEdit')}
+            </button>
+            {row.source === 'custom' && (
+              <button className={btnGhost + ' h-7'} disabled={busy} onClick={() => void save(null)} title={row.builtin ? t('usage.priceResetTip') : undefined}>
+                {t(row.builtin ? 'usage.priceReset' : 'usage.priceClear')}
+              </button>
+            )}
+          </>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function PriceTableView({ rows, at }: { rows: PriceRow[]; at: string }) {
+  if (!rows.length) return null
+  const th = 'px-3 py-2 text-right font-medium whitespace-nowrap'
+  return (
+    <>
+      <SectionTitle>{t('usage.priceSection')}</SectionTitle>
+      <div className={`overflow-hidden ${CARD}`}>
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
+              <th className="px-4 py-2 text-left font-medium">{t('usage.priceModel')}</th>
+              <th className={th}>{t('usage.priceInput')}</th>
+              <th className={th}>{t('usage.priceOutput')}</th>
+              <th className={th}>{t('usage.priceCacheRead')}</th>
+              <th className={th}>{t('usage.priceCacheWrite')}</th>
+              <th className={th}>{t('usage.priceUsed')}</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <PriceRowView key={r.model} row={r} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">{t('usage.priceFootnote', { date: at })}</p>
+    </>
+  )
+}
+
 /** 用量限额 page body: overview strip, per-account quota grid, per-account detail table. */
 export function UsageView() {
   const { profiles } = useApp()
@@ -282,6 +425,7 @@ export function UsageView() {
   const all = snap ? Object.values(snap.accounts) : []
   const cost = sumOf(all, (u) => u.total.costUsd)
   const runs = sumOf(all, (u) => u.total.runs)
+  const unpriced = sumOf(all, (u) => u.total.unpriced ?? 0)
   const ready = profiles.filter(isReady)
   const idlest = idlestAccounts(profiles, snap)
   const num = 'px-4 py-3 text-right tabular-nums'
@@ -305,7 +449,11 @@ export function UsageView() {
       <div className="grid grid-cols-3 gap-3">
         <Stat label={t('usage.statToday')} value={fmtTokens(sumOf(all, (u) => tokenSum(u.today)))} sub={t('usage.statTodaySub', { n: fmtTokens(sumOf(all, (u) => u.today.output)) })} />
         <Stat label={t('usage.statWeek')} value={fmtTokens(sumOf(all, (u) => tokenSum(u.week)))} sub={t('usage.statWeekSub')} />
-        <Stat label={t('usage.statCost')} value={fmtCost(cost)} sub={t('usage.statCostSub', { n: runs })} />
+        <Stat
+          label={t('usage.statCost')}
+          value={fmtCost(cost)}
+          sub={t('usage.statCostSub', { n: runs }) + (unpriced > 0 ? t('usage.statCostUnpriced', { n: fmtTokens(unpriced) }) : '')}
+        />
       </div>
 
       <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
@@ -360,6 +508,8 @@ export function UsageView() {
           </p>
         </>
       )}
+
+      <PriceTableView rows={snap?.prices ?? []} at={snap?.pricesAt ?? ''} />
     </div>
   )
 }

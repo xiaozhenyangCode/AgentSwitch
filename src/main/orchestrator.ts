@@ -708,7 +708,7 @@ export class Orchestrator {
     this.onState()
     // usage & quota bookkeeping never blocks the turn
     try {
-      if (stepUsage || r.ok) recordRun(cfg.id, stepUsage)
+      if (stepUsage || r.ok) recordRun(cfg.id, r.model || step.model || cfg.defaultModel || null, stepUsage)
       if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
       if (cfg.kind === 'gemini') void refreshAgyQuota(cfg.id)
     } catch (e) {

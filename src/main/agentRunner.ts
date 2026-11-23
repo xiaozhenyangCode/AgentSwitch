@@ -331,6 +331,7 @@ function claudeAdapter(s: RunSpec): Adapter {
               output: u.output_tokens,
               cacheRead: u.cache_read_input_tokens,
               cacheWrite: u.cache_creation_input_tokens,
+              cacheWrite1h: u.cache_creation?.ephemeral_1h_input_tokens,
               reasoning: u.output_tokens_details?.thinking_tokens,
               costUsd: runCost(d.total_cost_usd, costBefore),
               context: lastContext || undefined

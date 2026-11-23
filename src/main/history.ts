@@ -450,6 +450,15 @@ function codexDb(home: string): string | null {
 
 export const rolloutPaths = new Map<string, string>() // codex thread id -> rollout file
 
+/** Rollout file of a codex thread (any thread, AgentSwitch's own included). */
+export function codexRollout(p: ProfileConfig, threadId: string): string | null {
+  const known = rolloutPaths.get(threadId)
+  if (known) return known
+  const db = codexDb(expandHome(p.configDir))
+  const row = db ? withDb(db, (d) => d.prepare('select rollout_path from threads where id = ?').get(threadId) as { rollout_path?: unknown } | undefined) : null
+  return typeof row?.rollout_path === 'string' ? row.rollout_path : null
+}
+
 function listCodex(p: ProfileConfig, own: Set<string>, userData: string): HistoryEntry[] {
   const home = expandHome(p.configDir)
   const db = codexDb(home)

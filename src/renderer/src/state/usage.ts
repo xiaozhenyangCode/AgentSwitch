@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { AccountUsage, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
+import type { AccountUsage, PriceRate, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
 import { getSettings } from './settings'
@@ -24,6 +24,11 @@ export function useUsage(): UsageSnapshot | null {
     },
     () => snap
   )
+}
+
+/** The user's price for a model (USD per 1M tokens); null restores the built-in one. */
+export async function setPrice(model: string, rate: PriceRate | null): Promise<void> {
+  emit(await window.agentswitch.usage.setPrice(model, rate))
 }
 
 /** Refresh now; probes Claude quota only when enabled in 设置 › 用量与刷新. */
