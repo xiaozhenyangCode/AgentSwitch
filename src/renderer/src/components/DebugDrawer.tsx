@@ -49,7 +49,7 @@ export function useDrawerLayout(): DrawerLayout {
  * folder (or the system home directory when no project is selected).
  */
 export function DebugDrawer() {
-  const { drawer, closeDrawer, setDrawerSession, toast, info } = useApp()
+  const { drawer, closeDrawer, setDrawerSession, toast, info, page } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loaded, setLoaded] = useState(false)
   const known = useRef(new Set<SessionId>())
@@ -179,9 +179,12 @@ export function DebugDrawer() {
   return (
     <div
       aria-hidden={!drawer.open}
-      className={`dark:dark-scroll absolute inset-x-3 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-[14px] bg-surface shadow-[0_0_0_1px_var(--ring),0_-12px_40px_rgba(0,0,0,0.08)] dark:bg-[#1C1C1E] dark:shadow-[0_-1px_0_rgba(255,255,255,0.06),0_-16px_48px_rgba(0,0,0,0.28)] ${
+      className={`dark:dark-scroll absolute inset-x-3 bottom-0 flex flex-col overflow-hidden rounded-t-[14px] bg-surface shadow-[0_0_0_1px_var(--ring),0_-12px_40px_rgba(0,0,0,0.08)] dark:bg-[#1C1C1E] dark:shadow-[0_-1px_0_rgba(255,255,255,0.06),0_-16px_48px_rgba(0,0,0,0.28)] ${
         dragging ? '' : 'transition-[transform,opacity] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
-      } ${drawer.open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
+      } ${drawer.open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'} ${
+        // above the 用量 / 模型引擎 scrim (z-40) so the terminal stays usable; below LoginModal (z-50)
+        page !== 'workbench' ? 'z-[45]' : 'z-30'
+      }`}
       style={{
         height,
         transform: drawer.open ? 'translateY(0)' : 'translateY(100%)'
