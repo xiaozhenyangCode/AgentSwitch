@@ -40,7 +40,7 @@
 | Gemini | Antigravity CLI（`agy`） | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` |
 | DeepSeek | Reasonix（`reasonix`） | `npm i -g reasonix` |
 
-Reasonix 不需要登录，用 DeepSeek API Key 即可：可以导入你已有的 `~/.reasonix` 配置，也可以在应用里直接填 Key。也可以直接在应用里一键安装和登录。之后会支持更多助手和本地模型。
+Reasonix 不需要登录，用 DeepSeek API Key 即可：可以导入你已有的 `~/.reasonix` 配置，也可以在应用里直接填 Key。所有 CLI 都能在应用里一键安装和登录。之后会支持更多助手和本地模型。
 
 ## 安装
 
