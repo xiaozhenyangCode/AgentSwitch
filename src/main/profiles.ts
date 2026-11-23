@@ -52,7 +52,9 @@ export const KIND_DEFAULTS: Record<ProfileKind, Omit<KindConfig, 'kind'>> = {
 }
 
 const COMMAND_DEFAULTS: Record<ProfileKind, Pick<ProfileConfig, 'loginCommand' | 'runCommand'>> = {
-  claude: { loginCommand: 'claude /login', runCommand: 'claude' },
+  // `claude auth login` prints the OAuth URL straight away; `claude /login` opens the TUI,
+  // which first asks for a theme and a login method, so it stalls until someone answers.
+  claude: { loginCommand: 'claude auth login', runCommand: 'claude' },
   // agy has no login subcommand: the interactive TUI prompts for sign-in (or `/login`).
   gemini: { loginCommand: 'agy', runCommand: 'agy' },
   codex: { loginCommand: 'codex login', runCommand: 'codex' }
@@ -134,7 +136,7 @@ export function claudeDirs(): string[] {
 const hasAgySetup = (home: string): boolean =>
   agyKeychainItem(home) !== null || existsSync(join(home, '.gemini', 'antigravity-cli'))
 
-const MIGRATIONS = ['agy-import']
+const MIGRATIONS = ['agy-import', 'claude-auth-login']
 
 /** true when this run created the account store (a brand-new install). */
 export let firstRun = false
@@ -174,6 +176,11 @@ export function initProfiles(): void {
       })
     }
     done.add('agy-import')
+  }
+  if (!done.has('claude-auth-login')) {
+    // Only rewrite the old default; a custom login command stays as the user set it.
+    for (const p of store.profiles) if (p.kind === 'claude' && p.loginCommand === 'claude /login') p.loginCommand = COMMAND_DEFAULTS.claude.loginCommand
+    done.add('claude-auth-login')
   }
   store.migrations = [...done]
   persist()
