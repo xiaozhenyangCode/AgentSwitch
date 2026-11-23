@@ -1,25 +1,58 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProfileKind } from '@shared/types'
-import { useApp } from '../state/AppContext'
+import { API_KEY_PAGES, type ApiKeyConfig, type ProfileKind } from '@shared/types'
+import { ipcError, useApp } from '../state/AppContext'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal } from './common'
 import { IconX } from './icons'
 import { t } from '../state/i18n'
 
-function suggestName(kind: ProfileKind, used: string[]): string {
+type Conn = 'subscription' | ApiKeyConfig['provider']
+
+function suggestName(kind: ProfileKind, used: string[], conn: Conn = 'subscription'): string {
   for (let n = 1; ; n++) {
-    const name = t('acct.defaultName', { kind: KIND_META[kind].name, n })
+    const name =
+      conn === 'deepseek' ? t('acct.deepseekName', { n }) : conn === 'custom' ? t('acct.customName', { n }) : t('acct.defaultName', { kind: KIND_META[kind].name, n })
     if (!used.includes(name)) return name
   }
 }
+
+const CONNS: Record<ProfileKind, Conn[]> = {
+  claude: ['subscription', 'official', 'deepseek', 'custom'],
+  codex: ['subscription', 'official'],
+  gemini: ['subscription', 'official']
+}
+
+const connLabel = (kind: ProfileKind, c: Conn): string =>
+  c === 'subscription'
+    ? t(`add.conn.subscription.${kind}`)
+    : c === 'official'
+      ? t(`add.conn.official.${kind}`)
+      : c === 'deepseek'
+        ? t('add.conn.deepseek')
+        : t('add.conn.custom')
 
 /** Create a new isolated account; optionally go straight into login. */
 export function AddAccountModal() {
   const { addRequest, closeAddAccount, profiles, kindState, openLogin, toast } = useApp()
   const kind = addRequest!.kind
   const meta = KIND_META[kind]
-  const [name, setName] = useState(() => suggestName(kind, profiles.map((p) => p.name)))
+  const used = profiles.map((p) => p.name)
+  const [name, setName] = useState(() => suggestName(kind, used))
+  const [nameEdited, setNameEdited] = useState(false)
+  const [conn, setConn] = useState<Conn>('subscription')
+  const [key, setKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [models, setModels] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const usesKey = conn !== 'subscription'
+  const keyPage = conn === 'deepseek' ? API_KEY_PAGES.deepseek : conn === 'official' ? API_KEY_PAGES[kind] : null
+
+  const pickConn = (c: Conn) => {
+    setConn(c)
+    setError(null)
+    if (!nameEdited) setName(suggestName(kind, used, c))
+  }
   const inputRef = useRef<HTMLInputElement>(null)
   const installed = !!kindState(kind)?.binaryPath
 
@@ -28,15 +61,28 @@ export function AddAccountModal() {
   }, [])
 
   const create = async (andLogin: boolean) => {
+    if (usesKey && !key.trim()) return setError(t('apikey.empty'))
     setBusy(true)
+    setError(null)
     try {
-      const id = await window.agentswitch.profiles.add(kind, name)
+      const connect = usesKey
+        ? {
+            apiKey: {
+              provider: conn,
+              ...(conn === 'custom' ? { baseUrl, models: models.split(/[,\n]/).map((m) => m.trim()).filter(Boolean) } : {})
+            } as ApiKeyConfig,
+            key
+          }
+        : undefined
+      const id = await window.agentswitch.profiles.add(kind, name, connect)
+      setKey('')
       addRequest?.onCreated?.(id)
       closeAddAccount()
-      if (andLogin) openLogin(id)
+      if (andLogin && !usesKey) openLogin(id)
       else toast({ kind: 'success', title: t('add.added', { name: name.trim() || t('add.newAccount') }) })
     } catch (e) {
-      toast({ kind: 'error', title: t('add.failed'), desc: String(e) })
+      if (usesKey) setError(ipcError(e))
+      else toast({ kind: 'error', title: t('add.failed'), desc: ipcError(e) })
       setBusy(false)
     }
   }
@@ -61,11 +107,72 @@ export function AddAccountModal() {
           </button>
         </div>
 
+        <div className="mt-6" role="radiogroup" aria-label={t('add.connect')}>
+          <div className="mb-1.5 text-[13px] font-medium text-ink">{t('add.connect')}</div>
+          <div className="flex flex-col gap-1">
+            {CONNS[kind].map((c) => (
+              <label key={c} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[14px] text-ink hover:bg-fill">
+                <input type="radio" name="conn" checked={conn === c} onChange={() => pickConn(c)} className="accent-accent" />
+                {connLabel(kind, c)}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {usesKey && (
+          <div className="mt-4 flex flex-col gap-4">
+            {conn === 'custom' && (
+              <>
+                <div>
+                  <div className="mb-1.5 text-[13px] font-medium text-ink">{t('apikey.baseUrl')}</div>
+                  <input className={inputCls + ' h-10'} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://example.com/anthropic" spellCheck={false} />
+                </div>
+                <div>
+                  <div className="mb-1.5 text-[13px] font-medium text-ink">{t('apikey.models')}</div>
+                  <textarea className={inputCls + ' min-h-[64px] py-2'} value={models} onChange={(e) => setModels(e.target.value)} spellCheck={false} />
+                  <div className="mt-1.5 text-[12px] text-ink-3">{t('apikey.modelsHint')}</div>
+                </div>
+              </>
+            )}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[13px] font-medium text-ink">{t('apikey.key')}</span>
+                {keyPage && (
+                  <button type="button" className="text-[13px] font-medium text-accent hover:text-accent-hover" onClick={() => void window.agentswitch.sys.openExternal(keyPage)}>
+                    {t('apikey.getKey')}
+                  </button>
+                )}
+              </div>
+              <input
+                type="password"
+                className={inputCls + ' h-10'}
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder={t('apikey.keyPlaceholder')}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <div className="mt-1.5 text-[12px] text-ink-3">{t('apikey.keyHint')}</div>
+            </div>
+          </div>
+        )}
+
         <div className="mt-6">
           <div className="mb-1.5 text-[13px] font-medium text-ink">{t('add.name')}</div>
-          <input ref={inputRef} className={inputCls + ' h-10'} value={name} onChange={(e) => setName(e.target.value)} placeholder={t('add.namePlaceholder', { name: meta.name })} />
+          <input
+            ref={inputRef}
+            className={inputCls + ' h-10'}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value)
+              setNameEdited(true)
+            }}
+            placeholder={t('add.namePlaceholder', { name: meta.name })}
+          />
           <div className="mt-1.5 text-[12px] text-ink-3">{t('add.nameHint')}</div>
         </div>
+
+        {error && <div className="mt-4 rounded-xl bg-danger-soft px-4 py-3 text-[13px] leading-relaxed text-danger">{error}</div>}
 
         {!installed && (
           <div className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[13px] leading-relaxed text-warn">
@@ -77,7 +184,7 @@ export function AddAccountModal() {
           <button type="button" className={btnSecondary} onClick={closeAddAccount}>
             {t('common.cancel')}
           </button>
-          {installed ? (
+          {installed && !usesKey ? (
             <>
               <button type="button" className={btnSecondary} disabled={busy} onClick={() => void create(false)}>
                 {t('add.onlyAdd')}
