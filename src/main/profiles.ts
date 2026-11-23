@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
   KINDS,
@@ -449,6 +449,72 @@ export function cliVersion(kind: ProfileKind): Promise<string | null> {
 
 // ---- spawning ------------------------------------------------------------------
 
+const ISOLATED_KEYCHAIN = 'agentswitch.keychain-db'
+const ISOLATED_KEYCHAIN_LINK = 'login.keychain-db'
+const ISOLATED_KEYCHAIN_PASS = '.passphrase'
+
+/**
+ * Ensures an isolated macOS HOME has its own unlocked default keychain so `agy` can store and
+ * refresh its OAuth token without triggering macOS's "A keychain cannot be found" alert.
+ *
+ * macOS Security.framework resolves `$HOME/Library/Keychains/login.keychain-db` automatically
+ * without touching `com.apple.security.plist`. Because `securityd` treats a file literally named
+ * `login.keychain-db` specially and rejects `unlock-keychain -p` for it (exit 51), we create
+ * `agentswitch.keychain-db` and point `login.keychain-db` at it via a relative symlink.
+ */
+export function ensureIsolatedKeychain(dir: string): void {
+  if (process.platform !== 'darwin' || dir === realHome) return
+  const kcDir = join(dir, 'Library', 'Keychains')
+  const kcPath = join(kcDir, ISOLATED_KEYCHAIN)
+  const loginLink = join(kcDir, ISOLATED_KEYCHAIN_LINK)
+  const passPath = join(kcDir, ISOLATED_KEYCHAIN_PASS)
+  const env = { HOME: dir, PATH: '/usr/bin:/bin', USER: process.env.USER ?? '' }
+
+  let loginStat: ReturnType<typeof lstatSync> | null = null
+  try {
+    loginStat = lstatSync(loginLink)
+  } catch {
+    /* not present */
+  }
+  // If a regular (non-symlink) login.keychain-db already exists here, leave it untouched.
+  if (loginStat && !loginStat.isSymbolicLink() && !existsSync(kcPath)) return
+
+  try {
+    mkdirSync(kcDir, { recursive: true, mode: 0o700 })
+    let pw = ''
+    if (existsSync(passPath)) {
+      pw = readFileSync(passPath, 'utf8').trim()
+    }
+    if (!existsSync(kcPath)) {
+      if (!pw) {
+        pw = randomBytes(24).toString('hex')
+        writeFileSync(passPath, pw + '\n', { mode: 0o600 })
+      }
+      const created = spawnSync('/usr/bin/security', ['create-keychain', '-p', pw, kcPath], { env, encoding: 'utf8', timeout: 5000 })
+      if (created.status !== 0 || !existsSync(kcPath)) {
+        console.warn(`[profiles] create-keychain failed for ${kcPath}:`, created.stderr?.trim() || created.error)
+        return
+      }
+      // Disable auto-lock timeout and lock-on-sleep so background refreshes stay unlocked.
+      spawnSync('/usr/bin/security', ['set-keychain-settings', kcPath], { env, encoding: 'utf8', timeout: 5000 })
+    }
+    if (!loginStat) {
+      symlinkSync(ISOLATED_KEYCHAIN, loginLink)
+    } else if (loginStat.isSymbolicLink() && !existsSync(loginLink)) {
+      unlinkSync(loginLink)
+      symlinkSync(ISOLATED_KEYCHAIN, loginLink)
+    }
+    if (pw) {
+      const unlocked = spawnSync('/usr/bin/security', ['unlock-keychain', '-p', pw, kcPath], { env, encoding: 'utf8', timeout: 5000 })
+      if (unlocked.status !== 0) {
+        console.warn(`[profiles] unlock-keychain failed for ${kcPath}:`, unlocked.stderr?.trim() || unlocked.error)
+      }
+    }
+  } catch (e) {
+    console.warn(`[profiles] ensureIsolatedKeychain failed for ${dir}`, e)
+  }
+}
+
 /** Ensures the isolation dir exists. Never touches existing dirs/symlinks (e.g. ~/.claude2/projects). */
 export function prepareProfileDir(cfg: ProfileConfig): string {
   const dir = expandHome(cfg.configDir)
@@ -470,6 +536,7 @@ export function prepareProfileDir(cfg: ProfileConfig): string {
         console.warn(`[profiles] symlink ${dst} -> ${src} failed`, e)
       }
     }
+    ensureIsolatedKeychain(dir)
   }
   return dir
 }
