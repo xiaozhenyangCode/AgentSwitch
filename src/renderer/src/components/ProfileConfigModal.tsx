@@ -73,6 +73,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   ]
 
   const defSpec = resolveSpec(form.defaultModel, profile.id)
+  const acp = profile.kind === 'gemini' && form.agyTransport === 'acp'
   const set = <K extends keyof ProfileConfig>(k: K, v: ProfileConfig[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const save = async () => {
@@ -88,6 +89,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         runCommand: form.runCommand,
         defaultModel: form.defaultModel ?? '',
         autoApprove: form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli',
+        ...(profile.kind === 'gemini' ? { agyTransport: acp ? 'acp' : 'print' } : {}),
         extraEnv: textToEnv(envText)
       })
       setPreview(await window.agentswitch.profiles.envPreview(profile.id, previewMode))
@@ -223,7 +225,9 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         <Field
           label={t('cfg.approval')}
           hint={
-            form.autoApprove === 'cli'
+            acp
+              ? t(form.autoApprove === 'full' ? 'cfg.acpApprovalFull' : form.autoApprove === 'edits' ? 'cfg.acpApprovalEdits' : 'cfg.acpApprovalCli')
+              : form.autoApprove === 'cli'
               ? t('cfg.approvalCli')
               : form.autoApprove === 'full'
               ? t('cfg.approvalFull')
@@ -240,6 +244,23 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             ]}
           />
         </Field>
+
+        {profile.kind === 'gemini' && (
+          <div>
+            <label className="flex w-fit items-center gap-2 text-[13px] font-medium text-ink">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={acp}
+                aria-describedby="agy-transport-hint"
+                className="size-4 accent-accent"
+                onChange={(e) => set('agyTransport', e.target.checked ? 'acp' : 'print')}
+              />
+              {t('cfg.acp')}
+            </label>
+            <p id="agy-transport-hint" className="mt-1.5 text-[12px] leading-relaxed text-ink-3">{t('cfg.acpHint')}</p>
+          </div>
+        )}
 
         {!conn && (
         <div className="grid grid-cols-2 gap-4">

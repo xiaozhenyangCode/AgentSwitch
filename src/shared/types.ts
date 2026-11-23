@@ -83,6 +83,8 @@ export interface ProfileConfig {
    * full:  bypass all permission prompts and sandboxing
    */
   autoApprove: AutoApprove
+  /** Gemini chat transport. Existing accounts use print mode unless opted in. */
+  agyTransport?: 'print' | 'acp'
   /** Set when the account connects with an API key instead of the CLI's sign-in; fixed at creation. */
   apiKey?: ApiKeyConfig
   createdAt: number

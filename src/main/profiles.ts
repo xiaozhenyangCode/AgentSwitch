@@ -20,6 +20,7 @@ import { loadStore, saveStore, type StoreData } from './store'
 import { t } from './i18n'
 import { apiKeyEnv, maskEnv, resolveApiKeyConfig, stripCredentials, validateApiKeyConfig } from './apiKey'
 import { secrets } from './secrets'
+import { agyAcpPool } from './acp/pool'
 
 const SHELL = '/bin/zsh'
 
@@ -247,6 +248,7 @@ const withDefaults = (p: ProfileConfig): ProfileConfig => ({
   ...p,
   defaultModel: p.defaultModel ?? '',
   autoApprove: p.autoApprove === 'full' || p.autoApprove === 'edits' ? p.autoApprove : 'cli',
+  ...(p.kind === 'gemini' ? { agyTransport: p.agyTransport === 'acp' ? 'acp' as const : 'print' as const } : {}),
   extraEnv: { ...p.extraEnv }
 })
 
@@ -353,6 +355,8 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   // The connection (subscription vs key, and which provider) is fixed at creation; only a
   // custom endpoint's model list may change.
   const cur = store.profiles[i]
+  if (cur.kind !== 'gemini') delete rest.agyTransport
+  else if (rest.agyTransport !== undefined && rest.agyTransport !== 'acp') rest.agyTransport = 'print'
   delete rest.apiKey
   if (cur.apiKey) delete rest.configDir // API-key accounts always live in their managed dir
   if (patch.apiKey?.models && cur.apiKey?.provider === 'custom') {
@@ -363,6 +367,8 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   }
   store.profiles[i] = { ...cur, ...rest }
   persist()
+  // New settings (env, HOME, transport) need a fresh agy process, but never cut off a running turn.
+  if (cur.kind === 'gemini') agyAcpPool.retireWhenIdle(id)
   return getConfig(id)
 }
 
@@ -376,6 +382,7 @@ export function resetProfile(id: ProfileId): ProfileConfig {
 export function removeProfile(id: ProfileId): void {
   store.profiles = store.profiles.filter((p) => p.id !== id)
   persist()
+  agyAcpPool.retire(id)
   try {
     secrets().remove(id)
   } catch (e) {

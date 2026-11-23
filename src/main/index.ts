@@ -10,6 +10,7 @@ import { handleFileProtocol, registerFileScheme } from './fileProtocol'
 import { initTheme } from './theme'
 import { initI18n } from './i18n'
 import { buildMenu } from './menu'
+import { agyAcpPool } from './acp/pool'
 
 registerFileScheme()
 
@@ -157,6 +158,7 @@ app.whenReady().then(async () => {
   app.on('before-quit', () => {
     ipc.orchestrator.stopAll()
     ptys.killAll()
+    agyAcpPool.shutdownAll()
   })
 
   createWindow()

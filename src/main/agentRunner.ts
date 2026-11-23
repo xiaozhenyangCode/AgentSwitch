@@ -7,6 +7,8 @@ import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath } from './profile
 import { agyModelId } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
+import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
+import { agyAcpPool } from './acp/pool'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -49,7 +51,7 @@ export interface RunHandle {
   kill: () => void
 }
 
-const RATE_LIMIT_RE = /rate[ _-]?limit(ed)?|usage limit|too many requests|quota exceeded|RESOURCE_EXHAUSTED/i
+export const RATE_LIMIT_RE = /rate[ _-]?limit(ed)?|usage limit|too many requests|quota exceeded|RESOURCE_EXHAUSTED/i
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg)$/i
 const KILL_GRACE_MS = 3000
 
@@ -68,7 +70,7 @@ interface Adapter {
   result: () => { ok: boolean; error: string | null } | null
 }
 
-const full = (s: RunSpec): string => (s.system ? `${s.system}\n\n---\n\n${s.prompt}` : s.prompt)
+export const full = (s: RunSpec): string => (s.system ? `${s.system}\n\n---\n\n${s.prompt}` : s.prompt)
 
 // ---- payload helpers -----------------------------------------------------------------------
 
@@ -86,7 +88,7 @@ export function capText(v: unknown, max = MAX_OUT): string {
 
 export const capJson = (v: unknown, max = MAX_IN): string => capText(typeof v === 'string' ? v : JSON.stringify(v, null, 2), max)
 
-const other = (kind: string, payload: unknown): AgentEvent => ({ t: 'other_event', kind, payload: capText(payload, MAX_OTHER) })
+export const other = (kind: string, payload: unknown): AgentEvent => ({ t: 'other_event', kind, payload: capText(payload, MAX_OTHER) })
 
 /** Text of an Anthropic tool_result content (string or content blocks). */
 export function resultText(c: unknown): string {
@@ -721,7 +723,7 @@ export function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activ
   const id = `agy:${u.step_index}`
   const rawOut = typeof info?.output === 'string' ? info.output.replace(/\r\n/g, '\n') : info?.output !== undefined ? JSON.stringify(info.output, null, 2) : ''
   const base = { t: 'activity' as const, id, status: status as 'running' | 'done' | 'error' }
-  if (/command|shell|exec|terminal/.test(n)) {
+  if (u.tool_kind === 'execute' || /command|shell|exec|terminal/.test(n)) {
     const cmd = pick(/command/i) ?? name
     const code = /exited with code (-?\d+)/i.exec(rawOut)
     const body = /Command output:\n([\s\S]*)$/.exec(rawOut)
@@ -744,6 +746,36 @@ export function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activ
 /** `onLog` receives raw stdout/stderr for the debug drawer. */
 export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => void): RunHandle {
   const cfg = getConfig(spec.cfg.id)
+  let others = 0
+  const wrapped: Emit = (e) => {
+    if (e.t === 'other_event' && ++others > 200) {
+      if (others === 201) emit({ t: 'other_event', kind: 'agentswitch', payload: t('main.othersCapped') })
+      return
+    }
+    emit(e)
+  }
+  if (cfg.kind !== 'gemini' || cfg.agyTransport !== 'acp' || agyAcpPool.disabled(cfg.id)) {
+    return runPrintAgent(spec, cfg, wrapped, onLog)
+  }
+
+  const acp = runAgyAcp({ ...spec, cfg }, wrapped, onLog)
+  let active = acp
+  let stopped = false
+  const done = acp.done.catch((error: unknown) => {
+    if (!(error instanceof AgyAcpStartupError)) throw error
+    const stoppedResult: RunResult = { ok: false, stopped: true, text: '', sessionId: spec.resume, model: spec.model, error: null, rateLimited: false }
+    if (stopped) return stoppedResult
+    onLog(`[ACP startup] ${error.message}\n`)
+    wrapped({ t: 'notice', message: t('main.acpFallback') })
+    if (stopped) return stoppedResult
+    active = runPrintAgent(spec, cfg, wrapped, onLog)
+    if (stopped) active.kill()
+    return active.done
+  })
+  return { done, kill: () => { stopped = true; active.kill() } }
+}
+
+function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (text: string) => void): RunHandle {
   const bin = kindBinaryPath(cfg.kind)
   const { env } = buildSpawnSpec(cfg.id, 'run')
   const startedAt = Date.now()
@@ -754,13 +786,8 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
   let stopped = false
   let rateLimited = false
   let killTimer: NodeJS.Timeout | null = null
-  let others = 0
   const wrapped: Emit = (e) => {
     if (e.t === 'rate_limited') rateLimited = true
-    if (e.t === 'other_event' && ++others > 200) {
-      if (others === 201) emit({ t: 'other_event', kind: 'agentswitch', payload: t('main.othersCapped') })
-      return
-    }
     emit(e)
   }
 
