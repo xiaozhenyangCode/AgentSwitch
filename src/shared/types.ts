@@ -1,6 +1,24 @@
 /** Dynamic account id, e.g. `claude-a1b2c3`. */
 export type ProfileId = string
 export type ProfileKind = 'claude' | 'gemini' | 'codex'
+
+/** How an API-key account reaches its model. deepseek/custom are Claude Code only. */
+export type ApiKeyProvider = 'official' | 'deepseek' | 'custom'
+/** Non-secret half of an API-key connection; the key itself lives in the main-process secret store. */
+export interface ApiKeyConfig {
+  provider: ApiKeyProvider
+  /** deepseek: preset; custom: required (Anthropic-compatible endpoint); official: unset */
+  baseUrl?: string
+  /** deepseek: preset; custom: required (first = default); official: unset (CLI's own list) */
+  models?: string[]
+}
+/** Where users create keys (opened from the add-account dialog). */
+export const API_KEY_PAGES: Record<ProfileKind | 'deepseek', string> = {
+  claude: 'https://platform.claude.com/settings/keys',
+  codex: 'https://platform.openai.com/api-keys',
+  gemini: 'https://aistudio.google.com/apikey',
+  deepseek: 'https://platform.deepseek.com/api_keys'
+}
 export type ProfileStatus = 'uninstalled' | 'not_logged_in' | 'idle' | 'running' | 'rate_limited'
 
 export const KINDS: ProfileKind[] = ['claude', 'gemini', 'codex']
@@ -65,6 +83,8 @@ export interface ProfileConfig {
    * full:  bypass all permission prompts and sandboxing
    */
   autoApprove: AutoApprove
+  /** Set when the account connects with an API key instead of the CLI's sign-in; fixed at creation. */
+  apiKey?: ApiKeyConfig
   createdAt: number
 }
 
