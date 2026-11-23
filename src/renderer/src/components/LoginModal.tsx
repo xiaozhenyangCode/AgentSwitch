@@ -242,13 +242,13 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
             <div className="mt-3 space-y-2.5">
               <div className="flex gap-2">
                 <input
-                  className={inputCls}
+                  className={inputCls + ' min-w-0 flex-1'}
                   placeholder={t('login.pastePlaceholder')}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitCode()}
                 />
-                <button className={btnSecondary} onClick={submitCode} disabled={!code.trim()}>
+                <button className={btnSecondary + ' shrink-0 whitespace-nowrap'} onClick={submitCode} disabled={!code.trim()}>
                   {t('login.submit')}
                 </button>
               </div>
