@@ -86,7 +86,7 @@ describe('validateApiKeyConfig (Review Focus 3)', () => {
 describe('helpers', () => {
   it('displayModel strips [1m]', () => expect(displayModel('deepseek-flash[1m]')).toBe('deepseek-flash'))
   it('recognizes invalid-key errors from all three vendors', () => {
-    for (const s of ['Invalid API key · Fix external API key', '401 Unauthorized: invalid_api_key', 'Error 400, Message: API key not valid.'])
+    for (const s of ['Invalid API key · Fix external API key', '401 Unauthorized: invalid_api_key', 'Error 400, Message: API key not valid.', 'Failed to authenticate. API Error: 401 Authentication Fails, Your api key: ****seek is invalid'])
       expect(isInvalidKeyError(s)).toBe(true)
     expect(isInvalidKeyError('rate limited')).toBe(false)
   })

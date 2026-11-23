@@ -102,7 +102,7 @@ export function maskEnv(env: Record<string, string>): Record<string, string> {
 /** Display form of a model id (`deepseek-flash[1m]` → `deepseek-flash`). */
 export const displayModel = (id: string): string => id.replace(/\[1m\]$/i, '')
 
-const INVALID_KEY_RE = /invalid api key|invalid_api_key|incorrect api key|api key not valid|authentication_error|invalid x-api-key/i
+const INVALID_KEY_RE = /invalid api key|invalid_api_key|incorrect api key|api key not valid|authentication_error|invalid x-api-key|authentication fails|failed to authenticate/i
 export const isInvalidKeyError = (text: string): boolean => INVALID_KEY_RE.test(text)
 
 /** Claude Code's stderr notice for model ids it doesn't know (every third-party model). */
