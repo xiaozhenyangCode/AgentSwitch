@@ -9,6 +9,7 @@ import {
   isPermissionModeSupported,
   resolvePermissionMode,
   shouldUnbindSessionsOnRewind,
+  supportsThreadHistory,
   usesInlineSystemPrompt
 } from './providerCapabilities'
 import { splitSpec } from './modelSpec'
@@ -51,6 +52,15 @@ describe('providerCapabilities single source of truth', () => {
     expect(usesInlineSystemPrompt('gemini', 'print')).toBe(true)
     expect(usesInlineSystemPrompt('gemini', undefined)).toBe(true)
     expect(usesInlineSystemPrompt('gemini', 'acp')).toBe(false)
+  })
+
+  it('offers history tools on Claude and Codex CLI and on Gemini ACP', () => {
+    expect(supportsThreadHistory('claude')).toBe(true)
+    expect(supportsThreadHistory('codex')).toBe(true)
+    expect(supportsThreadHistory('gemini')).toBe(false)
+    expect(supportsThreadHistory('gemini', 'print')).toBe(false)
+    expect(supportsThreadHistory('gemini', 'acp')).toBe(true)
+    expect(supportsThreadHistory('reasonix', 'acp')).toBe(false)
   })
 
   it('drives permission mode validation, skill trigger prefix, rewind unbinding, and auth/quota rules', () => {

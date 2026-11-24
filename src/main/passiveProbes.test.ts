@@ -1,4 +1,6 @@
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,9 +9,11 @@ import type { ProfileConfig } from '@shared/types'
 const userData = mkdtempSync(join(tmpdir(), 'agentswitch-passive-probes-'))
 
 const execFileMock = vi.fn()
+const spawnMock = vi.fn()
 const buildSpawnSpecMock = vi.fn(() => ({ shell: '/bin/zsh', args: [], env: { PATH: '/usr/bin' }, cwd: tmpdir(), injected: {} }))
 const isLoggedInMock = vi.fn(() => true)
 const getConfigMock = vi.fn<() => ProfileConfig>()
+const listConfigsMock = vi.fn<() => ProfileConfig[]>(() => [])
 
 vi.mock('electron', () => ({
   app: { getPath: () => userData },
@@ -18,7 +22,17 @@ vi.mock('electron', () => ({
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
-  return { ...actual, execFile: execFileMock }
+  return { ...actual, execFile: execFileMock, spawn: spawnMock }
+})
+
+vi.mock('node:fs', async (original) => {
+  const actual = await original<typeof import('node:fs')>()
+  return { ...actual, mkdtempSync: vi.fn(actual.mkdtempSync) }
+})
+
+vi.mock('node:http', async (original) => {
+  const actual = await original<typeof import('node:http')>()
+  return { ...actual, createServer: vi.fn(actual.createServer) }
 })
 
 vi.mock('./profiles', async (importOriginal) => {
@@ -27,14 +41,16 @@ vi.mock('./profiles', async (importOriginal) => {
     ...actual,
     buildSpawnSpec: buildSpawnSpecMock,
     getConfig: getConfigMock,
+    hasProfile: () => true,
     isLoggedIn: isLoggedInMock,
+    listConfigs: listConfigsMock,
     kindBinaryPath: () => '/fake/cli'
   }
 })
 
 const { codexModelArgs, forgetModels, listModels } = await import('./models')
 const { claudeAdapter } = await import('./agentRunner')
-const { AGY_AUTH_PROMPT_RE, CODEX_APP_SERVER_PROBE_ARGS } = await import('./usage')
+const { AGY_AUTH_PROMPT_RE, CODEX_APP_SERVER_PROBE_ARGS, refreshAgyQuota, startUsage } = await import('./usage')
 
 const makeProfile = (kind: ProfileConfig['kind'], id = `${kind}-test`): ProfileConfig => ({
   id,
@@ -53,6 +69,8 @@ const makeProfile = (kind: ProfileConfig['kind'], id = `${kind}-test`): ProfileC
 describe('P1-3 passive health & model probes', () => {
   beforeEach(() => {
     execFileMock.mockReset()
+    spawnMock.mockReset()
+    listConfigsMock.mockReset().mockReturnValue([])
     buildSpawnSpecMock.mockClear()
     isLoggedInMock.mockReset().mockReturnValue(true)
     forgetModels('gemini-test')
@@ -70,6 +88,33 @@ describe('P1-3 passive health & model probes', () => {
     expect(result.models.length).toBeGreaterThan(0)
     expect(execFileMock).not.toHaveBeenCalled()
     expect(buildSpawnSpecMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps history snapshots and HTTP listeners out of startup, passive model listing, and agy quota checks', async () => {
+    const config = { ...makeProfile('gemini'), agyTransport: 'acp' as const }
+    getConfigMock.mockReturnValue(config)
+    listConfigsMock.mockReturnValue([config])
+    vi.useFakeTimers()
+    try {
+      startUsage()
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(spawnMock).not.toHaveBeenCalled()
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+
+    await listModels(config.id, false)
+    expect(execFileMock).not.toHaveBeenCalled()
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), { kill: vi.fn() })
+      queueMicrotask(() => child.emit('close', 2))
+      return child
+    })
+    await expect(refreshAgyQuota(config.id)).resolves.toBe(false)
+    expect(spawnMock).toHaveBeenCalledExactlyOnceWith('/fake/cli', expect.arrayContaining(['-p', '/usage']), expect.anything())
+    expect(vi.mocked(mkdtempSync).mock.calls.some(([path]) => String(path).includes('agentswitch-acp-history-'))).toBe(false)
+    expect(createServer).not.toHaveBeenCalled()
   })
 
   it('does not spawn agy on manual refresh when account is not logged in', async () => {

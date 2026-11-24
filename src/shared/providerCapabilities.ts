@@ -196,6 +196,12 @@ export function getProviderCapabilities(kind: ProfileKind): ProviderCapabilities
   return PROVIDER_CAPABILITIES[kind]
 }
 
+/** Whether this transport can be offered thread history. ACP still checks session setup. */
+export function supportsThreadHistory(kind: ProfileKind, transport?: 'print' | 'acp'): boolean {
+  const caps = getProviderCapabilities(kind)
+  return caps.supportsMcpTempInjection || (caps.supportsInteractiveTransport && transport === 'acp')
+}
+
 /** Fallback context window (tokens) when a turn did not report one; recognizes 1M model variants. */
 export function defaultContextWindowFor(kind: ProfileKind, model?: string | null): number {
   const base = PROVIDER_CAPABILITIES[kind].defaultContextWindow

@@ -5,6 +5,7 @@ import { basename, extname, isAbsolute, join, relative } from 'node:path'
 import { LEGACY_USER_DATA } from './legacy'
 import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
+import { agyAcpPool } from './acp/pool'
 import { FileBaseline } from './fileBaseline'
 import { recordLimited, recordQuota, recordRun, refreshPostRunQuota } from './usage'
 import { allowRoot } from './fileProtocol'
@@ -18,10 +19,11 @@ import {
   defaultContextWindowFor,
   getProviderCapabilities,
   shouldUnbindSessionsOnRewind,
+  supportsThreadHistory,
   usesInlineSystemPrompt
 } from '@shared/providerCapabilities'
 import { bindNativeSession, canResume, clearActiveSessions, recordUnconfirmedSession, type NativeSessions } from './historyResume'
-import { createThreadHistory, supportsThreadHistory } from './threadHistoryConfig'
+import { createThreadHistory, upsertPersistentThreadHistory, type ThreadHistoryConfig } from './threadHistoryConfig'
 import { Checkpoints } from './checkpoints'
 import { SKIP_DIRS, SNAPSHOT_MAX_FILES } from './checkpointFiles'
 import { isInside } from './gitOps'
@@ -727,12 +729,23 @@ export class Orchestrator {
     const numberedTranscript = numberTranscript(transcript)
     const entries = unseenTranscript(numberedTranscript, cfg.id, !!resume)
     const caps = getProviderCapabilities(cfg.kind)
+    const acp = caps.supportsInteractiveTransport && cfg.agyTransport === 'acp' && !agyAcpPool.disabled(cfg.id)
+    const historySupported = supportsThreadHistory(cfg.kind, acp ? 'acp' : undefined)
     const budget = contextBudgetFor(reportedContextWindow(transcript, cfg.id, model, cfg.kind) ?? defaultContextWindowFor(cfg.kind, model))
-    let recap = budgetedHandoff(entries, budget, !resume, supportsThreadHistory(cfg.kind))
+    let threadHistory: ThreadHistoryConfig | undefined
+    if (acp && historySupported) {
+      try {
+        threadHistory = upsertPersistentThreadHistory(cfg.id, threadId, transcript)
+      } catch (error) {
+        this.log(cfg.id, `[thread history] ${String(error)}\n`)
+      }
+    }
+    let recap = budgetedHandoff(entries, budget, !resume, acp ? !!threadHistory : historySupported)
     let history: ReturnType<typeof createThreadHistory> | undefined
-    if (recap.readable) {
+    if (!acp && recap.readable) {
       try {
         history = createThreadHistory(threadId, transcript)
+        threadHistory = history.config
       } catch (error) {
         this.log(cfg.id, `[thread history] ${String(error)}\n`)
         recap = budgetedHandoff(entries, budget, !resume, false)
@@ -786,9 +799,13 @@ export class Orchestrator {
         cfg,
         model,
         prompt,
-        freshPrompt: resume && caps.supportsInteractiveTransport && cfg.agyTransport === 'acp' ? () => {
+        promptWithoutThreadHistory: acp && recap.readable ? () => {
+          const fallback = budgetedHandoff(entries, budget, !resume, false)
+          return this.prompt(turn, step, fallback.text, !!resume).prompt
+        } : undefined,
+        freshPrompt: resume && acp ? (hasHistory = !!threadHistory) => {
           const freshEntries = unseenTranscript(numberedTranscript, cfg.id, false)
-          const freshRecap = budgetedHandoff(freshEntries, budget, true, supportsThreadHistory(cfg.kind))
+          const freshRecap = budgetedHandoff(freshEntries, budget, true, hasHistory && !!threadHistory)
           return this.prompt(turn, step, freshRecap.text, false).prompt
         } : undefined,
         system,
@@ -796,7 +813,7 @@ export class Orchestrator {
         images: caps.supportsImageInput ? turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [],
         resume,
         outDir: turn.outDir,
-        threadHistory: history?.config
+        threadHistory
       },
       emit,
       (text) => this.log(cfg.id, text)

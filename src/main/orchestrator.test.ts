@@ -7,6 +7,7 @@ import type { TranscriptEntry } from '@shared/transcript'
 import type { RunRequest } from '@shared/types'
 import type { RunSpec } from './agentRunner'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
+import { cleanupAllPersistentThreadHistory, upsertPersistentThreadHistory } from './threadHistoryConfig'
 import { loadThreadHistory } from './threadHistoryTools'
 import { Orchestrator } from './orchestrator'
 import { Checkpoints } from './checkpoints'
@@ -14,11 +15,17 @@ import { Checkpoints } from './checkpoints'
 let data: string
 const runAgent = vi.hoisted(() => vi.fn())
 const getConfig = vi.hoisted(() => vi.fn())
+const acpDisabled = vi.hoisted(() => vi.fn(() => false))
 vi.mock('electron', () => ({ app: { getPath: () => data } }))
 vi.mock('./legacy', () => ({ LEGACY_PROJECT_DIR: '.agentmux', LEGACY_USER_DATA: '/tmp/agentswitch-nonexistent' }))
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 vi.mock('./usage', () => ({ recordRun: vi.fn(), refreshPostRunQuota: vi.fn() }))
 vi.mock('./agentRunner', () => ({ runAgent }))
+vi.mock('./acp/pool', () => ({ agyAcpPool: { disabled: acpDisabled } }))
+vi.mock('./threadHistoryConfig', async (original) => {
+  const actual = await original<typeof import('./threadHistoryConfig')>()
+  return { ...actual, upsertPersistentThreadHistory: vi.fn(actual.upsertPersistentThreadHistory) }
+})
 vi.mock('./profiles', () => ({
   KIND_LABEL: { codex: 'Codex', gemini: 'Gemini' },
   getConfig,
@@ -50,9 +57,14 @@ beforeEach(() => {
   writeFileSync(join(data, 'threads', 'fixture.json'), JSON.stringify({ sessions: { a: 'previous-session' }, models: { a: 'small' } }))
   runAgent.mockReset()
   getConfig.mockReset().mockReturnValue({ id: 'a', kind: 'codex', name: 'Codex', defaultModel: 'small' })
+  acpDisabled.mockReset().mockReturnValue(false)
+  vi.mocked(upsertPersistentThreadHistory).mockClear()
 })
 
-afterEach(() => rmSync(data, { recursive: true, force: true }))
+afterEach(() => {
+  cleanupAllPersistentThreadHistory()
+  rmSync(data, { recursive: true, force: true })
+})
 
 describe('orchestrator history handoff', () => {
   it('uses fresh budgeted history for a portable import and sends the entire current user message once', async () => {
@@ -112,11 +124,59 @@ describe('orchestrator history handoff', () => {
     expect(fresh).toContain('ORIGINAL REQUEST')
     expect(fresh).toContain('RECENT REPLY')
     expect(fresh).toContain('NEW UPDATE')
-    expect(fresh).not.toContain('read_thread')
+    expect(fresh).toContain('read_thread')
+    expect(spec.freshPrompt!(false)).not.toContain('read_thread')
     const handoff = fresh.split('\n\n## 用户消息\n')[0].split('\n').slice(1).join('\n')
     expect(estimateTokens(handoff)).toBeLessThanOrEqual(16_000)
     expect(fresh.indexOf(userText)).toBeGreaterThanOrEqual(0)
     expect(fresh.indexOf(userText)).toBe(fresh.lastIndexOf(userText))
+  })
+
+  it('mounts ACP history from the first turn and refreshes it at the same path when the recap grows', async () => {
+    getConfig.mockReturnValue({ id: 'a', kind: 'gemini', name: 'Gemini', defaultModel: 'small', agyTransport: 'acp' })
+    runAgent.mockImplementation(() => ({ done: Promise.resolve({ ok: true, sessionId: 'first-session' }), kill: vi.fn() }))
+    const first = request([entry(1, 'FIRST QUESTION', null)], 'fresh-acp')
+    await start(first)
+    const opened: RunSpec = runAgent.mock.calls[0][0]
+    expect(opened.resume).toBeNull()
+    expect(opened.prompt).not.toContain('read_thread')
+    const path = opened.threadHistory!.args[1]
+    expect(loadThreadHistory(path, first.threadId)).toEqual(first.transcript)
+
+    const transcript = [
+      ...first.transcript, entry(2, 'FIRST REPLY', 'a'), entry(3, 'large'.repeat(50_000), 'b'), entry(4, 'FOLLOW UP', null)
+    ]
+    await start({ ...first, transcript, turnId: 'next-turn' })
+    const resumed: RunSpec = runAgent.mock.calls[1][0]
+    expect(resumed.resume).toBe('first-session')
+    expect(resumed.threadHistory).toEqual(opened.threadHistory)
+    expect(loadThreadHistory(path, first.threadId)).toEqual(transcript)
+    expect(resumed.prompt).toContain('read_thread')
+    expect(resumed.promptWithoutThreadHistory!()).not.toContain('read_thread')
+    expect(resumed.system).toBe(opened.system)
+  })
+
+  it.each(['write failure', 'print', 'ACP disabled'] as const)('omits unavailable history tooling when %s', async (reason) => {
+    getConfig.mockReturnValue({
+      id: 'a', kind: 'gemini', name: 'Gemini', defaultModel: 'small', agyTransport: reason === 'print' ? 'print' : 'acp'
+    })
+    acpDisabled.mockReturnValue(reason === 'ACP disabled')
+    if (reason === 'write failure') vi.mocked(upsertPersistentThreadHistory).mockImplementationOnce(() => { throw new Error('Disk full') })
+    runAgent.mockReturnValueOnce({ done: Promise.resolve({ ok: true, sessionId: 'previous-session' }), kill: vi.fn() })
+    const transcript = [entry(1, 'FIRST QUESTION', null), entry(2, 'FIRST REPLY', 'a'), entry(3, 'old'.repeat(65_000), 'b')]
+    await start(request(transcript))
+    const spec: RunSpec = runAgent.mock.calls[0][0]
+    expect(spec.threadHistory).toBeUndefined()
+    expect(spec.prompt).toContain('已省略')
+    expect(spec.prompt).not.toContain('read_thread')
+    if (reason === 'write failure') {
+      expect(upsertPersistentThreadHistory).toHaveBeenCalledOnce()
+      expect(spec.freshPrompt!()).toContain('FIRST QUESTION')
+      expect(spec.freshPrompt!(true)).not.toContain('read_thread')
+    } else {
+      expect(upsertPersistentThreadHistory).not.toHaveBeenCalled()
+      expect(spec.freshPrompt).toBeUndefined()
+    }
   })
 
   it('keeps the system text byte-identical across turns and puts per-turn lines at the end of the prompt', async () => {

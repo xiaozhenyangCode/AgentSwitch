@@ -8,6 +8,7 @@ import { agyConversationDb, deletedSessions, listHistory } from './history'
 import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
 import type { Checkpoints } from './checkpoints'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
+import { removePersistentThreadHistory } from './threadHistoryConfig'
 
 /**
  * Deleting a chat thread for real:
@@ -113,6 +114,7 @@ export async function trashHistorySession(key: string): Promise<DeleteThreadResu
 export async function deleteThreadData(req: DeleteThreadRequest, checkpoints: Checkpoints): Promise<DeleteThreadResult> {
   const id = safeId(req.threadId)
   if (!id) throw new Error('bad thread id')
+  removePersistentThreadHistory(req.threadId)
   const result: DeleteThreadResult = { removed: 0, trashed: [], failed: [] }
   const rm = (p: string) => {
     if (!existsSync(p)) return

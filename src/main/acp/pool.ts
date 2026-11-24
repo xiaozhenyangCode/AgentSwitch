@@ -24,6 +24,8 @@ interface Listener {
 interface SessionState {
   active: boolean
   system: string | null
+  hasThreadHistory: boolean
+  threadHistoryPath?: string
   options: AcpFields[]
   revision: number
 }
@@ -39,7 +41,7 @@ export class AcpConnection {
   session(id: string): SessionState {
     let session = this.sessions.get(id)
     if (!session) {
-      session = { active: false, system: null, options: [], revision: 0 }
+      session = { active: false, system: null, hasThreadHistory: false, options: [], revision: 0 }
       this.sessions.set(id, session)
     }
     return session

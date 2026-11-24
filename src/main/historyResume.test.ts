@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/transcript'
 import { KINDS } from '@shared/types'
-import { getProviderCapabilities, shouldUnbindSessionsOnRewind } from '@shared/providerCapabilities'
+import { getProviderCapabilities, shouldUnbindSessionsOnRewind, supportsThreadHistory } from '@shared/providerCapabilities'
 import { bindNativeSession, canResume, clearActiveSessions, nativeSessionEntries, recordUnconfirmedSession, type NativeSessions } from './historyResume'
-import { supportsThreadHistory } from './threadHistoryConfig'
 
 const state: NativeSessions = { sessions: { a: 'session-a', b: 'session-b' }, models: { a: 'small' } }
 const reply: TranscriptEntry = {

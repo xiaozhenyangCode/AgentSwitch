@@ -12,6 +12,7 @@ import { readAgyConversationTitle, readAgyConversationTotals } from './acp/agyOu
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
 import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
+import { isThreadHistoryToolName } from './threadHistoryTools'
 import { agyTurnUsage, claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost, type AgyTotals } from './usageDelta'
 
 /**
@@ -31,7 +32,9 @@ export interface RunSpec {
   model: string | null
   prompt: string
   /** Rebuild the handoff only if ACP resume falls back to a new session. */
-  freshPrompt?: () => string
+  freshPrompt?: (hasThreadHistory?: boolean) => string
+  /** Rebuild the current handoff when the runtime cannot use the history tools. */
+  promptWithoutThreadHistory?: () => string
   /** Extra instructions (claude: --append-system-prompt; others: prefixed to the prompt). */
   system: string | null
   cwd: string
@@ -680,7 +683,8 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', agyModelId(s.cfg.id, spec.model, spec.effort))
   if (s.resume) args.push('--conversation', s.resume)
-  args.push('-p', full(s)) // last, so it works whether -p takes a value or is a bool + positional prompt
+  const prompt = s.promptWithoutThreadHistory?.() ?? s.prompt
+  args.push('-p', full({ ...s, prompt })) // last, whether -p takes a value or is a bool + positional prompt
   return {
     args,
     stdin: null,
@@ -801,6 +805,7 @@ export function agyTool(u: Record<string, any>): Extract<AgentEvent, { t: 'activ
     }
   }
   const detail = { tool: name, input: capJson(p), output: rawOut ? capText(rawOut) : undefined }
+  if (isThreadHistoryToolName(name)) return { ...base, type: 'tool', target: t('main.threadHistory'), detail }
   if (/write|edit|replace|create|patch|delete/.test(n)) return { ...base, type: 'write', target: file ?? name, detail: { tool: name, output: detail.output } }
   if (/search|grep|find|glob|web/.test(n)) return { ...base, type: 'search', target: pick(/query|pattern|url/i) ?? file ?? name, detail }
   if (/read|view|list|open/.test(n)) return { ...base, type: 'read', target: file ?? name, detail }

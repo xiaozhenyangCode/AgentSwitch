@@ -1,11 +1,13 @@
 import { PassThrough } from 'node:stream'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AutoApprove, ProfileConfig } from '@shared/types'
 import { runAgent, type RunSpec } from '../agentRunner'
+import { cleanupAllPersistentThreadHistory, upsertPersistentThreadHistory } from '../threadHistoryConfig'
+import { createThreadHistoryReader } from '../threadHistoryTools'
 import { startAcpProcess } from './acpProcess'
 import { autoDecision } from './agySession'
 import { JsonRpc } from './jsonrpc'
@@ -40,7 +42,7 @@ const result = { stopReason: 'end_turn', usage }
 
 type Message = { id?: number; method?: string; params?: any; result?: unknown; error?: { code: number; message: string } }
 
-function fakeAgy(opts: Parameters<typeof startAcpProcess>[0]) {
+function fakeAgy(opts: Parameters<typeof startAcpProcess>[0], stdio?: boolean) {
   const stdin = new PassThrough()
   const stdout = new PassThrough()
   const sent: Message[] = []
@@ -66,7 +68,10 @@ function fakeAgy(opts: Parameters<typeof startAcpProcess>[0]) {
   const update = (update: object, id = sessionId): Message => ({ method: 'session/update', params: { sessionId: id, update } })
   const process = {
     rpc, exited, terminate, get alive() { return alive },
-    initializeResult: { protocolVersion: 1, agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } } }
+    initializeResult: { protocolVersion: 1, agentCapabilities: {
+      _meta: { antigravity: { systemPrompt: { append: true } } },
+      ...(stdio === undefined ? {} : { mcpCapabilities: { stdio } })
+    } }
   }
   return { sent, request, send, update, process }
 }
@@ -93,6 +98,7 @@ describe('agy ACP runs', () => {
 
   afterEach(() => {
     agyAcpPool.retire(id)
+    cleanupAllPersistentThreadHistory()
     vi.useRealTimers()
   })
 
@@ -104,6 +110,7 @@ describe('agy ACP runs', () => {
 
   async function sendPrompt(cli: typeof server) {
     const create = await cli.request('session/new')
+    expect(create.params.mcpServers).toEqual([])
     cli.send({ id: create.id, result: { sessionId } })
     return cli.request('session/prompt')
   }
@@ -117,6 +124,107 @@ describe('agy ACP runs', () => {
     ({ id: 51, method: 'session/request_permission', params: { sessionId, toolCall, options: choices } })
   const permission = () => emit.mock.calls.map(([e]) => e).find((e) => e.t === 'permission')!
   const cancelled = { outcome: { outcome: 'cancelled' } }
+
+  it('keeps the history MCP mounted across a warm refresh and sends identical args after retirement', async () => {
+    const firstEntry = { id: 'm1', turnId: 'turn', profileId: null, speaker: 'User', time: 1, text: 'First' }
+    const threadHistory = upsertPersistentThreadHistory(id, ref.threadId, [firstEntry])
+    const read = createThreadHistoryReader(threadHistory.args[1], ref.threadId)
+    const { run, cli } = await begin({ threadHistory })
+    const create = await cli.request('session/new')
+    expect(create.params.mcpServers).toEqual([{
+      name: 'agentswitch', command: threadHistory.command, args: threadHistory.args,
+      env: [{ name: 'ELECTRON_RUN_AS_NODE', value: '1' }]
+    }])
+    cli.send({ id: create.id, result: { sessionId } })
+    const first = await cli.request('session/prompt')
+    expect(read()).toEqual([firstEntry])
+    cli.send({ id: first.id, result })
+    await run.done
+
+    const more = [firstEntry, { ...firstEntry, id: 'm2', text: 'Second' }]
+    const refreshed = upsertPersistentThreadHistory(id, ref.threadId, more)
+    const warm = runAgent({ ...spec, threadHistory: refreshed, resume: sessionId }, emit, log)
+    const second = await cli.request('session/prompt', 2)
+    expect(read()).toEqual(more)
+    cli.send(ask({ toolCallId: 'read', kind: 'other', title: 'Run mcp_agentswitch_read_thread?' }))
+    expect(cli.sent.at(-1)).toMatchObject({ id: 51, result: { outcome: { outcome: 'selected', optionId: 'allow' } } })
+    expect(permission()).toBeUndefined()
+    expect(cli.sent.filter((message) => message.method === 'session/new')).toHaveLength(1)
+    expect(cli.sent.some((message) => message.method === 'session/resume')).toBe(false)
+    cli.send({ id: second.id, result })
+    await warm.done
+
+    agyAcpPool.retire(id)
+    expect(existsSync(threadHistory.args[1])).toBe(true)
+    const resumed = runAgent({ ...spec, threadHistory: refreshed, resume: sessionId }, emit, log)
+    await vi.waitFor(() => expect(startAcpProcess).toHaveBeenCalledTimes(2))
+    const resume = await server.request('session/resume')
+    expect(JSON.stringify(resume.params.mcpServers)).toBe(JSON.stringify(create.params.mcpServers))
+    server.send({ id: resume.id, result: { sessionId } })
+    const third = await server.request('session/prompt')
+    server.send({ id: third.id, result })
+    await expect(resumed.done).resolves.toMatchObject({ ok: true })
+  })
+
+  it.each(['new', 'resume'] as const)('retries a rejected %s MCP setup once, then sends the tool-free prompt', async (mode) => {
+    const threadHistory = upsertPersistentThreadHistory(id, ref.threadId, [])
+    const promptWithoutThreadHistory = vi.fn(() => 'Tool-free handoff')
+    const resume = mode === 'resume' ? sessionId : null
+    const { run, cli } = await begin({ threadHistory, promptWithoutThreadHistory, resume })
+    const method = `session/${mode}`
+    const setup = await cli.request(method)
+    expect(setup.params.mcpServers).toHaveLength(1)
+    cli.send({ id: setup.id, error: { code: -32602, message: 'Unsupported mcpServers' } })
+    const retry = await cli.request(method, 2)
+    expect(retry.params).toEqual({ ...setup.params, mcpServers: [] })
+    cli.send({ id: retry.id, result: { sessionId } })
+    const prompt = await cli.request('session/prompt')
+    expect(prompt.params.prompt[0].text).toBe('Tool-free handoff')
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
+
+    const next = runAgent({ ...spec, threadHistory, promptWithoutThreadHistory, resume: sessionId }, emit, log)
+    const warm = await cli.request('session/prompt', 2)
+    expect(warm.params.prompt[0].text).toBe('Tool-free handoff')
+    expect(cli.sent.filter((msg) => msg.method === method)).toHaveLength(2)
+    cli.send({ id: warm.id, result })
+    await expect(next.done).resolves.toMatchObject({ ok: true })
+  })
+
+  it('uses no MCP when initialization explicitly declines stdio', async () => {
+    vi.mocked(startAcpProcess).mockImplementationOnce(async (opts) => {
+      server = fakeAgy(opts, false)
+      return server.process
+    })
+    const threadHistory = upsertPersistentThreadHistory(id, ref.threadId, [])
+    const { run, cli } = await begin({ threadHistory, promptWithoutThreadHistory: () => 'Tool-free handoff' })
+    const prompt = await sendPrompt(cli)
+    expect(prompt.params.prompt[0].text).toBe('Tool-free handoff')
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
+  })
+
+  it.each(['different thread', 'missing refresh'] as const)('does not prompt a mounted old session after %s', async (reason) => {
+    const threadHistory = upsertPersistentThreadHistory(id, ref.threadId, [])
+    const { run, cli } = await begin({ threadHistory })
+    const create = await cli.request('session/new')
+    cli.send({ id: create.id, result: { sessionId } })
+    const first = await cli.request('session/prompt')
+    cli.send({ id: first.id, result })
+    await run.done
+
+    const nextHistory = reason === 'different thread' ? upsertPersistentThreadHistory(id, 'other-thread', []) : undefined
+    const freshPrompt = vi.fn(() => 'Fresh handoff')
+    const next = runAgent({ ...spec, threadHistory: nextHistory, freshPrompt, resume: sessionId }, emit, log)
+    const nextSetup = await cli.request('session/new', 2)
+    expect(nextSetup.params.mcpServers.map((server: { args: string[] }) => server.args[1])).toEqual(nextHistory ? [nextHistory.args[1]] : [])
+    cli.send({ id: nextSetup.id, result: { sessionId: 'fresh-session' } })
+    const nextPrompt = await cli.request('session/prompt', 2)
+    expect(nextPrompt.params).toEqual({ sessionId: 'fresh-session', prompt: [{ type: 'text', text: 'Fresh handoff' }] })
+    expect(freshPrompt).toHaveBeenCalledExactlyOnceWith(!!nextHistory)
+    cli.send({ id: nextPrompt.id, result })
+    await expect(next.done).resolves.toMatchObject({ ok: true })
+  })
 
   it('creates an activity before the approval card, exposes it on reload and returns the selected option', async () => {
     const { run, cli } = await begin()
@@ -328,11 +436,12 @@ describe('agy ACP runs', () => {
     cli.send({ id: resume.id, error: { code: -32602, message: 'Session not found' } })
 
     const create = await cli.request('session/new')
-    expect(freshPrompt).toHaveBeenCalledOnce()
+    expect(freshPrompt).not.toHaveBeenCalled()
     expect(create.params._meta).toEqual(resume.params._meta)
     cli.send({ id: create.id, result: { sessionId } })
     const prompt = await cli.request('session/prompt')
     expect(prompt.params).toEqual({ sessionId, prompt: [{ type: 'text', text: 'Full handoff and current message' }] })
+    expect(freshPrompt).toHaveBeenCalledExactlyOnceWith(false)
     cli.send({ id: prompt.id, result })
     await expect(run.done).resolves.toMatchObject({ ok: true, sessionId })
     expect(cli.sent.filter((msg) => msg.method === 'session/prompt')).toHaveLength(1)
@@ -437,12 +546,18 @@ describe('agy ACP runs', () => {
     expect(startAcpProcess).not.toHaveBeenCalled()
     stubs.spawn.mockImplementation(() => { throw new Error('print adapter reached') })
     for (let i = 0; i < 4; i++) {
-      const run = runAgent({ ...spec, cfg: { ...cfg, id } }, emit, log)
+      const run = runAgent({
+        ...spec, cfg: { ...cfg, id }, prompt: 'Use read_thread', promptWithoutThreadHistory: () => 'Tool-free handoff'
+      }, emit, log)
       await expect(run.done).resolves.toMatchObject({ error: 'print adapter reached' })
     }
     expect(startAcpProcess).toHaveBeenCalledTimes(3)
     expect(stubs.spawn).toHaveBeenCalledTimes(4)
-    expect(stubs.spawn.mock.calls.every(([, args]) => args.includes('-p'))).toBe(true)
+    for (const [, args] of stubs.spawn.mock.calls) {
+      expect(args.at(-2)).toBe('-p')
+      expect(args.at(-1)).toContain('Tool-free handoff')
+      expect(args.at(-1)).not.toContain('read_thread')
+    }
     expect(emit.mock.calls.filter(([e]) => e.t === 'notice')).toHaveLength(3)
   })
 
@@ -480,6 +595,32 @@ describe('agy ACP runs', () => {
 
 describe('agy automatic permission decisions', () => {
   const project = mkdtempSync(join(tmpdir(), 'agy-perm-'))
+  it.each(['cli', 'edits'] as const)('allows only the mounted history MCP as an exception in %s mode', (level) => {
+    for (const tool of [
+      { name: 'read_thread' },
+      { name: 'agentswitch__search_thread' },
+      { name: 'mcp__agentswitch__read_thread' },
+      { name: 'agentswitch/read_thread' },
+      { title: 'Run mcp_agentswitch_search_thread?' },
+      { title: 'Read history', rawInput: { ServerName: 'agentswitch', ToolName: 'search_thread' } }
+    ]) {
+      const req = { toolCall: { kind: 'other', toolCallId: 'call', ...tool } }
+      expect(autoDecision(req, level, project, true)).toBe('allow')
+      expect(autoDecision(req, level, project)).toBe('ask')
+    }
+    for (const tool of [
+      { name: 'other__read_thread' },
+      { name: 'evil:read_thread' },
+      { name: 'read_thread_extra' },
+      { title: 'Run mcp_other_read_thread?' },
+      { name: 'read_thread', title: 'Run mcp_other_read_thread?' },
+      { name: 'read_thread', rawInput: { ServerName: 'other', ToolName: 'read_thread' } },
+      { name: 'read_thread', kind: 'delete' },
+      { name: 'read_thread', rawInput: { CommandLine: 'echo unrelated' } },
+      { name: 'read_thread', toolCallId: 'interaction_1' }
+    ]) expect(autoDecision({ toolCall: { kind: 'other', ...tool } }, level, project, true)).toBe('ask')
+    expect(autoDecision({ toolCall: { toolCallId: 'interaction_1', name: 'read_thread' } }, 'full', project, true)).toBe('ask')
+  })
   const cases: [AutoApprove, string, 'allow' | 'ask'][] = [
     ['full', 'command-or-external', 'allow'], ['full', 'project-edit', 'allow'], ['full', 'read', 'allow'], ['full', 'question', 'ask'],
     ['edits', 'command-or-external', 'ask'], ['edits', 'project-edit', 'allow'], ['edits', 'read', 'allow'], ['edits', 'question', 'ask'],

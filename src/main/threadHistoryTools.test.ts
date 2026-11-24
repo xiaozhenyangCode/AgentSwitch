@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/transcript'
-import { loadThreadHistory, readThreadPage, searchThread, THREAD_HISTORY_FORMAT } from './threadHistoryTools'
+import { createThreadHistoryReader, loadThreadHistory, readThreadPage, searchThread, THREAD_HISTORY_FORMAT } from './threadHistoryTools'
 
 const entry = (n: number, text = `消息 ${n}`): TranscriptEntry => ({
   id: `m${n}`, turnId: 'turn', profileId: n % 2 ? null : 'codex',
@@ -66,9 +66,49 @@ describe('thread history tools', () => {
 
       const saved = join(dir, 'saved.json')
       writeFileSync(saved, JSON.stringify({
-        id: 'saved', title: 'Saved', messages: [{ id: 'u1', turnId: 'turn', role: 'user', driver: { profileId: 'claude' }, text: 'From disk', createdAt: 100 }]
+        id: 'saved', title: 'Saved', messages: [{ id: 'u1', turnId: 'turn', role: 'user', driver: { profileId: null }, text: 'From disk', createdAt: 100 }]
       }))
-      expect(loadThreadHistory(saved, 'saved')[0]).toMatchObject({ id: 'u1', text: 'From disk', time: 100 })
+      expect(loadThreadHistory(saved, 'saved')[0]).toMatchObject({ id: 'u1', text: 'From disk', time: 100, driverId: null })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reopens each call, reuses unchanged data, and rejects removed or replaced unsafe snapshots', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentswitch-history-reader-'))
+    const file = join(dir, 'history.json')
+    const temp = join(dir, 'next.json')
+    const snapshot = (id: string, messages: TranscriptEntry[]) => JSON.stringify({ id, format: THREAD_HISTORY_FORMAT, messages })
+    const stamp = new Date('2026-01-01T00:00:00.000Z')
+    try {
+      writeFileSync(file, snapshot('thread', [entry(1, 'old')]))
+      utimesSync(file, stamp, stamp)
+      const read = createThreadHistoryReader(file, 'thread')
+      const first = read()
+      expect(read()).toBe(first)
+
+      // Same size and mtime. The atomic replacement gives the file a new inode.
+      writeFileSync(temp, snapshot('thread', [entry(1, 'new')]))
+      utimesSync(temp, stamp, stamp)
+      const original = statSync(file)
+      renameSync(temp, file)
+      const replaced = statSync(file)
+      expect(replaced.size).toBe(original.size)
+      expect(replaced.mtimeMs).toBe(original.mtimeMs)
+      expect(replaced.ino).not.toBe(original.ino)
+      expect(readThreadPage(read(), { from: 1, to: 1 }).messages[0].text).toBe('new')
+
+      writeFileSync(temp, snapshot('thread', [entry(1), entry(2)]))
+      renameSync(temp, file)
+      expect(read()).toEqual([entry(1), entry(2)])
+      rmSync(file)
+      expect(read).toThrow()
+      writeFileSync(temp, snapshot('other-id', [entry(1)]))
+      symlinkSync(temp, file)
+      expect(read).toThrow()
+      rmSync(file)
+      renameSync(temp, file)
+      expect(read).toThrow('different conversation')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

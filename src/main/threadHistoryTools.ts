@@ -37,18 +37,38 @@ export const threadTools = [
   }
 ] as const
 
-export function loadThreadHistory(path: string, threadId: string): TranscriptEntry[] {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-  try {
-    if (!fstatSync(fd).isFile()) throw new Error('Expected a regular history file')
-    const data = JSON.parse(readFileSync(fd, 'utf8'))
-    if (data?.id !== threadId) throw new Error('History belongs to a different conversation')
-    if (data.format !== THREAD_HISTORY_FORMAT) return parseThread(data).messages.map(transcriptEntry)
-    if (!Array.isArray(data.messages) || !data.messages.every(isTranscriptEntry)) throw new Error('Invalid history')
-    return data.messages
-  } finally {
-    closeSync(fd)
+export function isThreadHistoryToolName(name: unknown): boolean {
+  return typeof name === 'string' && /^(?:(?:mcp__)?agentswitch(?:__|[:./])|mcp_agentswitch_)?(?:read_thread|search_thread)$/.test(name)
+}
+
+export function createThreadHistoryReader(path: string, threadId: string): () => TranscriptEntry[] {
+  let cached: { signature: string; history: TranscriptEntry[] } | undefined
+  return () => {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const stat = fstatSync(fd)
+      if (!stat.isFile()) throw new Error('Expected a regular history file')
+      const signature = `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`
+      if (cached?.signature === signature) return cached.history
+      const data = JSON.parse(readFileSync(fd, 'utf8'))
+      if (data?.id !== threadId) throw new Error('History belongs to a different conversation')
+      let history: TranscriptEntry[]
+      if (data.format === THREAD_HISTORY_FORMAT) {
+        if (!Array.isArray(data.messages) || !data.messages.every(isTranscriptEntry)) throw new Error('Invalid history')
+        history = data.messages
+      } else {
+        history = parseThread(data).messages.map(transcriptEntry)
+      }
+      cached = { signature, history }
+      return history
+    } finally {
+      closeSync(fd)
+    }
   }
+}
+
+export function loadThreadHistory(path: string, threadId: string): TranscriptEntry[] {
+  return createThreadHistoryReader(path, threadId)()
 }
 
 function argObject(value: unknown, allowed: string[]): Record<string, unknown> {

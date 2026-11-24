@@ -1,8 +1,12 @@
+import { existsSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { parse } from 'smol-toml'
 import { describe, expect, it, vi } from 'vitest'
 import type { ProfileKind } from '@shared/types'
-import { claudeAdapter, codexAdapter, type RunSpec } from './agentRunner'
-import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
+import { agyTool, claudeAdapter, codexAdapter, type RunSpec } from './agentRunner'
+import { t } from './i18n'
+import { cleanupAllPersistentThreadHistory, removePersistentThreadHistory, threadHistoryArgs, upsertPersistentThreadHistory, type ThreadHistoryConfig } from './threadHistoryConfig'
+import { loadThreadHistory } from './threadHistoryTools'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/fixture-user-data' }, safeStorage: {} }))
 
@@ -51,4 +55,38 @@ describe('thread history launch arguments', () => {
   it.each<ProfileKind>(['gemini', 'reasonix'])('leaves %s configuration alone', (kind) => {
     expect(threadHistoryArgs(kind, config)).toEqual([])
   })
+})
+
+it('keeps private snapshot paths stable by account and thread and removes just the requested scope', () => {
+  const messages = [{ id: 'm1', turnId: 'turn', profileId: null, speaker: '用户', time: 1, text: 'First' }]
+  try {
+    const { args } = upsertPersistentThreadHistory('account/a', 'thread/a', messages)
+    const [, first] = args
+    const [, accountPeer] = upsertPersistentThreadHistory('accounta', 'thread/a', []).args
+    const [, threadPeer] = upsertPersistentThreadHistory('account/a', 'threada', []).args
+    const root = dirname(dirname(dirname(first)))
+    expect(new Set([first, accountPeer, threadPeer]).size).toBe(3)
+    expect(statSync(root).mode & 0o777).toBe(0o700)
+    expect(statSync(first).mode & 0o777).toBe(0o600)
+    expect(args.slice(2)).toEqual(['thread/a', '--refresh'])
+    const more = [...messages, { ...messages[0], id: 'm2', text: 'Second' }]
+    expect(upsertPersistentThreadHistory('account/a', 'thread/a', more).args).toEqual(args)
+    expect(loadThreadHistory(first, 'thread/a')).toEqual(more)
+    expect(loadThreadHistory(accountPeer, 'thread/a')).toEqual([])
+    expect(loadThreadHistory(threadPeer, 'threada')).toEqual([])
+
+    removePersistentThreadHistory('thread/a')
+    expect(existsSync(first)).toBe(false)
+    expect(existsSync(accountPeer)).toBe(false)
+    expect(existsSync(threadPeer)).toBe(true)
+    cleanupAllPersistentThreadHistory()
+    expect(existsSync(root)).toBe(false)
+  } finally {
+    cleanupAllPersistentThreadHistory()
+  }
+})
+
+it.each(['read_thread', 'agentswitch__search_thread', 'mcp_agentswitch_read_thread'])('labels agy history activity %s', (name) => {
+  expect(agyTool({ tool_name: name })).toMatchObject({ type: 'tool', target: t('main.threadHistory') })
+  expect(agyTool({ tool_name: 'other__read_thread' })).not.toMatchObject({ target: t('main.threadHistory') })
 })

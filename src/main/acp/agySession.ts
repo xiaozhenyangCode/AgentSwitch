@@ -8,7 +8,9 @@ import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption } from 
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
 import { t } from '../i18n'
+import { isThreadHistoryToolName } from '../threadHistoryTools'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
+import { JsonRpcError } from './jsonrpc'
 import { agyOutcomeReader, readAgyConversationTitle } from './agyOutcome'
 import { agyAcpPool, type AcpConnection, type AcpFields } from './pool'
 import { cancelledPermission, permissions, PERMISSION_TIMEOUT, type PermissionReply } from './permissions'
@@ -70,9 +72,23 @@ function isQuestion(tool: AcpFields | undefined): boolean {
   return typeof tool?.toolCallId === 'string' && tool.toolCallId.startsWith('interaction_')
 }
 
-export function autoDecision(request: AcpFields, level: AutoApprove, cwd: string): 'allow' | 'ask' {
+function historyToolName(tool: AcpFields | undefined): string | undefined {
+  const input = tool?.rawInput ?? tool?.args
+  if (tool?.kind === 'execute' || WRITE_KINDS.has(tool?.kind) || typeof input?.CommandLine === 'string') return undefined
+  if (input?.ServerName !== undefined) {
+    return input.ServerName === 'agentswitch' && isThreadHistoryToolName(input.ToolName) ? input.ToolName : undefined
+  }
+  // agy can send only a human-readable, namespaced title for MCP calls.
+  const titleName = typeof tool?.title === 'string' ? /^Run (mcp_[\w-]+)\??$/.exec(tool.title)?.[1] : undefined
+  if (titleName && !isThreadHistoryToolName(titleName)) return undefined
+  const name = tool?.name ?? titleName ?? tool?.title
+  return isThreadHistoryToolName(name) ? name : undefined
+}
+
+export function autoDecision(request: AcpFields, level: AutoApprove, cwd: string, mountedHistoryMcp = false): 'allow' | 'ask' {
   const tool = request.toolCall
   if (isQuestion(tool)) return 'ask'
+  if (mountedHistoryMcp && historyToolName(tool)) return 'allow'
   if (level === 'full') return 'allow'
   if (level === 'edits' && EDIT_PERMISSIONS.has(tool?.kind)) {
     if (!WRITE_KINDS.has(tool.kind) || insideProject(toolPaths(tool), cwd)) return 'allow'
@@ -151,7 +167,7 @@ function turnEvents(emit: Emit) {
           if (typeof id !== 'string') return
           const previous = tools.get(id)?.call
           const call = { ...previous, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)) }
-          const name = call.name ?? call.title
+          const name = historyToolName(call) ?? call.name ?? call.title
           const params = call.rawInput ?? call.args
           const activity = agyTool({
             step_index: id,
@@ -349,6 +365,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     if (stopped) return result(false)
 
     const events = turnEvents(emit)
+    const hasThreadHistory = conn.session(id).hasThreadHistory
     const turn = Symbol('agy turn')
     cancelPermissions = () => permissions.cancelAll((entry) => entry.turn === turn)
 
@@ -357,7 +374,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       const tool = request.toolCall ?? {}
       const question = isQuestion(tool)
       const title = (question ? nonblank(tool.title) || t('permission.question') : nonblank(tool.name) || nonblank(tool.title) || t('permission.tool')).slice(0, 4096)
-      if (autoDecision(request, spec.cfg.autoApprove, spec.cwd) === 'allow') {
+      if (autoDecision(request, spec.cfg.autoApprove, spec.cwd, hasThreadHistory) === 'allow') {
         const allow = permissionOptions(request, false).find((option) => option.role === 'allow_once')
         log(`[ACP permission] ${title} · ${allow ? 'allow_once' : 'cancelled'}\n`)
         return allow && !stopped ? { outcome: { outcome: 'selected', optionId: allow.id } } : cancelledPermission()
@@ -412,7 +429,8 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       const writes = await configure(conn, id)
       if (stopped) return result(false)
       log(`[ACP turn] path=${path} system=${appendSystem ? 'append' : 'inline'} config=${writes.join(',') || 'skipped'}\n`)
-      const prompt = await promptBlocks(turnSpec, appendSystem, conn.process.initializeResult.agentCapabilities?.promptCapabilities?.image === true, () => stopped)
+      const fallback = hasThreadHistory ? undefined : turnSpec.promptWithoutThreadHistory?.()
+      const prompt = await promptBlocks(fallback === undefined ? turnSpec : { ...turnSpec, prompt: fallback }, appendSystem, conn.process.initializeResult.agentCapabilities?.promptCapabilities?.image === true, () => stopped)
       if (stopped) return result(false)
       if (!conn.process.alive) throw new Error(await conn.process.exited)
 
@@ -459,23 +477,54 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     log = (text) => onLog(sanitize(text, conn.home))
     try {
       if (stopped) return result(false)
-      const antigravity = conn.process.initializeResult.agentCapabilities?._meta?.antigravity as AcpFields | undefined
+      const capabilities = conn.process.initializeResult.agentCapabilities
+      const antigravity = capabilities?._meta?.antigravity as AcpFields | undefined
       const appendSystem = antigravity?.systemPrompt?.append === true
+      // ACP v1 requires stdio. Older agy builds omit mcpCapabilities entirely.
+      let threadHistory = capabilities?.mcpCapabilities?.stdio === false ? undefined : spec.threadHistory
       const params = {
         cwd: spec.cwd,
-        mcpServers: [],
         additionalDirectories: [],
         ...(appendSystem && spec.system ? { _meta: { antigravity: { systemPrompt: { append: spec.system } } } } : {})
       }
 
-      async function create(path: 'new' | 'resume-fallback-new', turnSpec = spec): Promise<RunResult> {
-        const response = await conn.process.rpc.request<AcpFields>('session/new', params, ACP_SETUP_TIMEOUT)
-        const id = response?.sessionId
-        if (typeof id !== 'string' || !id) throw new Error('ACP session/new returned no session ID')
+      async function setupSession(method: 'session/new' | 'session/resume', sessionId?: string): Promise<AcpFields> {
+        const setup = { ...params, ...(sessionId === undefined ? {} : { sessionId }) }
+        const mcpServers = threadHistory ? [{
+          name: 'agentswitch', command: threadHistory.command, args: threadHistory.args,
+          env: Object.entries(threadHistory.env).map(([name, value]) => ({ name, value }))
+        }] : []
+        try {
+          return await conn.process.rpc.request<AcpFields>(method, { ...setup, mcpServers }, ACP_SETUP_TIMEOUT)
+        } catch (error) {
+          // Retry only an explicit MCP setup rejection, before any user prompt went over the wire.
+          if (stopped || !conn.process.alive || !threadHistory || !(error instanceof JsonRpcError)
+            || !/\bmcp(?:Servers|_servers)?\b/i.test(`${error.message} ${JSON.stringify(error.data) ?? ''}`)) throw error
+          log(`[ACP history] ${method} rejected the history MCP: ${error.message}\n`)
+          threadHistory = undefined
+          return conn.process.rpc.request<AcpFields>(method, { ...setup, mcpServers: [] }, ACP_SETUP_TIMEOUT)
+        }
+      }
+
+      function activate(id: string, response: AcpFields, revision: number): void {
         const session = conn.session(id)
         session.active = true
         session.system = appendSystem ? spec.system : null
-        if (!session.revision) session.options = retainedOptions(response)
+        session.hasThreadHistory = !!threadHistory
+        session.threadHistoryPath = threadHistory?.args[1]
+        if (session.revision === revision) session.options = retainedOptions(response)
+      }
+
+      async function create(path: 'new' | 'resume-fallback-new'): Promise<RunResult> {
+        const response = await setupSession('session/new')
+        const id = response?.sessionId
+        if (typeof id !== 'string' || !id) throw new Error('ACP session/new returned no session ID')
+        if (path === 'resume-fallback-new' && id === spec.resume) throw new Error('ACP session/new reused the previous session ID')
+        activate(id, response, 0)
+        if (stopped) return result(false)
+        const turnSpec = path === 'resume-fallback-new' && spec.freshPrompt
+          ? { ...spec, prompt: spec.freshPrompt(!!threadHistory), promptWithoutThreadHistory: undefined }
+          : spec
         return conn.inOrder(id, () => runTurn(conn, id, appendSystem, path, turnSpec))
       }
 
@@ -485,23 +534,25 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
         if (stopped) return result(false)
         if (!conn.process.alive) throw new Error(await conn.process.exited)
         const session = conn.session(id)
+        if (session.hasThreadHistory && session.threadHistoryPath !== threadHistory?.args[1]) {
+          // A live MCP must never read a stale snapshot or one belonging to another thread.
+          log('[ACP history] cannot reuse the mounted snapshot; opening a new session\n')
+          return await create('resume-fallback-new')
+        }
         const path = session.active ? 'warm' : 'resume'
         if (!session.active) {
           const revision = session.revision
           try {
-            const response = await conn.process.rpc.request<AcpFields>('session/resume', { sessionId: id, ...params }, ACP_SETUP_TIMEOUT)
+            const response = await setupSession('session/resume', id)
             if (response?.sessionId && response.sessionId !== id) throw new Error('ACP resumed a different session ID')
-            session.active = true
-            session.system = appendSystem ? spec.system : null
-            if (session.revision === revision) session.options = retainedOptions(response)
+            activate(id, response, revision)
           } catch (e) {
             if (stopped) return result(false)
             if (!conn.process.alive) throw e
             log(`[ACP resume] ${errorText(e)}\n`)
             notice(t('main.acpResumeFailed'))
             if (stopped) return result(false)
-            const prompt = spec.freshPrompt?.() ?? spec.prompt
-            return await create('resume-fallback-new', { ...spec, prompt })
+            return await create('resume-fallback-new')
           }
         }
         // The native append stays as opened. Inline the instructions if the fixed text changed.

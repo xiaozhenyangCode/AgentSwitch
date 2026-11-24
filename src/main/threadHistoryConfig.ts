@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TranscriptEntry } from '@shared/transcript'
 import type { ProfileKind } from '@shared/types'
-import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { THREAD_HISTORY_FORMAT, threadTools } from './threadHistoryTools'
 
 export interface ThreadHistoryConfig {
@@ -12,7 +12,13 @@ export interface ThreadHistoryConfig {
   env: { ELECTRON_RUN_AS_NODE: '1' }
 }
 
-export const supportsThreadHistory = (kind: ProfileKind): boolean => getProviderCapabilities(kind).supportsMcpTempInjection
+function historyConfig(path: string, threadId: string, refresh = false): ThreadHistoryConfig {
+  return {
+    command: process.execPath,
+    args: [join(__dirname, 'threadHistoryServer.js'), path, threadId, ...(refresh ? ['--refresh'] : [])],
+    env: { ELECTRON_RUN_AS_NODE: '1' }
+  }
+}
 
 export function createThreadHistory(threadId: string, messages: TranscriptEntry[]) {
   const dir = mkdtempSync(join(tmpdir(), 'agentswitch-history-'))
@@ -25,12 +31,37 @@ export function createThreadHistory(threadId: string, messages: TranscriptEntry[
     dispose()
     throw error
   }
-  const config: ThreadHistoryConfig = {
-    command: process.execPath,
-    args: [join(__dirname, 'threadHistoryServer.js'), path, threadId],
-    env: { ELECTRON_RUN_AS_NODE: '1' }
+  return { config: historyConfig(path, threadId), dispose }
+}
+
+let persistentRoot: string | undefined
+const pathKey = (id: string): string => createHash('sha256').update(id, 'utf16le').digest('hex')
+
+/** A native ACP session keeps its MCP arguments across turns and process restarts. */
+export function upsertPersistentThreadHistory(accountId: string, threadId: string, messages: TranscriptEntry[]): ThreadHistoryConfig {
+  persistentRoot ??= mkdtempSync(join(tmpdir(), 'agentswitch-acp-history-'))
+  const dir = join(persistentRoot, pathKey(threadId), pathKey(accountId))
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const path = join(dir, 'history.json')
+  const temp = join(dir, `history-${randomUUID()}.tmp`)
+  try {
+    writeFileSync(temp, JSON.stringify({ format: THREAD_HISTORY_FORMAT, id: threadId, messages }), { flag: 'wx', mode: 0o600 })
+    renameSync(temp, path)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
   }
-  return { config, dispose }
+  return historyConfig(path, threadId, true)
+}
+
+export function removePersistentThreadHistory(threadId: string): void {
+  if (persistentRoot) rmSync(join(persistentRoot, pathKey(threadId)), { recursive: true, force: true })
+}
+
+export function cleanupAllPersistentThreadHistory(): void {
+  if (!persistentRoot) return
+  rmSync(persistentRoot, { recursive: true, force: true })
+  persistentRoot = undefined
 }
 
 export function threadHistoryArgs(kind: ProfileKind, config?: ThreadHistoryConfig, bypassPermissions = false): string[] {

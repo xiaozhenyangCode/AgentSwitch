@@ -9,6 +9,7 @@ interface InitializeResult {
   agentInfo?: { version?: string }
   agentCapabilities?: {
     promptCapabilities?: { image?: boolean }
+    mcpCapabilities?: { stdio?: boolean }
     _meta?: Record<string, unknown>
   }
 }

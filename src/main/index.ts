@@ -13,6 +13,7 @@ import { initI18n, t } from './i18n'
 import { buildMenu } from './menu'
 import { agyAcpPool } from './acp/pool'
 import { permissions } from './acp/permissions'
+import { cleanupAllPersistentThreadHistory } from './threadHistoryConfig'
 
 registerFileScheme()
 
@@ -227,7 +228,14 @@ app.whenReady().then(async () => {
     ipc.orchestrator.stopAll()
     permissions.cancelAll(() => true)
     ptys.killAll()
-    queueMicrotask(() => agyAcpPool.shutdownAll())
+    queueMicrotask(() => {
+      agyAcpPool.shutdownAll()
+      try {
+        cleanupAllPersistentThreadHistory()
+      } catch (error) {
+        console.warn('[thread history] cleanup failed', error)
+      }
+    })
   })
 
   createWindow()
