@@ -39,6 +39,8 @@ export interface RunSpec {
   /** Where generated files must end up (codex built-in image gen is copied here). */
   outDir: string
   threadHistory?: ThreadHistoryConfig
+  /** Opt-in lightweight probe: skip session persistence, user MCP servers, hooks, and tools. */
+  ephemeralProbe?: boolean
 }
 
 export interface RunResult {
@@ -187,6 +189,9 @@ export function claudeAdapter(s: RunSpec): Adapter {
   const permissionMode = s.cfg.autoApprove === 'full' ? 'bypassPermissions'
     : s.cfg.autoApprove === 'edits' ? 'acceptEdits' : claudeCliMode(s.cfg, s.cwd)
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', permissionMode]
+  if (s.ephemeralProbe) {
+    args.push('--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands', '--tools', '', '--settings', '{"disableAllHooks":true}')
+  }
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', spec.model)
   if (spec.effort) args.push('--effort', spec.effort)
@@ -979,7 +984,7 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
   const bin = kindBinaryPath(cfg.kind)
   const reasonix = cfg.kind === 'reasonix'
   const managedHome = reasonix ? reasonixManagedProfilePath(cfg) : null
-  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, !reasonix)
+  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, !reasonix && !spec.ephemeralProbe)
   const startedAt = Date.now()
   const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =

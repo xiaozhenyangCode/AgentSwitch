@@ -1,11 +1,11 @@
 import { app } from 'electron'
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/types'
 import { EFFORT_SUFFIX_RE, effortRank } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, getKindConfig, KIND_DEFAULTS, kindBinaryPath } from './profiles'
-import { realHome } from './shellEnv'
+import { buildSpawnSpec, expandHome, getConfig, getKindConfig, isLoggedIn, KIND_DEFAULTS, kindBinaryPath } from './profiles'
 import { t } from './i18n'
 import { displayModel } from './apiKey'
 import { readReasonixConfig, reasonixDefaultModel } from './reasonix'
@@ -13,8 +13,10 @@ import { readReasonixConfig, reasonixDefaultModel } from './reasonix'
 /**
  * Sub-model lists, per account (each account sees its own entitlements).
  *   claude: <CLAUDE_CONFIG_DIR>/cache/model-catalog/*-cc.json  (local, written by Claude Code)
- *   codex : $CODEX_HOME/models_cache.json, refreshed via `codex debug models`
- *   agy   : `agy models` (network; tab-separated "id\tname")
+ *   codex : $CODEX_HOME/models_cache.json, falling back to offline `codex debug models --bundled`
+ *           (manual refresh queries live `codex debug models` with plugins/hooks/apps/MCP disabled)
+ *   agy   : passive loads use cache/static only (`agy models` boots its full server and MCPs);
+ *           explicit user refresh runs `agy models` only when already logged in
  * Fallback chain: live source -> AgentSwitch cache (userData/models-cache.json) -> static list.
  * The UI always keeps a free-text "custom model" input as the last resort.
  */
@@ -82,16 +84,32 @@ function collapseEfforts(rows: ModelOption[]): ModelOption[] {
   return out
 }
 
-function run(cfg: ProfileConfig, args: string[]): Promise<string> {
+function run(cfg: ProfileConfig, args: string[], extraEnv?: Record<string, string>): Promise<string> {
   const bin = kindBinaryPath(cfg.kind)
   if (!bin) return Promise.reject(new Error(t('main.cliMissing')))
-  const { env } = buildSpawnSpec(cfg.id, 'run')
-  return new Promise((resolve, reject) =>
-    execFile(bin, args, { env, cwd: realHome, timeout: CMD_TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
+  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, false)
+  const spawnEnv = extraEnv ? { ...env, ...extraEnv } : env
+  return new Promise((resolve, reject) => {
+    const child = execFile(bin, args, { env: spawnEnv, cwd: tmpdir(), timeout: CMD_TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
       err ? reject(new Error((stderr || err.message).trim().split('\n').pop() || err.message)) : resolve(stdout)
     )
-  )
+    child.stdin?.end()
+  })
 }
+
+export const codexModelArgs = (refresh: boolean): string[] => [
+  'debug',
+  'models',
+  ...(refresh ? [] : ['--bundled']),
+  '--disable',
+  'plugins',
+  '--disable',
+  'hooks',
+  '--disable',
+  'apps',
+  '-c',
+  'mcp_servers={}'
+]
 
 // ---- claude ---------------------------------------------------------------------------
 
@@ -230,14 +248,17 @@ async function fetchLive(cfg: ProfileConfig, refresh: boolean): Promise<Omit<Mod
         const local = codexCacheFile(cfg)
         if (local) return { models: local, source: 'catalog', fetchedAt: Date.now() }
       }
-      const models = parseCodex(await run(cfg, ['debug', 'models']))
+      const models = parseCodex(await run(cfg, codexModelArgs(refresh)))
       if (!models.length) throw new Error(t('main.codexNoModels'))
       return { models, source: 'command', fetchedAt: Date.now() }
     }
     case 'reasonix':
       return reasonixCatalog(cfg)
     case 'gemini': {
-      const models = parseAgy(await run(cfg, ['models']))
+      if (!isLoggedIn(cfg.id)) throw new Error(t('main.agyNoModels'))
+      const models = parseAgy(
+        await run(cfg, ['models'], { AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '1', SSH_TTY: '1' })
+      )
       if (!models.length) throw new Error(t('main.agyNoModels'))
       return { models, source: 'command', fetchedAt: Date.now() }
     }
@@ -253,6 +274,13 @@ export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
   const cached = c[id]
   // claude's catalog is a cheap local read: always re-read so new models appear promptly
   const kind = cfg.kind
+  // Passive loads for agy never spawn `agy models` (it boots the full language server and MCPs).
+  if (!refresh && kind === 'gemini') {
+    if (cached && cached.source !== 'static') {
+      return Promise.resolve(Date.now() - cached.fetchedAt < TTL ? cached : { ...cached, source: 'cache' })
+    }
+    return Promise.resolve({ profileId: id, models: staticList(cfg), source: 'static', fetchedAt: Date.now() })
+  }
   if (!refresh && cached && kind !== 'claude' && Date.now() - cached.fetchedAt < TTL && cached.source !== 'static') return Promise.resolve(cached)
   const running = inflight.get(id)
   if (running) return running

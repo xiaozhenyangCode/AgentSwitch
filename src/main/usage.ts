@@ -1,6 +1,7 @@
 import { app, net } from 'electron'
 import { createHash } from 'node:crypto'
-import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
@@ -454,23 +455,73 @@ export function refreshCodexQuota(profileId: ProfileId): boolean {
 
 // ---- codex live quota (`codex app-server` JSON-RPC `account/rateLimits/read`, zero tokens) ----
 
+export const CODEX_APP_SERVER_PROBE_ARGS = [
+  'app-server',
+  '--disable',
+  'plugins',
+  '--disable',
+  'remote_plugin',
+  '--disable',
+  'hooks',
+  '--disable',
+  'apps',
+  '--disable',
+  'memories',
+  '--disable',
+  'goals',
+  '--disable',
+  'daemon_auto_start',
+  '--disable',
+  'shell_snapshot',
+  '--disable',
+  'in_app_updates',
+  '-c',
+  'mcp_servers={}',
+  '-c',
+  'check_for_update_on_startup=false'
+] as const
+
 const codexPending = new Map<ProfileId, Promise<boolean>>()
 
 export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
-  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
+  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId)) || !isLoggedIn(profileId)) return Promise.resolve(false)
   const running = codexPending.get(profileId)
   if (running) return running
   const p = new Promise<boolean>((resolve) => {
     const bin = kindBinaryPath('codex')
     if (!bin || !hasProfile(profileId)) return resolve(false)
-    let env: NodeJS.ProcessEnv
+    const authFile = join(expandHome(getConfig(profileId).configDir), 'auth.json')
+    if (!existsSync(authFile)) return resolve(false)
+    let probeHome: string | null = null
+    let cleaned = false
+    const cleanup = () => {
+      if (cleaned || !probeHome) return
+      cleaned = true
+      try {
+        rmSync(probeHome, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+    const startProc = () => {
+      const env = buildSpawnSpec(profileId, 'run', undefined, false).env
+      // Ephemeral CODEX_HOME with only auth.json linked keeps the user's real CODEX_HOME untouched
+      // (no SQLite writes/locks, no config.toml MCP servers, no hooks.json, no plugin sync).
+      probeHome = mkdtempSync(join(tmpdir(), 'agentswitch-codex-probe-'))
+      symlinkSync(authFile, join(probeHome, 'auth.json'))
+      return spawn(bin, [...CODEX_APP_SERVER_PROBE_ARGS], {
+        env: { ...env, CODEX_HOME: probeHome },
+        cwd: probeHome,
+        stdio: ['pipe', 'pipe', 'ignore']
+      })
+    }
+    let proc: ReturnType<typeof startProc>
     try {
-      env = buildSpawnSpec(profileId, 'run').env
+      proc = startProc()
     } catch {
+      cleanup()
       return resolve(false)
     }
-    const cwd = join(app.getPath('userData'), 'usage-probe')
-    mkdirSync(cwd, { recursive: true })
     let done = false
     const finish = (ok: boolean) => {
       if (done) return
@@ -483,10 +534,15 @@ export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
       }
       resolve(ok)
     }
-    const proc = spawn(bin, ['app-server'], { env, cwd, stdio: ['pipe', 'pipe', 'ignore'] })
     const timer = setTimeout(() => finish(false), 15_000)
-    proc.on('error', () => finish(false))
-    proc.on('exit', () => finish(false))
+    proc.on('error', () => {
+      finish(false)
+      cleanup()
+    })
+    proc.on('close', () => {
+      finish(false)
+      cleanup()
+    })
 
     const rl = createInterface({ input: proc.stdout })
     rl.on('line', (line) => {
@@ -635,7 +691,7 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
     if (!token) return false
     let env: NodeJS.ProcessEnv = process.env
     try {
-      env = buildSpawnSpec(profileId, 'run').env
+      env = buildSpawnSpec(profileId, 'run', undefined, false).env
     } catch {
       /* fallback to process.env */
     }
@@ -676,11 +732,14 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
 
 // ---- agy quota (`agy -p "/usage" --output-format json`: local command, no model call) -----------
 
+export const AGY_AUTH_PROMPT_RE = /Authentication required|Please visit the URL to log in|Waiting for authentication/i
+
 const agyPending = new Map<ProfileId, Promise<boolean>>()
+const AGY_QUOTA_MAX_BYTES = 4 * 1024 * 1024
 
 /** false: no data (API-key login exits 2, not logged in, older agy, parse failure). */
 export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
-  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
+  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId)) || !isLoggedIn(profileId)) return Promise.resolve(false)
   const running = agyPending.get(profileId)
   if (running) return running
   const p = new Promise<boolean>((resolve) => {
@@ -688,28 +747,68 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
     if (!bin || !hasProfile(profileId)) return resolve(false)
     let env: NodeJS.ProcessEnv
     try {
-      env = buildSpawnSpec(profileId, 'run').env
+      env = buildSpawnSpec(profileId, 'run', undefined, false).env
     } catch {
       return resolve(false)
     }
-    const cwd = join(app.getPath('userData'), 'usage-probe')
-    mkdirSync(cwd, { recursive: true })
-    execFile(bin, ['-p', '/usage', '--output-format', 'json'], { env, cwd, timeout: 45_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err && (err as { code?: unknown }).code === 2) {
+    const proc = spawn(bin, ['-p', '/usage', '--output-format', 'json', '--log-file', '/dev/null'], {
+      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '1', SSH_TTY: '1' },
+      cwd: tmpdir(),
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      try {
+        proc.kill()
+      } catch {
+        /* already exited */
+      }
+      resolve(ok)
+    }
+    const timer = setTimeout(() => {
+      setQuotaError(profileId, 'agy /usage timed out')
+      finish(false)
+    }, 30_000)
+
+    proc.stdout?.setEncoding('utf8')
+    proc.stderr?.setEncoding('utf8')
+    proc.stdout?.on('data', (chunk: string) => {
+      if (stdout.length < AGY_QUOTA_MAX_BYTES) stdout += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stdout.length)
+    })
+    proc.stderr?.on('data', (chunk: string) => {
+      if (stderr.length < AGY_QUOTA_MAX_BYTES) stderr += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stderr.length)
+      if (AGY_AUTH_PROMPT_RE.test(stderr)) {
+        setQuotaError(profileId, 'Authentication required')
+        finish(false)
+      }
+    })
+    proc.on('error', (err) => {
+      setQuotaError(profileId, err.message)
+      finish(false)
+    })
+    proc.on('close', (code) => {
+      if (done) return
+      clearTimeout(timer)
+      if (code === 2) {
         // GEMINI_API_KEY: no account quota exists; keep local stats only
         setQuotaError(profileId, null)
         if (quotas[profileId]?.source === 'agy-usage') {
           delete quotas[profileId]
           changed()
         }
-        return resolve(false)
+        return finish(false)
       }
       try {
-        const jsonLine = String(stdout).trim().split('\n').filter((l) => l.startsWith('{')).pop()
+        const jsonLine = stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop()
         const d = jsonLine ? JSON.parse(jsonLine) : null
         if (d?.error) {
           setQuotaError(profileId, String(d.error))
-          return resolve(false)
+          return finish(false)
         }
         const groups: QuotaGroup[] = (d?.command?.data?.groups ?? []).map((g: any): QuotaGroup => {
           const buckets: any[] = Array.isArray(g.buckets) ? g.buckets : []
@@ -730,18 +829,18 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
           }
         })
         if (!groups.length) {
-          const fallback = String(stderr || '').trim().split('\n').find((l) => l.trim()) || (err ? err.message : null)
+          const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (code ? `exit code ${code}` : null)
           if (fallback) setQuotaError(profileId, fallback)
-          return resolve(false)
+          return finish(false)
         }
         const main = groups.find((g) => g.key === 'gemini') ?? groups[0]
         const limited = [main.fiveHour, main.sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
         recordQuota(profileId, { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan: null, groups }, 'agy-usage')
-        resolve(true)
+        finish(true)
       } catch (e) {
-        const fallback = String(stderr || '').trim().split('\n').find((l) => l.trim()) || (err ? err.message : e instanceof Error ? e.message : String(e))
+        const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (e instanceof Error ? e.message : String(e))
         if (fallback) setQuotaError(profileId, fallback)
-        resolve(false)
+        finish(false)
       }
     })
   }).finally(() => agyPending.delete(profileId))
@@ -1031,11 +1130,10 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
       .map(async (c) => {
         const ok = await refreshClaudeOauth(c.id)
         if (ok || !probe) return
-        const dir = join(app.getPath('userData'), 'usage-probe')
-        mkdirSync(dir, { recursive: true })
+        const dir = tmpdir()
         let usage: Usage | null = null
         const h = runAgent(
-          { cfg: { ...c, autoApprove: 'edits' }, model: 'haiku', prompt: 'Reply with exactly: OK', system: null, cwd: dir, images: [], resume: null, outDir: dir },
+          { cfg: { ...c, autoApprove: 'edits' }, model: 'haiku', prompt: 'Reply with exactly: OK', system: null, cwd: dir, images: [], resume: null, outDir: dir, ephemeralProbe: true },
           (e) => {
             if (e.t === 'quota') recordQuota(c.id, e.quota, 'claude-stream')
             if (e.t === 'usage') usage = { ...(usage ?? {}), ...e.usage }
@@ -1053,14 +1151,14 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
   return snapshot()
 }
 
-/** Startup: backfill in the background, after the window is up. */
+/** Startup: passive quota checks + backfill in the background, after the window is up. */
 export function startUsage(): void {
   for (const c of listConfigs()) if (c.kind === 'codex') refreshCodexQuota(c.id)
   setTimeout(() => {
     for (const c of listConfigs()) {
-      if (c.kind === 'reasonix' || !isLoggedIn(c.id)) continue
-      if (c.kind === 'gemini') void refreshAgyQuota(c.id)
-      else if (c.kind === 'codex') void refreshCodexLive(c.id)
+      if (!hasSubscriptionQuota(c) || !isLoggedIn(c.id)) continue
+      // Skip `agy -p /usage` on startup: agy boots its full language server and user MCPs.
+      if (c.kind === 'codex') void refreshCodexLive(c.id)
       else if (c.kind === 'claude') void refreshClaudeOauth(c.id)
     }
   }, 4000)

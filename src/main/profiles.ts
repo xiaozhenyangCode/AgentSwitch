@@ -681,15 +681,17 @@ export function loginSignature(id: ProfileId): string {
 
 /** `<bin> --version` with the base env; null if missing/failed. */
 export function cliVersion(kind: ProfileKind): Promise<string | null> {
-  const env = getBaseEnv()
+  const base = getBaseEnv()
+  const env = kind === 'gemini' ? { ...base, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } : base
   const bin = kindBinaryPath(kind)
   if (!bin) return Promise.resolve(null)
   return new Promise((res) => {
-    execFile(bin, ['--version'], { env, timeout: 8000 }, (err, stdout) => {
+    const child = execFile(bin, ['--version'], { env, timeout: 8000 }, (err, stdout) => {
       if (err) return res(null)
       const line = stdout.trim().split('\n')[0] ?? ''
       res(line.match(/\d+\.\d+\.\d+[\w.-]*/)?.[0] ?? (line.slice(0, 40) || null))
     })
+    child.stdin?.end()
   })
 }
 

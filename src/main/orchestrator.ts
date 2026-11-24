@@ -757,7 +757,7 @@ export class Orchestrator {
     try {
       if (stepUsage || r.ok) recordRun(cfg.id, r.model || step.model || cfg.defaultModel || null, stepUsage)
       if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
-      if (cfg.kind === 'gemini') void refreshAgyQuota(cfg.id)
+      if (cfg.kind === 'gemini' && r.ok) void refreshAgyQuota(cfg.id)
     } catch (e) {
       this.log(cfg.id, `[usage] ${String(e)}\n`)
     }
