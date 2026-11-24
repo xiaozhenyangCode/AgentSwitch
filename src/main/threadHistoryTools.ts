@@ -1,5 +1,5 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync } from 'node:fs'
-import { isTranscriptEntry, transcriptEntry, type TranscriptEntry } from '@shared/transcript'
+import { isTranscriptEntry, toTranscript, type TranscriptEntry } from '@shared/transcript'
 import { parseThread } from './chatStore'
 
 const PAGE_MESSAGES = 40
@@ -57,7 +57,7 @@ export function createThreadHistoryReader(path: string, threadId: string): () =>
         if (!Array.isArray(data.messages) || !data.messages.every(isTranscriptEntry)) throw new Error('Invalid history')
         history = data.messages
       } else {
-        history = parseThread(data).messages.map(transcriptEntry)
+        history = toTranscript(parseThread(data).messages)
       }
       cached = { signature, history }
       return history

@@ -121,7 +121,17 @@ export interface AssistantMessage {
   endedAt: number | null
 }
 
-export type Message = UserMessage | AssistantMessage
+export interface SystemMessage {
+  role: 'system'
+  id: string
+  turnId: string
+  kind: 'compact'
+  /** Accounts whose native CLI sessions were unbound by this compaction (omitted = all). */
+  profileIds?: ProfileId[]
+  createdAt: number
+}
+
+export type Message = UserMessage | AssistantMessage | SystemMessage
 
 export interface Thread {
   id: string

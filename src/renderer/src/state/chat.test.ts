@@ -26,6 +26,7 @@ const api = {
   stop: vi.fn(),
   deleteThread: vi.fn(),
   save: vi.fn(),
+  compactSessions: vi.fn(),
   rewindPlan: vi.fn(),
   rewind: vi.fn()
 }
@@ -300,5 +301,39 @@ describe('chat rewind, archive, and quote', () => {
     expect(chat.getThread(fixture.id)?.archived).toBe(true)
     chat.unarchiveThread(fixture.id)
     expect(chat.getThread(fixture.id)?.archived).toBe(false)
+  })
+
+  it('inserts a system divider on compactContext success while preserving history and omitting it from transcript and markdown', async () => {
+    await open()
+    await send('first question')
+    const turnId = api.send.mock.lastCall![0].turnId
+    emit({ kind: 'step-add', threadId: fixture.id, turnId, stepId: 's1', profileId: 'test', name: 'Test', profileKind: 'claude', model: null, dispatchedBy: null, review: false, retry: 0, after: null })
+    emit({ kind: 'step-start', threadId: fixture.id, turnId, stepId: 's1' })
+    emit({ kind: 'agent', threadId: fixture.id, turnId, stepId: 's1', event: { t: 'text', delta: 'first answer' } })
+    emit({ kind: 'step-end', threadId: fixture.id, turnId, stepId: 's1', status: 'done' })
+    finish()
+
+    // No bound session -> returns false and does not insert a divider
+    api.compactSessions.mockResolvedValueOnce(false)
+    await expect(chat.compactContext(fixture.id, ['test'], 's1', 1)).resolves.toBe(false)
+    expect(chat.getThread(fixture.id)?.messages.some((m) => m.role === 'system')).toBe(false)
+
+    // Bound session -> returns true, keeps all prior messages, appends system compact divider
+    api.compactSessions.mockResolvedValueOnce(true)
+    await expect(chat.compactContext(fixture.id, ['test'], 's1', 1)).resolves.toBe(true)
+    const thread = chat.getThread(fixture.id)!
+    expect(thread.messages).toHaveLength(3)
+    expect(thread.messages[2]).toMatchObject({ role: 'system', kind: 'compact', profileIds: ['test'] })
+    expect(api.compactSessions).toHaveBeenLastCalledWith(fixture.id, ['test'])
+
+    // Markdown export omits system divider while keeping user + assistant content
+    const md = chat.chatMarkdown(thread)
+    expect(md).toContain('first question')
+    expect(md).toContain('first answer')
+
+    // Next turn transcript excludes the UI-only system divider
+    await send('follow up')
+    const sentTranscript = api.send.mock.lastCall![0].transcript
+    expect(sentTranscript.map((e) => e.text)).toEqual(['first question', 'first answer'])
   })
 })

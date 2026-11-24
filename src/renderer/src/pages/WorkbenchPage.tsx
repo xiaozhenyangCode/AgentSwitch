@@ -24,9 +24,10 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
+import { COMPACT_COMMAND_INSERT, computeContextState, isCompactCommand, makeCompactSlashItem, mergeSlashCommands } from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
-import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCopy, IconEdit, IconFile, IconFolder, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
@@ -61,6 +62,7 @@ import {
   type AssistantMessage,
   type Attachment,
   type MessageQuote,
+  type SystemMessage,
   type Thread,
   type UserMessage,
   NEW_DRAFT,
@@ -315,25 +317,11 @@ export function WorkbenchPage() {
   const CTX_WARN_RATIO = 0.7
   const CTX_REDISPLAY_TURNS = 10
   const contextStats = useMemo(() => {
-    let userTurns = 0
-    let lastTokens = 0
-    let model: string | null = null
-    let reported = 0
-    let lastId = ''
-    for (let i = thread?.carriedMessageCount ?? 0; i < messages.length; i++) {
-      const m = messages[i]
-      if (m.role === 'user' && m.kind !== 'handoff') userTurns++
-      if (m.role === 'assistant' && m.agent.profileId === driverP?.id && m.usage?.context) {
-        lastTokens = m.usage.context
-        lastId = m.id
-        model = m.actualModel ?? m.agent.model
-        reported = m.usage.contextWindow ?? 0
-      }
-    }
-    // the window the CLI reported (codex) wins; otherwise it follows from the model
-    const window = reported || (driverP ? contextWindow(driverP.kind, driverModel ?? model) : 0)
-    return { userTurns, lastTokens, window, lastId }
-  }, [messages, driverP, driverModel, thread?.carriedMessageCount])
+    const state = computeContextState(messages, driverP?.id, thread?.carriedMessageCount ?? 0, thread?.imported, thread?.preview)
+    // the window the CLI reported (codex, agy ACP) wins; otherwise it follows from the model
+    const window = state.reportedWindow || (driverP ? contextWindow(driverP.kind, driverModel ?? state.model) : 0)
+    return { ...state, window }
+  }, [messages, driverP, driverModel, thread?.carriedMessageCount, thread?.imported, thread?.preview])
   const contextLong =
     !!thread &&
     !!driverP &&
@@ -360,12 +348,28 @@ export function WorkbenchPage() {
     contextStats.lastTokens >= CTX_COST_TOKENS &&
     contextStats.lastId !== costDismissed?.messageId &&
     (!costDismissed || !!costDismissed.compacted || contextStats.userTurns >= costDismissed.userTurns + CTX_COST_REDISPLAY_TURNS)
-  const startCompact = () => {
-    if (!thread || !driverP) return
-    void compactContext(thread.id, [driverP.id], contextStats.lastId, contextStats.userTurns).then((ok) =>
+  const [compacting, setCompacting] = useState(false)
+  const canCompact = !!thread && !!driverP && !isThreadBusy(thread) && !thread.pause && contextStats.hasActiveSession
+  const startCompact = useCallback(async () => {
+    if (!driverP) return
+    if (thread && (isThreadBusy(thread) || !!thread.pause)) {
+      toast({ kind: 'warn', title: t('wb.compactBusy') })
+      return
+    }
+    if (!thread || !contextStats.hasActiveSession) {
+      toast({ kind: 'warn', title: t('wb.ctxCompactNone') })
+      return
+    }
+    if (compacting) return
+    setCompacting(true)
+    try {
+      stick.current = true
+      const ok = await compactContext(thread.id, [driverP.id], contextStats.lastId, contextStats.userTurns)
       toast(ok ? { kind: 'success', title: t('wb.ctxCompactDone', { name: driverP.name }) } : { kind: 'warn', title: t('wb.ctxCompactNone') })
-    )
-  }
+    } finally {
+      setCompacting(false)
+    }
+  }, [thread, driverP, contextStats.hasActiveSession, contextStats.lastId, contextStats.userTurns, compacting, toast])
   const ctxHandoffSrc = srcP && isReady(srcP) ? srcP : driverP && isReady(driverP) ? driverP : null
   const startHandoffToNew = () => {
     if (!thread || !driverP || !ctxHandoffSrc) return
@@ -648,6 +652,7 @@ export function WorkbenchPage() {
                     const editableIds = new Set(thread?.messages.map((x) => x.id) ?? [])
                     const rewindBlocked = !thread || isThreadBusy(thread) || !!thread.pause || (thread.queuedMessages?.length ?? 0) > 0
                     return messages.map((m) => {
+                      if (m.role === 'system') return <SystemDivider key={m.id} msg={m} />
                       if (m.role === 'user') {
                         const canRewind = !!thread && editableIds.has(m.id) && m.kind !== 'handoff'
                         return (
@@ -712,6 +717,11 @@ export function WorkbenchPage() {
           onHeight={setComposerH}
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
+          canCompact={canCompact}
+          compacting={compacting}
+          contextTokens={contextStats.hasActiveSession ? contextStats.lastTokens : 0}
+          contextWindow={contextStats.window}
+          onCompact={startCompact}
           queue={thread?.queuedMessages?.length ? <QueuedMessages key={thread.id} thread={thread} confirmBusy={confirmExternalBusy} /> : null}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
           history={inputHistory}
@@ -1127,6 +1137,22 @@ function CopyText({ text }: { text: string }) {
       {copied ? <IconCheck size={12} className="text-ok" /> : <IconCopy size={12} />}
       {copied ? t('common.copied') : t('common.copy')}
     </button>
+  )
+}
+
+function SystemDivider({ msg }: { msg: SystemMessage }) {
+  return (
+    <div className="flex items-center gap-3 py-1 select-none" role="status">
+      <div className="h-px flex-1 bg-hairline" />
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-black/[0.035] px-3 py-1 text-[11.5px] text-ink-3 shadow-[inset_0_0_0_1px_var(--ring)]"
+        title={fullTime(msg.createdAt)}
+      >
+        <IconCompact size={12} className="shrink-0 text-accent" />
+        <span>{t('wb.ctxCompactDivider')}</span>
+      </span>
+      <div className="h-px flex-1 bg-hairline" />
+    </div>
   )
 }
 
@@ -1689,6 +1715,11 @@ function Composer({
   onHeight,
   onSend,
   onStop,
+  canCompact,
+  compacting,
+  contextTokens,
+  contextWindow,
+  onCompact,
   queue,
   suggestion,
   history,
@@ -1708,6 +1739,11 @@ function Composer({
   /** Resolves false when the user declined to send (the draft comes back). */
   onSend: (text: string, attachments: Attachment[], quote: MessageQuote | null) => Promise<boolean> | void
   onStop: () => void
+  canCompact: boolean
+  compacting: boolean
+  contextTokens: number
+  contextWindow: number
+  onCompact: () => Promise<void> | void
   queue?: ReactNode
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
@@ -1731,17 +1767,19 @@ function Composer({
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
-  /** / menu: skills and custom commands of the lead account in this project. */
+  /** / menu: AgentSwitch built-in commands + skills/commands of the lead account in this project. */
   const [slash, setSlash] = useState<{ start: number; query: string; index: number } | null>(null)
-  const skills = useSkills(driver?.id ?? null, projectDir, !!slash)
-  const skillItems = skills.data?.items ?? []
+  const cliSkillsEnabled = !driver || !!getProviderCapabilities(driver.kind).skillTriggerPrefix
+  const skills = useSkills(cliSkillsEnabled ? (driver?.id ?? null) : null, projectDir, !!slash && cliSkillsEnabled)
+  const skillItems = cliSkillsEnabled ? (skills.data?.items ?? []) : []
+  const compactDesc = t('wb.compactSlashDesc')
+  const builtinSlash = useMemo(() => [makeCompactSlashItem(compactDesc)], [compactDesc])
   const pins = usePins(driver?.kind)
-  // pinned skills lead the / menu while nothing is typed; with a query they win ties only
+  // pinned skills lead the / menu while nothing is typed, followed by built-in /compact
   const slashMatches = useMemo(() => {
     if (!slash) return []
-    const found = filterSkills(skillItems, slash.query)
-    return slash.query ? found : pinnedFirst(found, pins)
-  }, [slash, skillItems, pins])
+    return mergeSlashCommands(skillItems, builtinSlash, slash.query, pins, filterSkills, pinnedFirst)
+  }, [slash, skillItems, builtinSlash, pins])
   /** Extensions panel (skills, agents, plugins, MCP, rules & hooks), read-only. */
   const [extOpen, setExtOpen] = useState(false)
   const overview = useOverview(driver?.id ?? null, projectDir, true)
@@ -1898,11 +1936,10 @@ function Composer({
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
       setMention(null)
-      // `/` (or full-width `／`) at the start of a line or after a space opens the skill menu when skills are supported
-      if (driver && !getProviderCapabilities(driver.kind).skillTriggerPrefix) return setSlash(null)
+      // `/` (or full-width `／`) opens the command/skill menu (always includes built-in `/compact`)
       const sl = /(?:^|\s)[/／]([^\s/／]{0,48})$/.exec(before)
       if (!sl) return setSlash(null)
-      // no account at all: the menu still opens, showing its empty state
+      // no account at all: the menu still opens, showing built-in commands
       const at = caret - sl[1].length - 1
       return setSlash((cur) => (cur && cur.start === at && cur.query === sl[1] ? cur : { start: at, query: sl[1], index: 0 }))
     }
@@ -1933,10 +1970,28 @@ function Composer({
     })
   }
 
-  /** Replaces `/query` with the skill's trigger (`/name` or `$name`) followed by a space. */
-  const insertSkill = (it: SkillItem) => {
+  /** Replaces `/query` with the skill's trigger (`/name` or `$name`), or runs built-in `/compact` immediately. */
+  const insertSkill = (it: SkillItem, trigger: 'click' | 'enter' | 'tab' = 'click') => {
     if (!slash) return
     const caret = ta.current?.selectionStart ?? text.length
+    const isStandalone = !text.slice(0, slash.start).trim() && !text.slice(caret).trim()
+    if (it.source === 'builtin' && it.insert === COMPACT_COMMAND_INSERT && isStandalone) {
+      setSlash(null)
+      if (trigger === 'tab') {
+        setText(COMPACT_COMMAND_INSERT)
+        requestAnimationFrame(() => {
+          const el = ta.current
+          if (!el) return
+          el.focus()
+          el.setSelectionRange(COMPACT_COMMAND_INSERT.length, COMPACT_COMMAND_INSERT.length)
+        })
+        return
+      }
+      setText('')
+      if (!atts.length && !quote) clearComposerDraft(draftKey)
+      void onCompact()
+      return
+    }
     const token = `${it.insert} `
     setText(text.slice(0, slash.start) + token + text.slice(caret))
     setSlash(null)
@@ -1976,6 +2031,13 @@ function Composer({
 
   const canSend = !!driver && (text.trim().length > 0 || atts.length > 0)
   const doSend = () => {
+    if (isCompactCommand(text)) {
+      setSlash(null)
+      setText('')
+      if (!atts.length && !quote) clearComposerDraft(draftKey)
+      void onCompact()
+      return
+    }
     if (!driver) return toast({ kind: 'warn', title: t('wb.noModel'), action: { label: t('wb.addAccount'), run: () => navigate('engines') } })
     if (!text.trim() && !atts.length) return
     if (!isReady(driver))
@@ -2049,7 +2111,7 @@ function Composer({
       }
       if (n && (e.key === 'Enter' || e.key === 'Tab')) {
         e.preventDefault()
-        return insertSkill(slashMatches[Math.min(slash.index, n - 1)])
+        return insertSkill(slashMatches[Math.min(slash.index, n - 1)], e.key === 'Tab' ? 'tab' : 'enter')
       }
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -2127,11 +2189,11 @@ function Composer({
             <SlashMenu
               account={driver}
               items={slashMatches}
-              total={skillItems.length}
+              total={skillItems.length + builtinSlash.length}
               loading={skills.loading}
               active={Math.min(slash.index, Math.max(0, slashMatches.length - 1))}
               pinned={pins}
-              onPick={insertSkill}
+              onPick={(it) => insertSkill(it, 'click')}
               onHover={(i) => setSlash((x) => x && { ...x, index: i })}
             />
           </div>
@@ -2337,6 +2399,25 @@ function Composer({
               }}
             />
             <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => void onCompact()}
+              disabled={!canCompact || compacting}
+              className="flex h-7 items-center gap-1 rounded-full bg-black/[0.045] px-2.5 text-[12px] font-medium text-ink-2 transition-colors enabled:hover:bg-black/[0.07] enabled:hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+              title={
+                busy
+                  ? t('wb.compactBusy')
+                  : canCompact
+                    ? `${t('wb.ctxCompactHint')}${contextTokens > 0 && contextWindow > 0 ? `\n${fmtTokens(contextTokens)} / ${fmtTokens(contextWindow)} (${Math.round((contextTokens / contextWindow) * 100)}%)` : ''}`
+                    : t('wb.compactBtnEmpty')
+              }
+            >
+              <IconCompact size={13} className="shrink-0 text-ink-3" />
+              <span>{t('wb.compactBtn')}</span>
+              {canCompact && contextTokens > 0 && (
+                <span className="text-ink-3 tabular-nums">· {fmtTokens(contextTokens)}</span>
+              )}
+            </button>
             {busy && (
               <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-canvas transition-transform active:scale-95" title={t('common.stop')}>
                 <IconStop size={14} />

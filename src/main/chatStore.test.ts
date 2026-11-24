@@ -204,4 +204,17 @@ describe('ChatStore', () => {
     })
     expect(statSync(join(chats, 'copied.json')).mtimeMs).toBe(1000)
   })
+
+  it('persists and reloads system compact divider messages cleanly', () => {
+    const withCompact: Thread = {
+      ...thread('compacted'),
+      messages: [
+        { role: 'system', id: 'sys-1', turnId: '', kind: 'compact', profileIds: ['claude-1'], createdAt: 1234 }
+      ]
+    }
+    const { session } = store.open(null, false)
+    expect(store.save(session, 1, { upserts: [withCompact], deletes: [] })).toBe(true)
+    const reloaded = new ChatStore(userData).open(null, false)
+    expect(reloaded.threads).toEqual([withCompact])
+  })
 })

@@ -295,3 +295,10 @@ export const IconEdit = (p: P) => (
     <path d="m13.5 8.5 3 3" />
   </svg>
 )
+export const IconCompact = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 12h16" />
+    <path d="m9 4 3 3 3-3M12 7V3" />
+    <path d="m9 20 3-3 3 3M12 17v4" />
+  </svg>
+)

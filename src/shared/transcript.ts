@@ -1,4 +1,4 @@
-import type { Message } from './chat'
+import type { AssistantMessage, Message, UserMessage } from './chat'
 import { splitSpec } from './modelSpec'
 import type { ProfileId, ProfileKind } from './types'
 
@@ -17,7 +17,7 @@ export interface TranscriptEntry {
   replied?: boolean
 }
 
-export function transcriptEntry(message: Message): TranscriptEntry {
+export function transcriptEntry(message: UserMessage | AssistantMessage): TranscriptEntry {
   const { id, turnId } = message
   if (message.role === 'user') {
     const quoteLine = message.quote?.excerpt ? `引用（${message.quote.author}）：${message.quote.excerpt}` : ''
@@ -39,6 +39,13 @@ export function transcriptEntry(message: Message): TranscriptEntry {
     details: details || undefined, model: message.agent.model, actualModel: message.actualModel,
     contextWindow: message.usage?.contextWindow, replied: message.status === 'done' || !!message.content.trim()
   }
+}
+
+/** Converts chat messages to model-visible transcript entries (skips UI-only system dividers). */
+export function toTranscript(messages: Message[]): TranscriptEntry[] {
+  const out: TranscriptEntry[] = []
+  for (const m of messages) if (m.role !== 'system') out.push(transcriptEntry(m))
+  return out
 }
 
 /** Validate history received over IPC and from the per-run snapshot. */

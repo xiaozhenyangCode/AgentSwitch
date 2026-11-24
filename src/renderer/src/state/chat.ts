@@ -2,12 +2,12 @@ import { useSyncExternalStore } from 'react'
 import { KINDS } from '@shared/types'
 import type { ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
 import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
-import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, MessageQuote, QueuedMessage, Thinking, Thread, UserMessage } from '@shared/chat'
+import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, MessageQuote, QueuedMessage, SystemMessage, Thinking, Thread, UserMessage } from '@shared/chat'
 import type { CheckpointChoice, RewindExecuteResult } from '@shared/checkpoints'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { cleanTitle, readMarks, stripMarks } from '@shared/markers'
-import { transcriptEntry } from '@shared/transcript'
+import { toTranscript } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
 import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQueue'
 
@@ -17,7 +17,7 @@ import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQ
  * (src/main/orchestrator.ts) as ChatEvents.
  */
 
-export type { Activity, AgentRef, AssistantMessage, Attachment, Message, MessageQuote, Thinking, Thread, UserMessage } from '@shared/chat'
+export type { Activity, AgentRef, AssistantMessage, Attachment, Message, MessageQuote, SystemMessage, Thinking, Thread, UserMessage } from '@shared/chat'
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
@@ -156,7 +156,7 @@ export function useChat(): ChatState {
 export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
 export const getThread = (id: string): Thread | null => state.threads.find((t) => t.id === id) ?? null
 export const isThreadBusy = (t: Thread | null) => !!t?.activeTurn
-const msgAt = (m: Message): number => (m.role === 'user' ? m.createdAt : (m.startedAt ?? 0))
+const msgAt = (m: Message): number => (m.role === 'assistant' ? (m.startedAt ?? 0) : m.createdAt)
 
 /**
  * History (imported) + AgentSwitch messages, oldest first. Turns someone continued in the CLI
@@ -263,6 +263,7 @@ export function unarchiveThread(id: string): void {
 export function chatMarkdown(t: Thread): string {
   const out = [`# ${t.title}`]
   for (const m of threadMessages(t)) {
+    if (m.role === 'system') continue
     if (m.role === 'user') {
       if (m.kind === 'handoff') continue
       const quoteLines = m.quote?.excerpt
@@ -495,7 +496,7 @@ function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
   const wantTitle = firstTurn && mode === 'chat' && !thread.titleLocked && !thread.imported
-  const transcript = threadMessages(thread).map(transcriptEntry)
+  const transcript = toTranscript(threadMessages(thread))
   // first message in a history preview: it becomes a real chat continuing that CLI session
   const promote = thread.preview && thread.imported
   const ready = promote ? window.agentswitch.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
@@ -890,6 +891,7 @@ export async function exportHandoff(threadId: string, to: AgentRef, toNewThread 
   if (t.workdir || t.projectDir) lines.push(`项目目录：${t.workdir ?? t.projectDir}`, '')
   lines.push('## 最近对话', '')
   for (const m of threadMessages(t).slice(-30)) {
+    if (m.role === 'system') continue
     if (m.role === 'user') {
       if (m.kind === 'handoff') continue
       lines.push(`### 用户`, m.text, '')
@@ -924,13 +926,32 @@ export function dismissContextCost(threadId: string, messageId: string, userTurn
 }
 
 /**
- * 「新开会话并交接核心上下文」: unbinds the accounts' CLI sessions of the thread (the chat stays as
- * it is); their next turn starts a fresh session with the budgeted handoff. false: nothing was bound
- * or the thread is busy.
+ * 「压缩上下文 / 新开会话并交接核心上下文」: unbinds the accounts' CLI sessions of the thread (the
+ * chat history stays visible) and appends a lightweight system divider so the next turn starts a
+ * fresh session with the P0-3 budgeted handoff (16k + read_thread). false: nothing was bound or
+ * the thread is busy.
  */
 export async function compactContext(threadId: string, profileIds: string[], messageId: string, userTurns: number): Promise<boolean> {
   const ok = await window.agentswitch.chat.compactSessions(threadId, profileIds)
-  patchThread(threadId, (t) => ({ ...t, contextCostDismissed: { messageId, userTurns, compacted: true } }))
+  patchThread(threadId, (t) => {
+    if (!ok) return messageId ? { ...t, contextCostDismissed: { messageId, userTurns, compacted: true } } : t
+    const divider: SystemMessage = {
+      role: 'system',
+      id: uid(),
+      turnId: '',
+      kind: 'compact',
+      profileIds: [...profileIds],
+      createdAt: now()
+    }
+    return {
+      ...t,
+      messages: [...t.messages, divider],
+      ...(messageId ? { contextCostDismissed: { messageId, userTurns, compacted: true } } : {}),
+      contextWarnDismissedAt: userTurns,
+      updatedAt: now()
+    }
+  })
+  if (ok) persist()
   return ok
 }
 
@@ -1267,7 +1288,8 @@ export function syncExternal(threadId: string, checkUnloaded = false): Promise<E
     syncBase.set(threadId, { ...base, stat })
     const next = fromHistory({ messages: foreignTurns(cur, h.messages) }, base.agent)
     const prev = cur.history
-    const same = next.length === prev.length && next.every((m, i) => m.id === prev[i].id && (m.role === 'user' ? m.text : m.content) === (prev[i].role === 'user' ? (prev[i] as UserMessage).text : (prev[i] as AssistantMessage).content))
+    const bodyOf = (m: Message) => (m.role === 'user' ? m.text : m.role === 'assistant' ? m.content : '')
+    const same = next.length === prev.length && next.every((m, i) => m.id === prev[i].id && bodyOf(m) === bodyOf(prev[i]))
     if (same) return { ...none, writing }
     const known = new Set(prev.map((m) => m.id))
     const added = next.filter((m) => !known.has(m.id)).length

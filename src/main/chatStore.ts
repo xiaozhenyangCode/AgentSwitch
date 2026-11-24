@@ -55,6 +55,16 @@ function parseMessage(message: Message | null): Message {
       permissions: Array.isArray(message.permissions) ? message.permissions.filter(Boolean) : undefined
     }
   }
+  if (message?.role === 'system' && message.kind === 'compact' && typeof message.id === 'string') {
+    return {
+      role: 'system',
+      id: message.id,
+      turnId: typeof message.turnId === 'string' ? message.turnId : '',
+      kind: 'compact',
+      ...(Array.isArray(message.profileIds) ? { profileIds: message.profileIds.filter((id): id is string => typeof id === 'string') } : {}),
+      createdAt: Number.isFinite(message.createdAt) ? message.createdAt : 0
+    }
+  }
   throw new Error('Invalid chat message')
 }
 
