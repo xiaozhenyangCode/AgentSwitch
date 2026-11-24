@@ -423,6 +423,7 @@ export const zhTW: Dict = {
   'chat.closeTitle': '對話內容尚未儲存',
   'chat.closeUnsaved': '部分對話變更尚未儲存。現在離開會遺失這些變更。',
   'chat.closeAnyway': '仍然離開',
+  'chat.closeUnresponsive': '視窗沒有回應，無法確認對話是否已經儲存。現在結束，最近的變更可能會遺失。',
   'chat.saveFailed': '對話儲存失敗。新內容暫時只保留在記憶體中。請檢查磁碟空間和存取權限，並在提示消失前保持應用程式開啟。',
   'chat.newThread': '新對話',
   'chat.handoffSynced': '已向 {name} 同步交接文件',

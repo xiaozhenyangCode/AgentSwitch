@@ -425,6 +425,7 @@ export const zhCN = {
   'chat.closeTitle': '对话内容还未保存',
   'chat.closeUnsaved': '部分对话改动还没保存。现在退出会丢失这些改动。',
   'chat.closeAnyway': '仍然退出',
+  'chat.closeUnresponsive': '窗口没有响应，无法确认对话是否已经保存。现在退出，最近的改动可能会丢失。',
   'chat.saveFailed': '对话保存失败。新内容暂时只保留在内存中。请检查磁盘空间和访问权限，在提示消失前保持应用打开。',
   'chat.newThread': '新对话',
   'chat.handoffSynced': '已向 {name} 同步交接文档',

@@ -106,8 +106,29 @@ function trackChatClose(win: BrowserWindow): void {
   })
 }
 
+const CLOSE_PING_MS = 3000
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
 async function finishClose(win: BrowserWindow): Promise<void> {
   const contents = win.webContents
+  // A hung renderer never answers the save check below, which would leave the window unclosable.
+  // Ping first with a deadline; the check itself has none, as it waits on the renderer's own dialog.
+  const responsive = contents.isCrashed() || (await Promise.race([contents.executeJavaScript('1').then(() => true, () => false), delay(CLOSE_PING_MS).then(() => false)]))
+  if (win.isDestroyed()) return
+  if (!responsive) {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      message: t('chat.closeUnresponsive'),
+      buttons: [t('common.cancel'), t('chat.closeAnyway')],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response !== 1 || win.isDestroyed()) return
+    win.destroy()
+    app.quit()
+    return
+  }
   // Ask before unloading so the renderer stays available while the user decides.
   let decision: unknown = contents.isCrashed() ? 'saved' : await contents.executeJavaScript(`
     new Promise((resolve) => {

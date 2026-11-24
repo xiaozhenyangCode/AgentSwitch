@@ -409,6 +409,7 @@ export const en: Dict = {
   'chat.closeTitle': 'Unsaved chat changes',
   'chat.closeUnsaved': 'Some changes haven’t been saved. If you leave now, those changes will be lost.',
   'chat.closeAnyway': 'Leave Anyway',
+  'chat.closeUnresponsive': 'The window isn’t responding, so AgentSwitch can’t confirm your chats were saved. If you leave now, recent changes may be lost.',
   'chat.saveFailed': 'Couldn’t save your chats. Changes are only stored in memory for now. Check disk space and permissions, and keep the app open until this message disappears.',
   'chat.newThread': 'New Chat',
   'chat.handoffSynced': 'Handoff document shared with {name}',
