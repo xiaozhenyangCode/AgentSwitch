@@ -678,6 +678,10 @@ export const zhTW: Dict = {
   'about.envCopied': '已複製環境資訊',
   'about.notInstalled': '未安裝',
   'about.checking': '檢測中…',
+  'about.cliNode': 'CLI Node 執行環境',
+  'about.nodeSystem': '系統（{path}）',
+  'about.nodeBundled': '內建執行環境',
+  'about.nodeBundledVer': '內建執行環境（v{v}）',
 
   // ---- native menu
   'menu.about': '關於 AgentSwitch',

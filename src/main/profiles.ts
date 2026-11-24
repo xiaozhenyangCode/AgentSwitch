@@ -17,7 +17,8 @@ import {
   type ReasonixConnect,
   type PtyMode
 } from '@shared/types'
-import { findOnPath, getBaseEnv, realHome, strippedVarNames } from './shellEnv'
+import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, strippedVarNames } from './shellEnv'
+import { bundledNpmInstallEnv, isBundledTool, resolveBundledRuntime } from './runtime'
 import { loadStore, saveStore, type StoreData } from './store'
 import { i18nState, t } from './i18n'
 import { keyEnvName, readReasonixConfig, reasonixHasKey, managedReasonixPath, removeReasonixKey, renderConfigToml, REASONIX_KEY_ENV, writeEnvFile } from './reasonix'
@@ -848,10 +849,23 @@ export function missingInstallTool(kind: ProfileKind, update = false): string | 
   return findOnPath(first) ? null : first
 }
 
-/** Install: real HOME + login shell so installers write to the user's global prefix / PATH. */
-export function buildInstallSpec(kind: ProfileKind, update = false): SpawnSpec {
+/**
+ * Install: uses the user's real HOME (so `~/.npmrc` and proxy env vars still apply).
+ * When `npm`/`npx` resolves to the bundled fallback runtime (a Mac without Node), installs
+ * write into `<userData>/runtime/npm-global` instead of the read-only `.app` bundle.
+ */
+export function buildInstallSpec(kind: ProfileKind, update = false, prepare = true): SpawnSpec {
   const cmd = installCommand(kind, update)
-  return { shell: SHELL, args: ['-ilc', cmd], env: getBaseEnv(), cwd: realHome, injected: {} }
+  const base = getBaseEnv()
+  const first = cmd.trim().split(/\s+/)[0] ?? ''
+  const bundled = resolveBundledRuntime()
+  if (bundled && (first === 'npm' || first === 'npx') && isBundledTool(findOnPath(first), bundled)) {
+    const { env, injected } = bundledNpmInstallEnv(base, { bundled, createDirs: prepare })
+    if (prepare) refreshRuntimePaths()
+    // `-fc`: skip login rc / macOS path_helper so the bundled runtime stays on PATH.
+    return { shell: SHELL, args: ['-fc', cmd], env, cwd: realHome, injected }
+  }
+  return { shell: SHELL, args: ['-ilc', cmd], env: base, cwd: realHome, injected: {} }
 }
 
 export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>, command?: string, prepare = true): SpawnSpec {
@@ -877,7 +891,7 @@ export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>,
 
 export function envPreview(id: ProfileId, mode: PtyMode): EnvPreview {
   const cfg = getConfig(id)
-  const s = mode === 'install' ? buildInstallSpec(cfg.kind) : buildSpawnSpec(id, mode, undefined, false)
+  const s = mode === 'install' ? buildInstallSpec(cfg.kind, false, false) : buildSpawnSpec(id, mode, undefined, false)
   const removed = strippedVarNames()
   if (mode !== 'install' && isIsolatedGemini(cfg, expandHome(cfg.configDir))) removed.push(...AGY_AUTH_LEAK_VARS)
   return { injected: s.injected, removed, shell: s.shell, args: s.args, cwd: s.cwd }

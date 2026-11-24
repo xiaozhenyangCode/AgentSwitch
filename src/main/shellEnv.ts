@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { userInfo } from 'node:os'
+import { runtimeFallbackPaths } from './runtime'
 
 /**
  * GUI-launched Electron apps on macOS get a minimal PATH (/usr/bin:/bin:...),
@@ -26,7 +27,9 @@ const STRIP_EXACT = [
   'CODEX_HOME',
   'XDG_CONFIG_HOME',
   'AGENTSWITCH_HOME',
-  'AGENTSWITCH_USER_DATA'
+  'AGENTSWITCH_USER_DATA',
+  'AGENTSWITCH_BUNDLED_RUNTIME',
+  'AGENTSWITCH_CLEAN_PATH'
 ]
 
 /**
@@ -36,6 +39,7 @@ const STRIP_EXACT = [
 export const realHome: string = process.env.AGENTSWITCH_HOME || userInfo().homedir
 
 let baseEnv: Record<string, string> | null = null
+let lastRawEnv: Record<string, string> | null = null
 let lastError: string | null = null
 
 function sanitize(env: Record<string, string | undefined>): Record<string, string> {
@@ -171,10 +175,15 @@ export type ShellEnvSource = 'login' | 'cache' | 'fallback'
 let source: ShellEnvSource = 'fallback'
 
 function applyEnv(env: Record<string, string>, src: ShellEnvSource): void {
+  lastRawEnv = { ...env }
   // Drop shell-session noise that should not be inherited verbatim.
-  for (const k of ['SHLVL', '_', 'OLDPWD', 'PWD']) delete env[k]
-  const next = sanitize({ ...process.env, ...env })
-  next.PATH = mergePath(next.PATH, extraPaths().join(':'), SYSTEM_PATHS.join(':'))
+  const cleaned = { ...env }
+  for (const k of ['SHLVL', '_', 'OLDPWD', 'PWD']) delete cleaned[k]
+  const next = sanitize({ ...process.env, ...cleaned })
+  const cleanPath = process.env.AGENTSWITCH_CLEAN_PATH === '1'
+  next.PATH = cleanPath
+    ? mergePath(runtimeFallbackPaths().join(':'), SYSTEM_PATHS.join(':'))
+    : mergePath(next.PATH, extraPaths().join(':'), runtimeFallbackPaths().join(':'), SYSTEM_PATHS.join(':'))
   next.HOME = realHome
   next.TERM = 'xterm-256color'
   next.COLORTERM = 'truecolor'
@@ -183,6 +192,12 @@ function applyEnv(env: Record<string, string>, src: ShellEnvSource): void {
   source = src
   // Main process itself also benefits (e.g. if we ever spawn helpers directly).
   process.env.PATH = next.PATH
+}
+
+/** Rebuilds PATH after `<userData>/runtime/npm-global/bin` is created by a bundled npm install. */
+export function refreshRuntimePaths(): void {
+  if (!baseEnv) return
+  applyEnv(lastRawEnv ?? {}, source)
 }
 
 function applyFallback(): void {
@@ -194,6 +209,10 @@ function applyFallback(): void {
  * run exists we use it immediately and refresh in the background; otherwise we wait once.
  */
 export async function initShellEnv(cacheFile: string, onRefreshed: () => void): Promise<void> {
+  if (process.env.AGENTSWITCH_CLEAN_PATH === '1') {
+    applyEnv({}, 'fallback')
+    return
+  }
   const refresh = async (): Promise<boolean> => {
     try {
       const sh = loginShell()

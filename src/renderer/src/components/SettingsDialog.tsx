@@ -803,6 +803,15 @@ function About() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const cliText = (k: ProfileKind) => (versions[k] === undefined ? t('about.checking') : versions[k] ? `v${versions[k]!.replace(/^v/, '')}` : t('about.notInstalled'))
+  const nodeRuntimeText = info
+    ? info.nodeRuntime.source === 'bundled'
+      ? info.nodeRuntime.version
+        ? t('about.nodeBundledVer', { v: info.nodeRuntime.version })
+        : t('about.nodeBundled')
+      : info.nodeRuntime.source === 'system'
+        ? t('about.nodeSystem', { path: info.nodeRuntime.path ?? '' })
+        : t('about.notInstalled')
+    : ''
   const rows: [string, string][] = info
     ? [
         ['AgentSwitch', info.version],
@@ -810,6 +819,7 @@ function About() {
         ['Electron', info.electron],
         ['Chromium', info.chrome],
         ['Node.js', info.node],
+        [t('about.cliNode'), nodeRuntimeText],
         ...KINDS.map((k): [string, string] => [KIND_META[k].cli, cliText(k)])
       ]
     : []

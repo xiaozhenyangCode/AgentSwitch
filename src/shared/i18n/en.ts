@@ -658,6 +658,10 @@ export const en: Dict = {
   'about.envCopied': 'Environment info copied',
   'about.notInstalled': 'Not installed',
   'about.checking': 'Checking…',
+  'about.cliNode': 'CLI Node Runtime',
+  'about.nodeSystem': 'System ({path})',
+  'about.nodeBundled': 'Bundled',
+  'about.nodeBundledVer': 'Bundled (v{v})',
 
   'menu.about': 'About AgentSwitch',
   'menu.settings': 'Settings…',

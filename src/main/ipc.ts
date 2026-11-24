@@ -98,7 +98,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
-import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
+import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, shellEnvStatus } from './shellEnv'
+import { cliNodeRuntime } from './runtime'
 import { isTranscriptEntry } from '@shared/transcript'
 
 const assertId = (x: unknown): ProfileId => {
@@ -172,7 +173,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   const ptys = new PtyManager({
     onData: (e) => send(IPC.ptyData, e),
-    onExit: (e) => send(IPC.ptyExit, e),
+    onExit: (e) => {
+      if (kindOfInstallSession(e.sessionId)) refreshRuntimePaths()
+      send(IPC.ptyExit, e)
+    },
     onUrl: (e) => send(IPC.ptyUrl, e),
     onStateChange: () => broadcast()
   })
@@ -612,6 +616,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       path: getBaseEnv().PATH ?? '',
       electron: process.versions.electron,
       node: process.versions.node,
+      nodeRuntime: cliNodeRuntime(findOnPath('node')),
       chrome: process.versions.chrome,
       version: app.getVersion(),
       arch: process.arch,

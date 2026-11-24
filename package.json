@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "rebuild": "node scripts/postinstall.mjs",
     "postinstall": "node scripts/postinstall.mjs",
-    "dist": "electron-vite build && electron-builder --mac --arm64"
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "dist": "node scripts/prepare-runtime.mjs --arch arm64 && electron-vite build && electron-builder --mac --arm64"
   },
   "dependencies": {
     "diff": "^9.0.0",
@@ -66,7 +67,11 @@
       "LICENSE"
     ],
     "extraResources": [
-      "LICENSE"
+      "LICENSE",
+      {
+        "from": "build/runtime/${os}-${arch}",
+        "to": "runtime"
+      }
     ],
     "asarUnpack": [
       "node_modules/node-pty/**"

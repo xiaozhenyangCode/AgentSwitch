@@ -658,6 +658,10 @@ export const ja: Dict = {
   'about.envCopied': '環境情報をコピーしました',
   'about.notInstalled': '未インストール',
   'about.checking': '確認中…',
+  'about.cliNode': 'CLI Node ランタイム',
+  'about.nodeSystem': 'システム（{path}）',
+  'about.nodeBundled': '内蔵ランタイム',
+  'about.nodeBundledVer': '内蔵ランタイム（v{v}）',
 
   'menu.about': 'AgentSwitch について',
   'menu.settings': '設定…',

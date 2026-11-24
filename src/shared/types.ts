@@ -605,6 +605,12 @@ export const IPC = {
   appInfo: 'app:info'
 } as const
 
+export interface NodeRuntimeInfo {
+  source: 'system' | 'bundled' | 'none'
+  version: string | null
+  path: string | null
+}
+
 export interface AppInfo {
   userData: string
   realHome: string
@@ -613,6 +619,8 @@ export interface AppInfo {
   path: string
   electron: string
   node: string
+  /** Node.js runtime resolved on PATH for CLIs and MCP servers (system or bundled fallback). */
+  nodeRuntime: NodeRuntimeInfo
   chrome: string
   /** package.json version. */
   version: string

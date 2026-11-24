@@ -680,6 +680,10 @@ export const zhCN = {
   'about.envCopied': '已复制环境信息',
   'about.notInstalled': '未安装',
   'about.checking': '检测中…',
+  'about.cliNode': 'CLI Node 运行时',
+  'about.nodeSystem': '系统（{path}）',
+  'about.nodeBundled': '内置运行时',
+  'about.nodeBundledVer': '内置运行时（v{v}）',
 
   // ---- native menu
   'menu.about': '关于 AgentSwitch',
