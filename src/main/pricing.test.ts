@@ -14,6 +14,11 @@ describe('model names', () => {
     expect(candidates('models/gemini-3.8-flash')[0]).toBe('gemini-3.8-flash')
     expect(candidates('claude-opus-4-6@20251101')[0]).toBe('claude-opus-4-6')
     expect(candidates('claude-haiku-4-5-20251001')).toContain('claude-haiku-4-5')
+    expect(candidates('gemini-4-neon:high')[0]).toBe('gemini-4-neon')
+    expect(candidates('claude-opus-5-5[1m]:max')[0]).toBe('claude-opus-5-5')
+    expect(candidates('models/gemini-4-neon-preview:low')).toEqual(['gemini-4-neon-preview', 'gemini-4-neon'])
+    expect(candidates('us.anthropic.claude-3-5-sonnet-20241022-v2:0')[0]).toBe('claude-3-5-sonnet-20241022')
+    expect(candidates(':high')).toEqual([])
   })
   it('never falls back to a bare family', () => {
     expect(candidates('claude-unknown-9')).not.toContain('claude')
@@ -41,7 +46,9 @@ describe('price lookup', () => {
   it('prefers LiteLLM, then CC Switch, stripping variants', () => {
     expect(findRate('claude-opus-5-5[1m]', tables)).toMatchObject({ key: 'claude-opus-5-5', source: 'litellm', rate: { input: 4, output: 20 } })
     expect(findRate('gemini-4-neon', tables)).toMatchObject({ key: 'gemini-4-neon', source: 'litellm', rate: { input: 3, output: 15, cacheRead: 0.15 } })
+    expect(findRate('gemini-4-neon:high', tables)).toMatchObject({ key: 'gemini-4-neon', source: 'litellm', rate: { input: 3, output: 15, cacheRead: 0.15 } })
     expect(findRate('deepseek-v4.1-flash', tables)).toMatchObject({ key: 'deepseek-v4.1-flash', source: 'ccswitch' })
+    expect(findRate('deepseek-v4.1-flash:disabled', tables)).toMatchObject({ key: 'deepseek-v4.1-flash', source: 'ccswitch' })
     expect(findRate('gemini-3.8-flash-tiered', tables)?.key).toBe('gemini-3.8-flash')
     expect(findRate('claude-opus-4-6-thinking', tables)?.key).toBe('claude-opus-4-6')
     expect(findRate('no-such-model', tables)).toBeNull()

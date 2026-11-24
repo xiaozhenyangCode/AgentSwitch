@@ -23,11 +23,12 @@ const FREE = new Set(['<synthetic>'])
 /** Names to try for a model as CLIs report it, most specific first. */
 export function candidates(model: string): string[] {
   let m = model.trim().toLowerCase()
-  m = m.replace(/\[[^\]]*\]$/, '') // claude-opus-5-5[1m]
-  m = m.replace(/@.*$/, '') // vertex: claude-…@20250514
   m = m.slice(m.lastIndexOf('/') + 1) // anthropic/…, models/…, deepseek/…
   m = m.replace(/^(?:us|eu|apac|global)\.(?:anthropic\.)?|^anthropic\./, '') // bedrock ids
-  m = m.replace(/-v\d+(?::\d+)?$/, '')
+  m = m.replace(/@.*$/, '') // vertex: claude-…@20250514
+  m = m.replace(/:.*$/, '') // effort / tag suffix: gemini-4-neon:high, bedrock …-v2:0
+  m = m.replace(/\[[^\]]*\]$/, '') // claude-opus-5-5[1m]
+  m = m.replace(/-v\d+$/, '')
   if (!m) return []
   const out = [m]
   // drop trailing segments: dates (-20251001), variants (-codex, -preview-05-06, -latest), …
