@@ -14,12 +14,21 @@ exports.default = async function afterPack(ctx) {
 
   const runtime = join(resources, 'runtime')
   const nodeBin = join(runtime, 'bin', 'node')
+  const npmBin = join(runtime, 'bin', 'npm')
+  const npxBin = join(runtime, 'bin', 'npx')
+  const npmArchive = join(runtime, 'npm.tar.gz')
   const npmCli = join(runtime, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
   const npxCli = join(runtime, 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js')
-  if (!existsSync(nodeBin) || !existsSync(npmCli) || !existsSync(npxCli)) {
+  const hasArchivedNpm = existsSync(npmArchive)
+  const hasUnpackedNpm = existsSync(npmCli) && existsSync(npxCli)
+  if (!existsSync(nodeBin) || !existsSync(npmBin) || !existsSync(npxBin) || (!hasArchivedNpm && !hasUnpackedNpm)) {
     throw new Error(`[afterPack] Bundled Node runtime incomplete at ${runtime}. Run "pnpm prepare:runtime" first.`)
   }
   chmodSync(nodeBin, 0o755)
-  chmodSync(npmCli, 0o755)
-  chmodSync(npxCli, 0o755)
+  chmodSync(npmBin, 0o755)
+  chmodSync(npxBin, 0o755)
+  if (hasUnpackedNpm) {
+    chmodSync(npmCli, 0o755)
+    chmodSync(npxCli, 0o755)
+  }
 }

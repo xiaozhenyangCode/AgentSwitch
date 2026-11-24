@@ -103,7 +103,10 @@ export function resolveBundledRuntime(opts: RuntimeResolveOptions = {}): Bundled
     const nodePath = join(binDir, 'node')
     const npmPath = join(binDir, 'npm')
     const npxPath = join(binDir, 'npx')
-    if (!isFile(nodePath) || !isFile(npmPath)) continue
+    const hasNpmPayload =
+      isFile(join(root, 'npm.tar.gz')) ||
+      isFile(join(root, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'))
+    if (!isFile(nodePath) || !isFile(npmPath) || !isFile(npxPath) || !hasNpmPayload) continue
     let version: string | null = null
     try {
       const raw = readFileSync(join(root, '.version'), 'utf8').trim()

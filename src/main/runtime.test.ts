@@ -35,6 +35,16 @@ function createFakeRuntime(root: string, version = '22.23.5'): void {
   writeFileSync(join(root, '.version'), `${version}\n`, 'utf8')
 }
 
+function createArchivedRuntime(root: string, version = '22.23.5'): void {
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'node'), '#!/bin/sh\necho v' + version + '\n', { mode: 0o755 })
+  writeFileSync(join(bin, 'npm'), '#!/bin/sh\necho 10.9.4\n', { mode: 0o755 })
+  writeFileSync(join(bin, 'npx'), '#!/bin/sh\necho 10.9.4\n', { mode: 0o755 })
+  writeFileSync(join(root, 'npm.tar.gz'), 'fake-tarball')
+  writeFileSync(join(root, '.version'), `${version}\n`, 'utf8')
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agentswitch-runtime-test-'))
 })
@@ -66,6 +76,24 @@ describe('bundled Node.js runtime', () => {
     mkdirSync(join(broken, 'bin'), { recursive: true })
     writeFileSync(join(broken, 'bin', 'node'), '', { mode: 0o755 })
     expect(resolveBundledRuntime({ overrideDir: broken })).toBeNull()
+
+    const missingPayload = join(dir, 'missing-payload')
+    mkdirSync(join(missingPayload, 'bin'), { recursive: true })
+    writeFileSync(join(missingPayload, 'bin', 'node'), '', { mode: 0o755 })
+    writeFileSync(join(missingPayload, 'bin', 'npm'), '', { mode: 0o755 })
+    writeFileSync(join(missingPayload, 'bin', 'npx'), '', { mode: 0o755 })
+    expect(resolveBundledRuntime({ overrideDir: missingPayload })).toBeNull()
+
+    const archived = join(dir, 'archived-rt')
+    createArchivedRuntime(archived, '22.23.5')
+    const foundArchived = resolveBundledRuntime({ overrideDir: archived })
+    expect(foundArchived).toMatchObject({
+      root: archived,
+      binDir: join(archived, 'bin'),
+      version: '22.23.5'
+    })
+    expect(isBundledTool(foundArchived!.npmPath, foundArchived)).toBe(true)
+    expect(isBundledTool(foundArchived!.npxPath, foundArchived)).toBe(true)
   })
 
   it('orders fallback paths with npm-global/bin before bundled runtime/bin', () => {

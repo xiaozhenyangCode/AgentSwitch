@@ -22,7 +22,8 @@
     "rebuild": "node scripts/postinstall.mjs",
     "postinstall": "node scripts/postinstall.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
-    "dist": "node scripts/prepare-runtime.mjs --arch arm64 && electron-vite build && electron-builder --mac --arm64"
+    "dist": "node scripts/prepare-runtime.mjs --arch arm64 && electron-vite build && electron-builder --mac --arm64",
+    "dist:app": "node scripts/prepare-runtime.mjs --arch arm64 && electron-vite build && electron-builder --mac dir --arm64"
   },
   "dependencies": {
     "diff": "^9.0.0",
