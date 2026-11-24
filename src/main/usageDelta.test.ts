@@ -1,5 +1,34 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { claudeAdapter, type RunSpec } from './agentRunner'
 import { codexTurnUsage, estimateTextTokens, lastClaudeSessionCost, lastCodexTotals, MessageUsage, runCost } from './usageDelta'
+
+vi.mock('electron', () => ({ app: { getPath: () => '/tmp/fixture-user-data' }, safeStorage: {} }))
+
+describe('claude context usage', () => {
+  it.each(['finished', 'stopped'])('keeps root context when a child reports usage last (%s)', (status) => {
+    const spec: RunSpec = {
+      cfg: {
+        id: 'claude-test', kind: 'claude', name: 'Test', configDir: '/tmp/claude-fixture',
+        imported: false, runCommand: '', loginCommand: '', extraEnv: {}, defaultModel: '', autoApprove: 'edits', createdAt: 0
+      },
+      cwd: '/tmp', outDir: '/tmp', model: null, prompt: 'Message', system: null, images: [], resume: null
+    }
+    const adapter = claudeAdapter(spec)
+    const emit = vi.fn()
+    adapter.onLine({ type: 'assistant', parent_tool_use_id: null, message: {
+      id: 'root', usage: { input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 20 }
+    } }, emit)
+    adapter.onLine({ type: 'assistant', parent_tool_use_id: 'child-tool', message: {
+      id: 'child', usage: { input_tokens: 10, output_tokens: 3 }
+    } }, emit)
+
+    if (status === 'finished') adapter.onLine({ type: 'result', subtype: 'success', usage: { input_tokens: 110, output_tokens: 23 } }, emit)
+    else adapter.finish?.(emit)
+    expect(emit).toHaveBeenCalledExactlyOnceWith({
+      t: 'usage', usage: expect.objectContaining({ input: 110, output: 23, context: 320 })
+    })
+  })
+})
 
 describe('claude session cost', () => {
   const cs = (v: number) => JSON.stringify({ type: 'cost-state', sessionId: 's', totalCostUSD: v, modelUsage: {} })

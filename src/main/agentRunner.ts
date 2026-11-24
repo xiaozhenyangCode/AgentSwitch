@@ -30,6 +30,8 @@ export interface RunSpec {
   cfg: ProfileConfig
   model: string | null
   prompt: string
+  /** Rebuild the handoff only if ACP resume falls back to a new session. */
+  freshPrompt?: () => string
   /** Extra instructions (claude: --append-system-prompt; others: prefixed to the prompt). */
   system: string | null
   cwd: string
@@ -289,7 +291,7 @@ export function claudeAdapter(s: RunSpec): Adapter {
         case 'assistant': {
           const mu = d.message?.usage
           streamed.add(d.message?.id, mu)
-          if (mu) {
+          if (mu && !d.parent_tool_use_id) {
             const n = (Number(mu.input_tokens) || 0) + (Number(mu.cache_read_input_tokens) || 0) + (Number(mu.cache_creation_input_tokens) || 0)
             if (n > 0) lastContext = n + (Number(mu.output_tokens) || 0)
           }

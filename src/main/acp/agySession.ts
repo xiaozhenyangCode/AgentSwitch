@@ -17,6 +17,7 @@ import { sanitize } from './stderr'
 type Emit = (event: AgentEvent) => void
 type Log = (text: string) => void
 type Activity = Extract<AgentEvent, { t: 'activity' }>
+type SessionPath = 'warm' | 'resume' | 'new' | 'resume-fallback-new'
 
 const CANCEL_TIMEOUT = 15_000
 const IMAGE_LIMIT = 5 * 1024 * 1024
@@ -116,6 +117,7 @@ function toolOutput(call: AcpFields): unknown {
 function turnEvents(emit: Emit) {
   const tools = new Map<string, { call: AcpFields; activity: Activity }>()
   let used = 0
+  let size = 0
   let hasText = false
   let hasTitle = false
   let nextSegment = false
@@ -167,6 +169,7 @@ function turnEvents(emit: Emit) {
         }
         case 'usage_update':
           if (typeof update.used === 'number') used = update.used
+          if (typeof update.size === 'number' && update.size > 0) size = update.size
           break
         case 'session_info_update': {
           const title = cleanTitle(update.title)
@@ -187,7 +190,7 @@ function turnEvents(emit: Emit) {
       const usage = result.usage ?? {}
       emit({ t: 'usage', usage: {
         input: usage.inputTokens, output: usage.outputTokens, cacheRead: usage.cachedReadTokens || undefined,
-        reasoning: usage.thoughtTokens, context: used || undefined
+        reasoning: usage.thoughtTokens, context: used || undefined, contextWindow: size || undefined
       } })
     },
     finish(): void {
@@ -298,8 +301,9 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     return result(false, errorWithHint, rateLimited)
   }
 
-  async function configure(conn: AcpConnection, id: string): Promise<void> {
+  async function configure(conn: AcpConnection, id: string): Promise<string[]> {
     const session = conn.session(id)
+    const writes: string[] = []
     const picked = splitSpec(spec.model)
     const modelOption = session.options.find((o) => o?.id === 'model')
     const choices = optionValues(modelOption)
@@ -321,14 +325,22 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       }
     }
 
-    if (wanted && modelOption && (choices.includes(wanted) || legacy)) await setOption(modelOption, wanted)
-    if (stopped) return
+    // Legacy aliases still need a write even if the agent echoes the requested ID.
+    if (wanted && modelOption && (legacy || (choices.includes(wanted) && modelOption.currentValue !== wanted))) {
+      writes.push('model')
+      await setOption(modelOption, wanted)
+    }
+    if (stopped) return writes
     const effortOption = session.options.find((o) => o?.category === 'thought_level')
-    if (picked.effort && effortOption && optionValues(effortOption).includes(picked.effort)) await setOption(effortOption, picked.effort)
+    if (picked.effort && effortOption && effortOption.currentValue !== picked.effort && optionValues(effortOption).includes(picked.effort)) {
+      writes.push('thought_level')
+      await setOption(effortOption, picked.effort)
+    }
     model = modelOf(session.options, model)
+    return writes
   }
 
-  async function runTurn(conn: AcpConnection, id: string, appendSystem: boolean): Promise<RunResult> {
+  async function runTurn(conn: AcpConnection, id: string, appendSystem: boolean, path: SessionPath, turnSpec = spec): Promise<RunResult> {
     if (stopped) return result(false)
     if (!conn.process.alive) throw new Error(await conn.process.exited)
     sessionId = id
@@ -397,9 +409,10 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     }
     finishPrompt = cleanup
     try {
-      await configure(conn, id)
+      const writes = await configure(conn, id)
       if (stopped) return result(false)
-      const prompt = await promptBlocks(spec, appendSystem, conn.process.initializeResult.agentCapabilities?.promptCapabilities?.image === true, () => stopped)
+      log(`[ACP turn] path=${path} system=${appendSystem ? 'append' : 'inline'} config=${writes.join(',') || 'skipped'}\n`)
+      const prompt = await promptBlocks(turnSpec, appendSystem, conn.process.initializeResult.agentCapabilities?.promptCapabilities?.image === true, () => stopped)
       if (stopped) return result(false)
       if (!conn.process.alive) throw new Error(await conn.process.exited)
 
@@ -455,7 +468,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
         ...(appendSystem && spec.system ? { _meta: { antigravity: { systemPrompt: { append: spec.system } } } } : {})
       }
 
-      async function create(): Promise<RunResult> {
+      async function create(path: 'new' | 'resume-fallback-new', turnSpec = spec): Promise<RunResult> {
         const response = await conn.process.rpc.request<AcpFields>('session/new', params, ACP_SETUP_TIMEOUT)
         const id = response?.sessionId
         if (typeof id !== 'string' || !id) throw new Error('ACP session/new returned no session ID')
@@ -463,15 +476,16 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
         session.active = true
         session.system = appendSystem ? spec.system : null
         if (!session.revision) session.options = retainedOptions(response)
-        return conn.inOrder(id, () => runTurn(conn, id, appendSystem))
+        return conn.inOrder(id, () => runTurn(conn, id, appendSystem, path, turnSpec))
       }
 
       const id = spec.resume
-      if (!id) return await create()
+      if (!id) return await create('new')
       return await conn.inOrder(id, async () => {
         if (stopped) return result(false)
         if (!conn.process.alive) throw new Error(await conn.process.exited)
         const session = conn.session(id)
+        const path = session.active ? 'warm' : 'resume'
         if (!session.active) {
           const revision = session.revision
           try {
@@ -486,11 +500,12 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
             log(`[ACP resume] ${errorText(e)}\n`)
             notice(t('main.acpResumeFailed'))
             if (stopped) return result(false)
-            return await create()
+            const prompt = spec.freshPrompt?.() ?? spec.prompt
+            return await create('resume-fallback-new', { ...spec, prompt })
           }
         }
-        // Run directories and dispatch instructions can change between turns in a warm session.
-        return await runTurn(conn, id, appendSystem && session.system === spec.system)
+        // The native append stays as opened. Inline the instructions if the fixed text changed.
+        return await runTurn(conn, id, appendSystem && session.system === spec.system, path)
       })
     } catch (e) {
       return fail(e)

@@ -724,7 +724,8 @@ export class Orchestrator {
     const ranThisTurn = turn.steps.slice(0, turn.idx).some((previous) => previous.profileId === cfg.id && previous.status === 'done')
     const takingOver = cfg.id === turn.req.driver.profileId && !!previousDriver && previousDriver !== cfg.id && !ranThisTurn
     const resume = sessions.scope === sessionScope ? canResume(sessions, cfg.id, cfg.kind, model, transcript, takingOver) : null
-    const entries = unseenTranscript(numberTranscript(transcript), cfg.id, !!resume)
+    const numberedTranscript = numberTranscript(transcript)
+    const entries = unseenTranscript(numberedTranscript, cfg.id, !!resume)
     const caps = getProviderCapabilities(cfg.kind)
     const budget = contextBudgetFor(reportedContextWindow(transcript, cfg.id, model, cfg.kind) ?? defaultContextWindowFor(cfg.kind, model))
     let recap = budgetedHandoff(entries, budget, !resume, supportsThreadHistory(cfg.kind))
@@ -785,6 +786,11 @@ export class Orchestrator {
         cfg,
         model,
         prompt,
+        freshPrompt: resume && caps.supportsInteractiveTransport && cfg.agyTransport === 'acp' ? () => {
+          const freshEntries = unseenTranscript(numberedTranscript, cfg.id, false)
+          const freshRecap = budgetedHandoff(freshEntries, budget, true, supportsThreadHistory(cfg.kind))
+          return this.prompt(turn, step, freshRecap.text, false).prompt
+        } : undefined,
         system,
         cwd: turn.cwd,
         images: caps.supportsImageInput ? turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [],

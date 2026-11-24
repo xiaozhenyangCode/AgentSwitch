@@ -38,7 +38,7 @@ const call = (status: string, extra = {}) => ({ sessionUpdate: 'tool_call_update
 const usage = { inputTokens: 50, outputTokens: 6, cachedReadTokens: 8, thoughtTokens: 2 }
 const result = { stopReason: 'end_turn', usage }
 
-type Message = { id?: number; method?: string; params?: any; result?: unknown }
+type Message = { id?: number; method?: string; params?: any; result?: unknown; error?: { code: number; message: string } }
 
 function fakeAgy(opts: Parameters<typeof startAcpProcess>[0]) {
   const stdin = new PassThrough()
@@ -254,7 +254,7 @@ describe('agy ACP runs', () => {
       { t: 'thinking', delta: 'Thought' },
       { t: 'text', delta: '\n\n' },
       { t: 'text', delta: 'Done.' },
-      { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64 } }
+      { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64, contextWindow: 1048576 } }
     ])
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Late.'))
   })
@@ -295,8 +295,9 @@ describe('agy ACP runs', () => {
   })
 
   it('shares startup and serializes prompts to the same resumed session', async () => {
-    const first = runAgent({ ...spec, resume: sessionId }, emit, log)
-    const second = runAgent({ ...spec, resume: sessionId, system: 'Updated handoff path', prompt: 'Second' }, emit, log)
+    const freshPrompt = vi.fn(() => 'Fresh history')
+    const first = runAgent({ ...spec, resume: sessionId, freshPrompt }, emit, log)
+    const second = runAgent({ ...spec, resume: sessionId, freshPrompt, system: 'Updated handoff path', prompt: 'Second' }, emit, log)
     await vi.waitFor(() => expect(startAcpProcess).toHaveBeenCalledTimes(1))
     const resume = await server.request('session/resume')
     expect(resume.params).toMatchObject({
@@ -314,6 +315,28 @@ describe('agy ACP runs', () => {
     expect(followUp.params.prompt[0].text).toBe('Updated handoff path\n\n---\n\nSecond')
     server.send({ id: followUp.id, result })
     await expect(second.done).resolves.toMatchObject({ ok: true })
+    expect(freshPrompt).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith('[ACP turn] path=resume system=append config=skipped\n')
+    expect(log).toHaveBeenCalledWith('[ACP turn] path=warm system=inline config=skipped\n')
+  })
+
+  it('rebuilds the handoff only after resume fails and sends one prompt to the new session', async () => {
+    const freshPrompt = vi.fn(() => 'Full handoff and current message')
+    const { run, cli } = await begin({ resume: 'previous-session', freshPrompt })
+    const resume = await cli.request('session/resume')
+    expect(freshPrompt).not.toHaveBeenCalled()
+    cli.send({ id: resume.id, error: { code: -32602, message: 'Session not found' } })
+
+    const create = await cli.request('session/new')
+    expect(freshPrompt).toHaveBeenCalledOnce()
+    expect(create.params._meta).toEqual(resume.params._meta)
+    cli.send({ id: create.id, result: { sessionId } })
+    const prompt = await cli.request('session/prompt')
+    expect(prompt.params).toEqual({ sessionId, prompt: [{ type: 'text', text: 'Full handoff and current message' }] })
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true, sessionId })
+    expect(cli.sent.filter((msg) => msg.method === 'session/prompt')).toHaveLength(1)
+    expect(log).toHaveBeenCalledWith('[ACP turn] path=resume-fallback-new system=append config=skipped\n')
   })
 
   it('uses fresh config notifications but ignores the previous setting echoed during the next setter', async () => {
@@ -333,6 +356,34 @@ describe('agy ACP runs', () => {
     const prompt = await cli.request('session/prompt')
     cli.send({ id: prompt.id, result })
     await expect(run.done).resolves.toMatchObject({ ok: true, model: 'second:low' })
+
+    const warm = runAgent({ ...spec, model: 'second:low', resume: sessionId }, emit, log)
+    const warmPrompt = await cli.request('session/prompt', 2)
+    cli.send({ id: warmPrompt.id, result })
+    await expect(warm.done).resolves.toMatchObject({ ok: true, model: 'second:low' })
+    expect(cli.sent.filter((msg) => msg.method === 'session/set_config_option')).toHaveLength(2)
+    expect(log).toHaveBeenCalledWith('[ACP turn] path=resume system=append config=model,thought_level\n')
+    expect(log).toHaveBeenCalledWith('[ACP turn] path=warm system=append config=skipped\n')
+  })
+
+  it.each([
+    { model: 'first', currentValue: undefined },
+    { model: 'first', currentValue: 0 },
+    { model: 'first-low', currentValue: 'first-low' }
+  ])('writes model $model with agent value $currentValue when unknown or a legacy alias', async ({ model, currentValue }) => {
+    const { run, cli } = await begin()
+    const firstPrompt = await sendPrompt(cli)
+    cli.send({ id: firstPrompt.id, result })
+    await run.done
+    cli.send(cli.update({ sessionUpdate: 'config_option_update', configOptions: [{ id: 'model', currentValue, options: [{ value: 'first' }] }] }))
+
+    const warm = runAgent({ ...spec, model, resume: sessionId }, emit, log)
+    const setModel = await cli.request('session/set_config_option')
+    expect(setModel.params).toEqual({ sessionId, configId: 'model', value: model })
+    cli.send({ id: setModel.id, result: {} })
+    const prompt = await cli.request('session/prompt', 2)
+    cli.send({ id: prompt.id, result })
+    await expect(warm.done).resolves.toMatchObject({ ok: true })
   })
 
   it('stops before a pending session is ready without writing prompt or cancel', async () => {

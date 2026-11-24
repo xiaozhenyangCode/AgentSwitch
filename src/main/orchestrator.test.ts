@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { estimateTokens } from '@shared/contextBudget'
 import type { TranscriptEntry } from '@shared/transcript'
 import type { RunRequest } from '@shared/types'
 import type { RunSpec } from './agentRunner'
@@ -12,14 +13,15 @@ import { Checkpoints } from './checkpoints'
 
 let data: string
 const runAgent = vi.hoisted(() => vi.fn())
+const getConfig = vi.hoisted(() => vi.fn())
 vi.mock('electron', () => ({ app: { getPath: () => data } }))
 vi.mock('./legacy', () => ({ LEGACY_PROJECT_DIR: '.agentmux', LEGACY_USER_DATA: '/tmp/agentswitch-nonexistent' }))
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 vi.mock('./usage', () => ({ recordRun: vi.fn(), refreshPostRunQuota: vi.fn() }))
 vi.mock('./agentRunner', () => ({ runAgent }))
 vi.mock('./profiles', () => ({
-  KIND_LABEL: { codex: 'Codex' },
-  getConfig: () => ({ id: 'a', kind: 'codex', name: 'Codex', defaultModel: 'small' }),
+  KIND_LABEL: { codex: 'Codex', gemini: 'Gemini' },
+  getConfig,
   hasProfile: () => true
 }))
 
@@ -47,6 +49,7 @@ beforeEach(() => {
   mkdirSync(join(data, 'threads'))
   writeFileSync(join(data, 'threads', 'fixture.json'), JSON.stringify({ sessions: { a: 'previous-session' }, models: { a: 'small' } }))
   runAgent.mockReset()
+  getConfig.mockReset().mockReturnValue({ id: 'a', kind: 'codex', name: 'Codex', defaultModel: 'small' })
 })
 
 afterEach(() => rmSync(data, { recursive: true, force: true }))
@@ -87,6 +90,33 @@ describe('orchestrator history handoff', () => {
       return { done: Promise.resolve({ ok: true, sessionId: 'previous-session' }), kill: vi.fn() }
     })
     await start(request([entry(1, 'ALREADY SEEN', null), entry(2, 'Last reply', 'a'), entry(3, 'New history', 'b')]))
+  })
+
+  it('gives an ACP resume an incremental prompt and a fresh-session handoff within the history budget', async () => {
+    getConfig.mockReturnValue({ id: 'a', kind: 'gemini', name: 'Gemini', defaultModel: 'small', agyTransport: 'acp' })
+    const transcript = [
+      entry(1, 'ORIGINAL REQUEST', null), entry(2, 'old'.repeat(60_000), 'a'),
+      entry(3, 'RECENT REQUEST', null), entry(4, 'RECENT REPLY', 'a'), entry(5, 'NEW UPDATE', 'b')
+    ]
+    runAgent.mockReturnValueOnce({ done: Promise.resolve({ ok: true, sessionId: 'previous-session' }), kill: vi.fn() })
+    await start(request(transcript))
+
+    const spec: RunSpec = runAgent.mock.calls[0][0]
+    expect(spec.resume).toBe('previous-session')
+    expect(spec.prompt).toContain('你上次回复之后的对话')
+    expect(spec.prompt).toContain('NEW UPDATE')
+    expect(spec.prompt).not.toContain('ORIGINAL REQUEST')
+    expect(spec.prompt).not.toContain('RECENT REPLY')
+    const fresh = spec.freshPrompt!()
+    expect(fresh).toContain('之前的对话')
+    expect(fresh).toContain('ORIGINAL REQUEST')
+    expect(fresh).toContain('RECENT REPLY')
+    expect(fresh).toContain('NEW UPDATE')
+    expect(fresh).not.toContain('read_thread')
+    const handoff = fresh.split('\n\n## 用户消息\n')[0].split('\n').slice(1).join('\n')
+    expect(estimateTokens(handoff)).toBeLessThanOrEqual(16_000)
+    expect(fresh.indexOf(userText)).toBeGreaterThanOrEqual(0)
+    expect(fresh.indexOf(userText)).toBe(fresh.lastIndexOf(userText))
   })
 
   it('keeps the system text byte-identical across turns and puts per-turn lines at the end of the prompt', async () => {
