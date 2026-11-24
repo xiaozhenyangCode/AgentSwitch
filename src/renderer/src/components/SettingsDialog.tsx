@@ -865,7 +865,7 @@ function About() {
         </div>
       </div>
       <div className="mt-5 flex flex-wrap items-center justify-between gap-2 px-1 text-[12px] text-ink-3">
-        <span>© 2026 xiaozhenyang</span>
+        <span>© 2026 yitian_builds</span>
         <button
           className="inline-flex items-center gap-1 text-ink-2 underline-offset-2 hover:text-ink hover:underline"
           onClick={() => void window.agentswitch.sys.openExternal(LICENSE_URL)}

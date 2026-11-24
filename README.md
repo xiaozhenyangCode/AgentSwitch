@@ -95,4 +95,4 @@ AgentSwitch is an independent project. It is not affiliated with, endorsed by or
 
 [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
 
-Copyright © 2026 xiaozhenyang
+Copyright © 2026 yitian_builds

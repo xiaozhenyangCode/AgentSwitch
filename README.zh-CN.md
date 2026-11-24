@@ -101,4 +101,4 @@ AgentSwitch 是独立项目，与 Anthropic、OpenAI、Google 没有任何关联
 
 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）。
 
-Copyright © 2026 xiaozhenyang
+Copyright © 2026 yitian_builds
