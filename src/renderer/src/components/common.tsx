@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useEscape } from '../lib/escStack'
+import { useLayer } from '../lib/escStack'
 import type { ProfileConfig, ProfileKind, ProfileState } from '@shared/types'
 import { KIND_META, accountBadge, type BadgeMeta } from '../lib/ui'
 import { BrandIcon, DeepSeekIcon } from './brandIcons'
@@ -95,10 +95,28 @@ export function Segmented<T extends string>({
 }
 
 /** Centered sheet over a frosted backdrop. */
-export function Modal({ children, onClose, width = 500, escClose = true }: { children: ReactNode; onClose: () => void; width?: number; escClose?: boolean }) {
-  useEscape(onClose, escClose)
+export function Modal({
+  children,
+  onClose,
+  width = 500,
+  escClose = true,
+  closeOnCmdW = true,
+  backdropClose = true
+}: {
+  children: ReactNode
+  onClose: () => void
+  width?: number
+  escClose?: boolean
+  closeOnCmdW?: boolean
+  backdropClose?: boolean
+}) {
+  // Always occupy the topmost layer so Esc / ⌘W never leak to dialogs or the window underneath.
+  useLayer({ onEsc: escClose ? onClose : null, onClose: closeOnCmdW ? onClose : null })
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim) backdrop-blur-md" onMouseDown={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim) backdrop-blur-md"
+      onMouseDown={() => backdropClose && onClose()}
+    >
       <div
         className="max-h-[88vh] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
         style={{ width }}

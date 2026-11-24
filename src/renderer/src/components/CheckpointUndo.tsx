@@ -97,7 +97,7 @@ export function CheckpointUndo({ threadId, turnId, status, busy, onChange }: {
         {t(finished ? 'checkpoint.undone' : 'checkpoint.undo')}
       </button>
       {plan && createPortal(
-        <Modal onClose={() => { if (!pending) setPlan(null) }} width={520} escClose={!pending}>
+        <Modal onClose={() => { if (!pending) setPlan(null) }} width={520} escClose={!pending} closeOnCmdW={!pending}>
           <div role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} className="p-6">
             <h2 id={titleId} className="text-[18px] font-semibold text-ink">{t('checkpoint.undo')}</h2>
             <p id={descriptionId} className="mt-2 text-[14px] leading-relaxed text-ink-2">

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProfileId, PtyUrlEvent } from '@shared/types'
 import { useApp } from '../state/AppContext'
+import { useLayer } from '../lib/escStack'
 import { dims } from '../lib/terminals'
 import { btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal } from './common'
@@ -102,6 +103,8 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
     if (phaseRef.current !== 'success' && profile?.sessionMode === 'login') void window.agentswitch.pty.kill(profileId)
     closeLogin()
   }
+  // Esc is ignored (prevent accidental cancel during OAuth), while ⌘W closes this sheet instead of the app.
+  useLayer({ onEsc: null, onClose: cancel, active: drawer.open })
 
   const primary = urls.find((u) => u.isAuth) ?? urls[urls.length - 1]
   const copy = async () => {
@@ -291,7 +294,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
     )
   }
   return (
-    <Modal onClose={() => undefined} width={500} escClose={false}>
+    <Modal onClose={cancel} width={500} escClose={false} closeOnCmdW={true} backdropClose={false}>
       {body}
     </Modal>
   )

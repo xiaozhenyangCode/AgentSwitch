@@ -765,7 +765,7 @@ export function ExtensionsPanel({
     window.addEventListener('mousedown', h)
     return () => window.removeEventListener('mousedown', h)
   }, [onClose])
-  useEscape(() => (input.current?.value ? setQuery('') : onClose()))
+  useEscape(() => (input.current?.value ? setQuery('') : onClose()), true, onClose)
 
   const c = counts(data)
   const n: Record<TabId, number> = c

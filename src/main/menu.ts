@@ -16,6 +16,28 @@ export function buildMenu(getWindow: () => BrowserWindow | null): void {
   }
   const dev = !app.isPackaged
 
+  const closeTopOrWindow = (): void => {
+    const focused = BrowserWindow.getFocusedWindow()
+    if (!focused) {
+      // Detached DevTools or native utility panel: let macOS close the focused responder.
+      if (process.platform === 'darwin') Menu.sendActionToFirstResponder('performClose:')
+      return
+    }
+    if (focused.isDestroyed()) return
+    const contents = focused.webContents
+    if (contents.isCrashed()) {
+      focused.close()
+      return
+    }
+    const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500))
+    const ask = contents
+      .executeJavaScript('typeof window.__agentswitchCloseTop === "function" && window.__agentswitchCloseTop()')
+      .then((res) => res === true, () => false)
+    void Promise.race([ask, timeout]).then((handled) => {
+      if (!handled && !focused.isDestroyed()) focused.close()
+    })
+  }
+
   const template: MenuItemConstructorOptions[] = [
     {
       label: app.name,
@@ -38,7 +60,7 @@ export function buildMenu(getWindow: () => BrowserWindow | null): void {
       submenu: [
         { label: t('menu.newChat'), accelerator: 'CmdOrCtrl+N', click: send('newThread') },
         { type: 'separator' },
-        { label: t('menu.closeWindow'), role: 'close' }
+        { label: t('menu.closeWindow'), accelerator: 'CmdOrCtrl+W', click: closeTopOrWindow }
       ]
     },
     {

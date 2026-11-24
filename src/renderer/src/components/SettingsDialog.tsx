@@ -296,20 +296,24 @@ export function SettingsDialog() {
 }
 
 function SettingsBody() {
-  const { settingsSection: section, openSettings, closeSettings, confirmState } = useApp()
+  const { settingsOpen, settingsSection: section, openSettings, closeSettings, confirmState } = useApp()
   const [q, setQ] = useState('')
   const input = useRef<HTMLInputElement>(null)
   const query = q.trim()
   const hits = useMemo(() => (query ? searchItems(query) : []), [query])
   const searching = !!query
 
-  // first Esc clears the search, the next one closes (a dialog on top gets Esc first)
-  useEscape(() => {
-    if (q) {
-      setQ('')
-      input.current?.focus()
-    } else closeSettings()
-  })
+  // first Esc clears the search, the next one closes; ⌘W closes directly (a dialog on top gets both first)
+  useEscape(
+    () => {
+      if (q) {
+        setQ('')
+        input.current?.focus()
+      } else closeSettings()
+    },
+    settingsOpen,
+    closeSettings
+  )
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (confirmState) return // a dialog on top owns the keyboard
