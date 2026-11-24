@@ -5,6 +5,7 @@ import type { DeleteThreadRequest, DeleteThreadResult, ProfileConfig } from '@sh
 import { expandHome, getConfig, hasProfile } from './profiles'
 import { agyConversationDb, deletedSessions, listHistory } from './history'
 import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
+import type { Checkpoints } from './checkpoints'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
@@ -108,7 +109,7 @@ export async function trashHistorySession(key: string): Promise<DeleteThreadResu
   return result
 }
 
-export async function deleteThreadData(req: DeleteThreadRequest): Promise<DeleteThreadResult> {
+export async function deleteThreadData(req: DeleteThreadRequest, checkpoints: Checkpoints): Promise<DeleteThreadResult> {
   const id = safeId(req.threadId)
   if (!id) throw new Error('bad thread id')
   const result: DeleteThreadResult = { removed: 0, trashed: [], failed: [] }
@@ -129,6 +130,10 @@ export async function deleteThreadData(req: DeleteThreadRequest): Promise<Delete
   } catch {
     /* thread never ran */
   }
+
+  const checkpointFailures = await checkpoints.deleteThread(req.threadId)
+    .catch(() => [req.projectDir ?? join(userData(), 'workspaces', id)])
+  result.failed.push(...checkpointFailures)
 
   // 2. run artefacts: private workspace, or this thread's turns inside the project's .agentswitch
   rm(join(userData(), 'workspaces', id))

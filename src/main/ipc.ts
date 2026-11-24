@@ -344,7 +344,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       const projects = orchestrator.activeProjects()
       const matches = await Promise.all(projects.map(async (project) => (await gitWorktree(project.dir))?.root === root))
       const active = orchestrator.active()
-      return active.some((turn) => turn.threadId === threadId)
+      return orchestrator.checkpoints.isRestoring(root) || active.some((turn) => turn.threadId === threadId)
         || projects.some((project, i) => matches[i] && active.some((turn) => turn.threadId === project.threadId))
     }, t('git.agentBusy'))
   )
@@ -396,15 +396,28 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     return writeHandoff(cwd, turnId, markdown)
   })
 
-  ipcMain.handle(IPC.chatDeleteThread, (_e, req: unknown) => {
+  ipcMain.handle(IPC.chatCheckpoints, (_e, threadId: unknown) =>
+    typeof threadId === 'string' ? orchestrator.checkpoints.list(threadId) : []
+  )
+  ipcMain.handle(IPC.chatCheckpointAction, (_e, threadId: unknown, turnId: unknown, token: unknown, choice: unknown) => {
+    if (typeof threadId !== 'string' || typeof turnId !== 'string'
+      || (token !== undefined && (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)
+        || (choice !== 'skip' && choice !== 'overwrite')))) return { kind: 'unavailable' }
+    return orchestrator.checkpoints.action(
+      threadId, turnId, (root) => orchestrator.isWorkspaceBusy(threadId, root),
+      token, choice === 'skip' || choice === 'overwrite' ? choice : undefined
+    )
+  })
+  ipcMain.handle(IPC.chatDeleteThread, async (_e, req: unknown) => {
     const r = req as Record<string, unknown> | null
     if (!r || typeof r.threadId !== 'string') throw new Error('bad request')
+    await orchestrator.stopAndWait(r.threadId)
     return deleteThreadData({
       threadId: r.threadId,
       projectDir: typeof r.projectDir === 'string' ? r.projectDir : null,
       turnIds: Array.isArray(r.turnIds) ? r.turnIds.filter((t): t is string => typeof t === 'string') : [],
       purgeCli: r.purgeCli === true
-    })
+    }, orchestrator.checkpoints)
   })
 
   // ---- usage & quota ------------------------------------------------------------------------

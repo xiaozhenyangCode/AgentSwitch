@@ -8,6 +8,7 @@ import type { RunSpec } from './agentRunner'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 import { loadThreadHistory } from './threadHistoryTools'
 import { Orchestrator } from './orchestrator'
+import { Checkpoints } from './checkpoints'
 
 let data: string
 const runAgent = vi.hoisted(() => vi.fn())
@@ -105,4 +106,40 @@ describe('orchestrator history handoff', () => {
     expect(runAgent.mock.calls[1][0].resume).toBeNull()
   })
 
+})
+
+describe('orchestrator checkpoints', () => {
+  it('captures before running the model and publishes after it has finished', async () => {
+    const repo = join(data, 'project')
+    mkdirSync(repo)
+    const file = join(repo, 'notes.txt')
+    writeFileSync(file, 'before')
+    const checkpoints = new Checkpoints(data)
+    runAgent.mockImplementation(() => {
+      writeFileSync(file, 'after')
+      return { done: Promise.resolve({ ok: true }), kill: vi.fn() }
+    })
+
+    await new Promise<void>((resolve) => {
+      const orchestrator = new Orchestrator((event) => { if (event.kind === 'turn-end') resolve() }, vi.fn(), vi.fn(), checkpoints)
+      orchestrator.start({ ...request([]), projectDir: repo })
+    })
+    const req = request([])
+    const plan = await checkpoints.action(req.threadId, req.turnId, () => false)
+    expect(plan).toMatchObject({ kind: 'plan', files: ['notes.txt'], conflicts: [] })
+    if (plan.kind !== 'plan') throw new Error('Checkpoint missing')
+    await expect(checkpoints.action(req.threadId, req.turnId, () => false, plan.token, 'skip')).resolves.toMatchObject({ kind: 'undone' })
+    expect(readFileSync(file, 'utf8')).toBe('before')
+  })
+
+  it('continues the turn when checkpoint creation fails', async () => {
+    const checkpoints = new Checkpoints(data)
+    vi.spyOn(checkpoints, 'begin').mockRejectedValueOnce(new Error('Snapshot unavailable'))
+    runAgent.mockReturnValueOnce({ done: Promise.resolve({ ok: true }), kill: vi.fn() })
+    await new Promise<void>((resolve) => {
+      const orchestrator = new Orchestrator((event) => { if (event.kind === 'turn-end' && event.status === 'done') resolve() }, vi.fn(), vi.fn(), checkpoints)
+      orchestrator.start(request([]))
+    })
+    expect(runAgent).toHaveBeenCalledOnce()
+  })
 })

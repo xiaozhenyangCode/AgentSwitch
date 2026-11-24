@@ -590,6 +590,8 @@ export const IPC = {
   chatEvent: 'chat:event',
   chatExportHandoff: 'chat:exportHandoff',
   chatDeleteThread: 'chat:deleteThread',
+  chatCheckpoints: 'chat:checkpoints',
+  chatCheckpointAction: 'chat:checkpointAction',
   historyList: 'history:list',
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',

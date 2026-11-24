@@ -34,20 +34,28 @@ function gitEnv(network: boolean): NodeJS.ProcessEnv {
 
 /** `timeout` override: commits run user hooks (lint-staged, signing) that easily exceed 15s. */
 export function git(cwd: string, args: string[], network = false, timeout = network ? 60_000 : 15_000): Promise<string> {
+  return gitBytes(cwd, args, { network, timeout }).then((output) => output.toString())
+}
+
+export function gitBytes(cwd: string, args: string[], options: {
+  network?: boolean; timeout?: number; env?: NodeJS.ProcessEnv; input?: Buffer; maxBuffer?: number
+} = {}): Promise<Buffer> {
+  const { network = false, timeout = 15_000, env, input, maxBuffer = 4 * 1024 * 1024 } = options
   return new Promise((resolve, reject) => {
     const child = execFile('git', [
       '-c', 'core.quotepath=off', '--no-optional-locks', '--literal-pathspecs',
       ...(network ? ['-c', 'credential.interactive=false'] : []),
       ...args
     ], {
-      cwd, env: gitEnv(network), maxBuffer: 4 * 1024 * 1024, timeout
+      cwd, env: { ...gitEnv(network), ...env }, encoding: 'buffer', maxBuffer, timeout
     }, (err, stdout, stderr) => {
       if (!err) return resolve(stdout)
-      const output = args[0] === 'push' ? [stderr.trim(), stdout.trim()].filter(Boolean).join('\n') : stderr.trim()
-    const detail = output.slice(0, 4_000)
-      reject(new Error(detail || (err.killed ? 'Git command timed out.' : err.message.split('\n')[0])))
+      const output = args[0] === 'push' ? [stderr.toString().trim(), stdout.toString().trim()].filter(Boolean).join('\n') : stderr.toString().trim()
+      const detail = output.slice(0, 4_000)
+      reject(new Error(detail || (err.killed ? 'Git command timed out.' : err.message.split('\n')[0]), { cause: err }))
     })
-    child.stdin?.end()
+    child.stdin?.on('error', () => { /* The command callback reports early exits. */ })
+    child.stdin?.end(input)
   })
 }
 

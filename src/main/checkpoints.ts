@@ -1,0 +1,327 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, posix } from 'node:path'
+import type { CheckpointChoice, CheckpointPlan, CheckpointResult, CheckpointStatus, TurnCheckpoint } from '@shared/checkpoints'
+import { captureCheckpoint, checkpointChanges, checkpointGit, openCheckpointRepo, pruneHiddenObjects, publishCheckpoint, removeCheckpointRefs, type CheckpointRepo, type FileChange } from './checkpointGit'
+import { CheckpointLimit, currentVersion, directoryHasOtherFiles, parentEntry, restoreFile, sameVersion, type FileVersion } from './checkpointFiles'
+import { git, isInside } from './gitOps'
+
+const allowedId = (id: string) => /^[\w-]{1,128}$/.test(id)
+const overlap = (a: string, b: string) => isInside(a, b) || isInside(b, a)
+const sizeLimit = (error: unknown) => error instanceof CheckpointLimit
+  || (error instanceof Error && (error.cause as NodeJS.ErrnoException | undefined)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+
+interface RecordOnDisk {
+  threadId: string
+  turnId: string
+  repo: CheckpointRepo
+  order: number
+  status: CheckpointStatus | 'pending' | 'unchanged'
+  files?: string[]
+  before?: string
+  after?: string
+  permissions?: [string, number][]
+}
+
+interface Capture {
+  dir: string
+  overlap: boolean
+  record?: RecordOnDisk
+}
+
+interface InspectedChange extends FileChange {
+  current: FileVersion | null
+  parent: Awaited<ReturnType<typeof parentEntry>>
+  group: string
+  blocked: boolean
+}
+
+export class Checkpoints {
+  private readonly dir: string
+  private sequence = 0
+  private readonly running = new Map<string, Capture>()
+  private operations = Promise.resolve<unknown>(undefined)
+  private restoring: string | null = null
+
+  constructor(
+    private readonly data: string,
+    private readonly options: { retain?: number; maxFiles?: number; gitAvailable?: () => Promise<boolean> } = {}
+  ) {
+    this.dir = join(data, 'checkpoints')
+  }
+
+  isRestoring(dir: string): boolean {
+    if (this.restoring === null) return false
+    try {
+      return overlap(this.restoring, realpathSync(dir))
+    } catch {
+      return false
+    }
+  }
+
+  private async available() {
+    return this.options.gitAvailable?.() ?? git(this.data, ['--version']).then(() => true, () => false)
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.operations.then(operation, operation)
+    this.operations = next
+    return next
+  }
+
+  private file(id: string) {
+    return join(this.dir, id + '.json')
+  }
+
+  private async read(id: string): Promise<RecordOnDisk | null> {
+    try {
+      const record: RecordOnDisk | null = JSON.parse(await readFile(this.file(id), 'utf8'))
+      if (record?.turnId !== id || typeof record.repo?.root !== 'string' || !isAbsolute(record.repo.root)
+        || typeof record.repo.gitDir !== 'string' || !isAbsolute(record.repo.gitDir)
+        || [record.before, record.after].some((oid) => oid !== undefined && !/^([a-f0-9]{40}|[a-f0-9]{64})$/.test(oid))) {
+        throw new Error('Invalid checkpoint record')
+      }
+      return record
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  private async records(): Promise<RecordOnDisk[]> {
+    const names = await readdir(this.dir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return []
+      throw error
+    })
+    const ids = names.filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)).filter(allowedId)
+    const records: RecordOnDisk[] = []
+    for (const id of ids) {
+      const record = await this.read(id).catch(() => null)
+      if (record) records.push(record)
+    }
+    return records
+  }
+
+  private async save(record: RecordOnDisk) {
+    await mkdir(this.dir, { recursive: true, mode: 0o700 })
+    const temp = join(this.dir, randomUUID() + '.tmp')
+    try {
+      await writeFile(temp, JSON.stringify(record), { flag: 'wx', flush: true, mode: 0o600 })
+      await rename(temp, this.file(record.turnId))
+    } finally {
+      await rm(temp, { force: true })
+    }
+  }
+
+  private markOverlap(turnId: string, capture: Capture) {
+    for (const [id, other] of this.running) {
+      if (id !== turnId && overlap(capture.dir, other.dir)) capture.overlap = other.overlap = true
+    }
+  }
+
+  async begin(threadId: string, turnId: string, cwd: string): Promise<void> {
+    if (!allowedId(turnId) || this.running.has(turnId)) return
+    const capture: Capture = { dir: cwd, overlap: false }
+    this.running.set(turnId, capture)
+    const order = this.sequence = Math.max(Date.now(), this.sequence + 1)
+    try {
+      capture.dir = await realpath(cwd)
+      this.markOverlap(turnId, capture)
+      if (!await this.available() || await this.read(turnId)) return
+      const repo = await openCheckpointRepo(capture.dir, this.data)
+      capture.dir = repo.root
+      this.markOverlap(turnId, capture)
+      if (capture.overlap) return
+      const record: RecordOnDisk = { threadId, turnId, repo, order, status: 'pending' }
+      capture.record = record
+      const before = await captureCheckpoint(repo, 'before', this.options.maxFiles)
+      record.before = before.sha
+      await this.save(record)
+      await publishCheckpoint(repo, turnId, 'before', before.sha)
+      record.permissions = before.permissions
+    } catch (error) {
+      const record = capture.record
+      if (record) {
+        await this.discard(record, sizeLimit(error) ? 'tooLarge' : undefined).catch(() => {})
+        capture.record = undefined
+      }
+    }
+  }
+
+  async finish(threadId: string, turnId: string): Promise<void> {
+    const capture = this.running.get(turnId)
+    if (!capture) return
+    try {
+      const record = capture.record
+      if (!record || record.threadId !== threadId) return
+      await this.enqueue(async () => {
+        try {
+          if (!capture.overlap && record.before) {
+            const { sha: after } = await captureCheckpoint(record.repo, 'after', this.options.maxFiles)
+            record.after = after
+            await this.save({ ...record, permissions: undefined })
+            await publishCheckpoint(record.repo, turnId, 'after', after)
+            const files = (await checkpointChanges(record.repo, record.before, after)).map((change) => change.path)
+            if (!capture.overlap) {
+              const changed = new Set(files)
+              const permissions = record.permissions?.filter(([path]) => changed.has(path))
+              await this.save({ ...record, after, status: files.length ? 'ready' : 'unchanged', files, permissions })
+              await this.prune(record.repo).catch(() => {})
+              return
+            }
+          }
+          await this.discard(record)
+        } catch (error) {
+          await this.discard(record, sizeLimit(error) ? 'tooLarge' : undefined).catch(() => {})
+        }
+      })
+    } finally {
+      this.running.delete(turnId)
+    }
+  }
+
+  private async discard(record: RecordOnDisk, keep?: CheckpointStatus) {
+    await removeCheckpointRefs(record.repo, record.turnId, this.data, record)
+    if (keep) await this.save({
+      ...record, status: keep, files: undefined, before: undefined, after: undefined, permissions: undefined
+    })
+    else await rm(this.file(record.turnId), { force: true })
+  }
+
+  private async prune(repo: CheckpointRepo) {
+    const records = (await this.records()).filter((record) => (record.before || record.after) && record.repo.gitDir === repo.gitDir)
+    const abandoned = records.filter((record) => record.status === 'pending' && !this.running.has(record.turnId))
+    const expired = records.filter((record) => record.status !== 'pending')
+      .sort((a, b) => b.order - a.order).slice(this.options.retain ?? 50)
+    for (const record of [...abandoned, ...expired]) {
+      await this.discard(record, record.status === 'undone' ? 'undone' : undefined).catch(() => {})
+    }
+    if (repo.hidden && (abandoned.length || expired.length)) await pruneHiddenObjects(repo)
+  }
+
+  async deleteThread(threadId: string): Promise<string[]> {
+    return this.enqueue(async () => {
+      const failed: string[] = []
+      for (const record of await this.records()) {
+        if (record.threadId !== threadId) continue
+        try {
+          await this.discard(record)
+        } catch {
+          failed.push(record.repo.root)
+        }
+      }
+      return [...new Set(failed)]
+    })
+  }
+
+  async list(threadId: string): Promise<TurnCheckpoint[]> {
+    const records = (await this.records()).filter((r) => r.threadId === threadId)
+    if (!records.length || !await this.available()) return []
+    return records.flatMap(({ status, turnId }) =>
+      status === 'pending' || status === 'unchanged' ? [] : [{ status, turnId }]
+    )
+  }
+
+  private async inspect(record: RecordOnDisk) {
+    const { repo, before, after } = record
+    if (!before || !after || await realpath(repo.root) !== repo.root) throw new Error('Checkpoint unavailable')
+    const changes = await checkpointChanges(repo, before, after)
+    const laterFiles = new Set((await this.records()).flatMap((later) =>
+      later.threadId === record.threadId && later.order > record.order && later.repo.root === repo.root ? later.files ?? [] : []
+    ))
+    const algorithm: 'sha1' | 'sha256' = changes.some(({ before, after }) => (before ?? after)?.oid.length === 64) ? 'sha256' : 'sha1'
+    const groups = new Map<string, string>()
+    const afterDirectories = new Set<string>()
+    const paths = new Set(changes.map(({ path }) => path))
+    const removable = new Set(changes.filter(({ before }) => !before).map(({ path }) => path))
+    // A file can become a directory or vice versa. Undo dependent paths together.
+    for (const { path, after } of changes) {
+      let group = path
+      for (let parent = posix.dirname(path); parent !== '.'; parent = posix.dirname(parent)) {
+        if (paths.has(parent)) group = parent
+        if (after) afterDirectories.add(parent)
+      }
+      groups.set(path, group)
+    }
+    const entries: InspectedChange[] = []
+    const conflicting = new Set<string>()
+    const token = createHash('sha256')
+    for (const change of changes) {
+      const { path, after } = change
+      const parent = await parentEntry(repo.root, path)
+      const current = await currentVersion(repo.root, path, algorithm)
+      const group = groups.get(path)!
+      const isDirectory = current?.mode === 'directory'
+      const expectedDirectory = !after && isDirectory && afterDirectories.has(path)
+      const blocked = current?.mode === 'special' || (parent === 'blocked' && group === path)
+        || (isDirectory && await directoryHasOtherFiles(join(repo.root, path), path, removable))
+      if ((!sameVersion(current, after) && !expectedDirectory) || laterFiles.has(path) || blocked) conflicting.add(group)
+      entries.push({ ...change, current, parent, group, blocked })
+      token.update(JSON.stringify([path, change.before, after, current, parent, blocked, conflicting.has(group)]))
+    }
+    const conflicts = entries.filter((entry) => conflicting.has(entry.group)).map((entry) => entry.path)
+    const plan: CheckpointPlan = { kind: 'plan', token: token.digest('hex'), files: changes.map((change) => change.path), conflicts }
+    return { plan, entries, algorithm }
+  }
+
+  action(threadId: string, turnId: string, busy: (root: string) => boolean, token?: string, choice?: CheckpointChoice): Promise<CheckpointResult> {
+    return this.enqueue(async () => {
+      if (!allowedId(turnId)) return { kind: 'unavailable' }
+      try {
+        const record = await this.read(turnId)
+        if (!record || record.threadId !== threadId || record.status !== 'ready') return { kind: 'unavailable' }
+        const { repo } = record
+        if (busy(repo.root)) return { kind: 'busy' }
+        if (token) this.restoring = repo.root
+        const { plan, entries, algorithm } = await this.inspect(record)
+        if (!token || token !== plan.token) return plan
+
+        const conflicts = new Set(plan.conflicts)
+        const selected = entries.filter((entry) => choice === 'overwrite' || !conflicts.has(entry.path))
+        let restored = 0
+        let failed = 0
+        const permissions = new Map(record.permissions)
+        const failedGroups = new Set(selected.filter(({ blocked }) => blocked).map(({ group }) => group))
+        const groupSizes = new Map<string, number>()
+        for (const entry of selected) {
+          groupSizes.set(entry.group, (groupSizes.get(entry.group) ?? 0) + 1)
+          // Recheck each group before touching any of its paths.
+          if (!sameVersion(await currentVersion(repo.root, entry.path, algorithm), entry.current)) failedGroups.add(entry.group)
+        }
+        // Remove files first so their names can become directories during restoration.
+        selected.sort((a, b) => Number(!!a.before) - Number(!!b.before))
+        for (const entry of selected) {
+          if (failedGroups.has(entry.group)) {
+            failed++
+            continue
+          }
+          try {
+            const bytes = entry.before
+              ? await checkpointGit(repo, ['cat-file', 'blob', entry.before.oid], { maxBuffer: 21 * 1024 * 1024 })
+              : undefined
+            if (groupSizes.get(entry.group) === 1 && !sameVersion(await currentVersion(repo.root, entry.path, algorithm), entry.current)) {
+              throw new Error('Checkpoint file changed')
+            }
+            // An ancestor file can stand in for an absent descendant.
+            if (entry.before || entry.parent === 'directory' || entry.current) {
+              await restoreFile(repo.root, entry.path, entry.before, bytes, permissions.get(entry.path))
+            }
+            restored++
+          } catch {
+            failedGroups.add(entry.group)
+            failed++
+          }
+        }
+
+        if (failed) return { kind: 'partial', restored, failed }
+        await this.save({ ...record, status: 'undone' })
+        return { kind: 'undone', restored, skipped: entries.length - selected.length }
+      } catch {
+        return { kind: 'failed' }
+      } finally {
+        this.restoring = null
+      }
+    })
+  }
+}

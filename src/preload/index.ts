@@ -1,3 +1,4 @@
+import type { CheckpointChoice, CheckpointResult, TurnCheckpoint } from '@shared/checkpoints'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { ChatChanges, OpenChats } from '@shared/chat'
 import type { I18nState, LanguagePref } from '@shared/i18n'
@@ -114,6 +115,9 @@ const api = {
     /** Writes a handoff document (exported transcript); returns its absolute path. */
     exportHandoff: (threadId: string, turnId: string, projectDir: string | null, markdown: string): Promise<string> =>
       ipcRenderer.invoke(IPC.chatExportHandoff, threadId, turnId, projectDir, markdown),
+    checkpoints: (threadId: string): Promise<TurnCheckpoint[]> => ipcRenderer.invoke(IPC.chatCheckpoints, threadId),
+    checkpointAction: (threadId: string, turnId: string, token?: string, choice?: CheckpointChoice): Promise<CheckpointResult> =>
+      ipcRenderer.invoke(IPC.chatCheckpointAction, threadId, turnId, token, choice),
     deleteThread: (req: DeleteThreadRequest): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.chatDeleteThread, req)
   },
   usage: {

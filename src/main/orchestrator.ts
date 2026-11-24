@@ -1,8 +1,8 @@
 import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, relative } from 'node:path'
-import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
+import { LEGACY_USER_DATA } from './legacy'
 import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
@@ -16,6 +16,9 @@ import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript
 import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
 import { bindNativeSession, canResume, recordUnconfirmedSession, type NativeSessions } from './historyResume'
 import { createThreadHistory, supportsThreadHistory } from './threadHistoryConfig'
+import { Checkpoints } from './checkpoints'
+import { SKIP_DIRS, SNAPSHOT_MAX_FILES } from './checkpointFiles'
+import { isInside } from './gitOps'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -60,8 +63,6 @@ function stepPrompt(parts: string[], sys: string[]): StepPrompt {
     turnOnly: TURN_LINES.map((i) => sys[i]).join('\n')
   }
 }
-const SNAPSHOT_MAX_FILES = 20000
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.agentswitch', LEGACY_PROJECT_DIR, 'dist', 'build', 'out', '.next', 'target', '.venv', 'venv', '__pycache__', '.cache', '.turbo'])
 const REVIEW_RE = /验收|审核|审查|复核|评审|检查|review/i
 
 type StepKind = 'own' | 'mention' | 'dispatch' | 'summary'
@@ -99,6 +100,10 @@ interface Turn {
   counter: number
   /** Accounts the user @-named mid-sentence: the driver plans and dispatches to them (with these models). */
   named: RunAgentRef[]
+  checkpoint: Promise<void>
+  ending?: Promise<void>
+  done: Promise<void>
+  resolveDone: () => void
 }
 
 const uid = (): string => randomBytes(6).toString('hex')
@@ -293,7 +298,8 @@ export class Orchestrator {
   constructor(
     private emit: (e: ChatEvent) => void,
     private log: (profileId: ProfileId, text: string) => void,
-    private onState: () => void
+    private onState: () => void,
+    readonly checkpoints = new Checkpoints(app.getPath('userData'))
   ) {}
 
   isRunning = (id: ProfileId): boolean => (this.busy.get(id) ?? 0) > 0
@@ -305,6 +311,7 @@ export class Orchestrator {
     if (req.projectDir && !req.allowMissingProject)
       if (!isAbsolute(req.projectDir) || !existsSync(req.projectDir) || !statSync(req.projectDir).isDirectory()) throw new Error(t('main.noProject', { dir: req.projectDir }))
     const cwd = threadCwd(req.threadId, req.projectDir)
+    if (this.checkpoints.isRestoring(cwd)) throw new Error(t('checkpoint.restoring'))
     allowRoot(cwd)
     const base = join(cwd, '.agentswitch')
     mkdirSync(base, { recursive: true })
@@ -330,7 +337,13 @@ export class Orchestrator {
       }
     }
 
-    const turn: Turn = { req, cwd, runDir, outDir, attachments, steps: [], idx: 0, current: null, stopped: false, paused: null, retryBudget: MAX_RETRIES, counter: 0, named: [] }
+    let resolveDone!: () => void
+    const done = new Promise<void>((resolve) => { resolveDone = resolve })
+    const checkpoint = this.checkpoints.begin(req.threadId, req.turnId, cwd).catch(() => {})
+    const turn: Turn = {
+      req, cwd, runDir, outDir, attachments, done, resolveDone, checkpoint,
+      steps: [], idx: 0, current: null, stopped: false, paused: null, retryBudget: MAX_RETRIES, counter: 0, named: []
+    }
     this.turns.set(req.threadId, turn)
     this.emit({ kind: 'turn-start', threadId: req.threadId, turnId: req.turnId, cwd })
 
@@ -338,7 +351,7 @@ export class Orchestrator {
     if (req.mode === 'handoff') {
       this.add(turn, { profileId: driver.profileId, model: driver.model, task: '生成交接文档', kind: 'own', dispatchedBy: null, allowDispatch: false })
       this.writeTask(turn)
-      void this.next(turn)
+      void checkpoint.then(() => this.next(turn))
       return
     }
     const tasks = mentionTasks(req)
@@ -362,7 +375,7 @@ export class Orchestrator {
       this.add(turn, { profileId: driver.profileId, model: driver.model, task: '', kind: 'summary', dispatchedBy: null, allowDispatch: false })
     }
     this.writeTask(turn)
-    void this.next(turn)
+    void checkpoint.then(() => this.next(turn))
   }
 
   /** Turns still in flight (a reloaded window re-attaches to them instead of marking them stopped). */
@@ -376,6 +389,25 @@ export class Orchestrator {
 
   activeProjects(): { threadId: string; dir: string }[] {
     return [...this.turns.values()].filter((turn) => turn.req.projectDir).map((turn) => ({ threadId: turn.req.threadId, dir: turn.cwd }))
+  }
+
+  isWorkspaceBusy(threadId: string, root: string): boolean {
+    return [...this.turns.values()].some((turn) => {
+      if (turn.req.threadId === threadId) return true
+      try {
+        const cwd = realpathSync(turn.cwd)
+        return isInside(root, cwd) || isInside(cwd, root)
+      } catch {
+        return false
+      }
+    })
+  }
+
+  async stopAndWait(threadId: string): Promise<void> {
+    const turn = this.turns.get(threadId)
+    if (!turn) return
+    this.stop(threadId)
+    await turn.done
   }
 
   stop(threadId: string): void {
@@ -465,10 +497,16 @@ export class Orchestrator {
   }
 
   private end(turn: Turn, status: 'done' | 'stopped' | 'error'): void {
-    if (this.turns.get(turn.req.threadId) !== turn) return
-    this.turns.delete(turn.req.threadId)
+    if (turn.ending || this.turns.get(turn.req.threadId) !== turn) return
     this.writeTask(turn)
-    this.emit({ kind: 'turn-end', threadId: turn.req.threadId, turnId: turn.req.turnId, status })
+    turn.ending = turn.checkpoint
+      .then(() => this.checkpoints.finish(turn.req.threadId, turn.req.turnId))
+      .catch(() => {})
+      .then(() => {
+        this.turns.delete(turn.req.threadId)
+        turn.resolveDone()
+        this.emit({ kind: 'turn-end', threadId: turn.req.threadId, turnId: turn.req.turnId, status })
+      })
   }
 
   private requeueRetry(turn: Turn, reviewIdx: number, reason: string): void {
@@ -607,6 +645,7 @@ export class Orchestrator {
   }
 
   private async next(turn: Turn): Promise<void> {
+    if (turn.ending) return
     if (turn.stopped) return this.end(turn, 'stopped')
     const step = turn.steps[turn.idx]
     if (!step) return this.end(turn, 'done')

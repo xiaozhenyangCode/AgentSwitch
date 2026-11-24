@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { CheckpointStatus } from '@shared/checkpoints'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
@@ -18,6 +19,7 @@ import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel
 import { ProjectBar } from '../components/ProjectBar'
 import { GitBranchMenu } from '../components/GitBranchMenu'
 import { useProjectGit } from '../state/useProjectGit'
+import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { useStartThread } from '../state/threads'
@@ -235,6 +237,20 @@ export function WorkbenchPage() {
     if (scrollTimer.current) window.clearTimeout(scrollTimer.current)
   }, [])
   const messages = useMemo(() => threadMessages(thread), [thread])
+  const checkpoints = useCheckpoints(thread?.id)
+  const checkpointReplies = useMemo(() => {
+    const turns = new Map(checkpoints.turns?.map(({ turnId, status }) => [turnId, status]))
+    const replies = new Map<string, CheckpointStatus>()
+    for (const message of [...messages].reverse()) {
+      if (message.role !== 'assistant' || message.status === 'queued' || (message.status === 'stopped' && !message.startedAt)) continue
+      const status = turns.get(message.turnId)
+      if (status) {
+        replies.set(message.id, status)
+        turns.delete(message.turnId)
+      }
+    }
+    return replies
+  }, [messages, checkpoints.turns])
   /** Text-only sent prompts for ↑/↓ recall: current thread's user messages, or recent global prompts in a new chat. */
   const inputHistory = useMemo(() => {
     const out: string[] = []
@@ -516,7 +532,22 @@ export function WorkbenchPage() {
             ) : (
               <div className="space-y-6">
                 <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
-                  {messages.map((m) => (m.role === 'user' ? <UserBubble key={m.id} msg={m} /> : <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId} />))}
+                  {messages.map((m) => {
+                    if (m.role === 'user') return <UserBubble key={m.id} msg={m} />
+                    const checkpoint = checkpointReplies.get(m.id)
+                    return (
+                      <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId}>
+                        {checkpoint && thread && (
+                          <CheckpointUndo threadId={thread.id} turnId={m.turnId} status={checkpoint} busy={isThreadBusy(thread)}
+                            onChange={() => {
+                              checkpoints.refresh()
+                              if (showGitTools) git.refreshAll()
+                              else fc.refresh()
+                            }} />
+                        )}
+                      </AssistantBlock>
+                    )
+                  })}
                 </MarkdownBase.Provider>
               </div>
             )}
@@ -986,7 +1017,7 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
 const REPLY_FOLD_AT = 360
 const REPLY_FOLD_PX = 300
 
-function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest?: boolean }) {
+function AssistantBlock({ msg, latest = false, children }: { msg: AssistantMessage; latest?: boolean; children?: ReactNode }) {
   const streaming = msg.status === 'streaming'
   useTicker(streaming)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1080,6 +1111,7 @@ function AssistantBlock({ msg, latest = false }: { msg: AssistantMessage; latest
             <UsageLine usage={msg.usage} reasonix={msg.agent.kind === 'reasonix'} ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null} />
           </div>
         )}
+        {children}
       </div>
     </div>
   )
