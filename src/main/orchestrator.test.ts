@@ -15,7 +15,7 @@ const runAgent = vi.hoisted(() => vi.fn())
 vi.mock('electron', () => ({ app: { getPath: () => data } }))
 vi.mock('./legacy', () => ({ LEGACY_PROJECT_DIR: '.agentmux', LEGACY_USER_DATA: '/tmp/agentswitch-nonexistent' }))
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
-vi.mock('./usage', () => ({ recordRun: vi.fn(), refreshCodexQuota: vi.fn() }))
+vi.mock('./usage', () => ({ recordRun: vi.fn(), refreshPostRunQuota: vi.fn() }))
 vi.mock('./agentRunner', () => ({ runAgent }))
 vi.mock('./profiles', () => ({
   KIND_LABEL: { codex: 'Codex' },

@@ -10,6 +10,7 @@ import {
   type Snapshot
 } from '@shared/types'
 import { KIND_META } from '../lib/ui'
+import { canUseOAuthLogin } from '@shared/providerCapabilities'
 import { t } from './i18n'
 
 export type Page = 'workbench' | 'engines' | 'usage'
@@ -217,7 +218,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: t('acct.removeTitle', { name: p.name }),
         message: p.imported
           ? t('acct.removeImported', { dir: p.configDir })
-          : t(p.kind === 'reasonix' ? 'reasonix.removeManaged' : 'acct.removeOwn'),
+          : t(canUseOAuthLogin(p.kind) ? 'acct.removeOwn' : 'reasonix.removeManaged'),
         confirmLabel: t('acct.removeConfirm'),
         destructive: true
       })

@@ -69,7 +69,7 @@ export function unseenTranscript<T extends Pick<TranscriptEntry, 'profileId' | '
 }
 
 export const historyModel = (spec: string | null | undefined, kind: ProfileKind): string | null =>
-  splitSpec(spec, kind === 'reasonix' ? kind : undefined).model
+  splitSpec(spec, kind).model
 
 export function reportedContextWindow(entries: TranscriptEntry[], profileId: ProfileId, model: string | null, kind: ProfileKind): number | undefined {
   const target = historyModel(model, kind)

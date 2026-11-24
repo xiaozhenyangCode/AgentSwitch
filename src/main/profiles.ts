@@ -17,6 +17,7 @@ import {
   type ReasonixConnect,
   type PtyMode
 } from '@shared/types'
+import { canUseOAuthLogin, getProviderCapabilities, resolvePermissionMode } from '@shared/providerCapabilities'
 import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, strippedVarNames } from './shellEnv'
 import { bundledNpmInstallEnv, isBundledTool, resolveBundledRuntime } from './runtime'
 import { loadStore, saveStore, type StoreData } from './store'
@@ -258,8 +259,10 @@ export function initProfiles(): void {
 const withDefaults = (p: ProfileConfig): ProfileConfig => ({
   ...p,
   defaultModel: p.defaultModel ?? '',
-  autoApprove: p.autoApprove === 'full' || p.autoApprove === 'edits' ? p.autoApprove : 'cli',
-  ...(p.kind === 'gemini' ? { agyTransport: p.agyTransport === 'acp' ? 'acp' as const : 'print' as const } : {}),
+  autoApprove: resolvePermissionMode(p.kind, p.autoApprove),
+  ...(getProviderCapabilities(p.kind).supportsInteractiveTransport
+    ? { agyTransport: p.agyTransport === 'acp' ? ('acp' as const) : ('print' as const) }
+    : {}),
   extraEnv: { ...p.extraEnv }
 })
 
@@ -323,12 +326,12 @@ function suggestNameFrom(key: 'acct.deepseekName' | 'acct.customName'): string {
 
 /** True for accounts that connect with an API key instead of the CLI's own sign-in. */
 export function isApiKeyAccount(cfg: ProfileConfig): boolean {
-  return !!cfg.apiKey || (cfg.kind === 'reasonix' && !cfg.imported)
+  return !!cfg.apiKey || (!canUseOAuthLogin(cfg.kind) && !cfg.imported)
 }
 
 export function addProfile(kind: ProfileKind, name?: string, apiKey?: ApiKeyConfig): ProfileConfig {
   if (!KINDS.includes(kind)) throw new Error(`bad kind ${kind}`)
-  if (kind === 'reasonix') throw new Error(t('reasonix.badConnection'))
+  if (!canUseOAuthLogin(kind)) throw new Error(t('reasonix.badConnection'))
   let conn: ApiKeyConfig | undefined
   if (apiKey) {
     const c: ApiKeyConfig = { provider: apiKey.provider, baseUrl: apiKey.baseUrl, models: apiKey.models ? [...apiKey.models] : undefined }
@@ -468,11 +471,11 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
   const { id: _i, kind: _k, imported: _m, createdAt: _c, ...rest } = patch
   if (rest.name !== undefined) rest.name = rest.name.trim() || store.profiles[i].name
   if (rest.defaultModel !== undefined) rest.defaultModel = rest.defaultModel.trim()
-  if (rest.autoApprove !== undefined && rest.autoApprove !== 'full' && rest.autoApprove !== 'edits') rest.autoApprove = 'cli'
+  const cur = store.profiles[i]
+  if (rest.autoApprove !== undefined) rest.autoApprove = resolvePermissionMode(cur.kind, rest.autoApprove)
   // The connection (subscription vs key, and which provider) is fixed at creation; only a
   // custom endpoint's model list may change.
-  const cur = store.profiles[i]
-  if (cur.kind !== 'gemini') delete rest.agyTransport
+  if (!getProviderCapabilities(cur.kind).supportsInteractiveTransport) delete rest.agyTransport
   else if (rest.agyTransport !== undefined && rest.agyTransport !== 'acp') rest.agyTransport = 'print'
   delete rest.apiKey
   if (cur.kind === 'reasonix') {
@@ -482,7 +485,7 @@ export function updateProfile(id: ProfileId, patch: Partial<ProfileConfig>): Pro
       delete rest.extraEnv.REASONIX_HOME
     }
   }
-  if (cur.apiKey || cur.kind === 'reasonix') delete rest.configDir // API-key accounts always live in their managed dir
+  if (cur.apiKey || !canUseOAuthLogin(cur.kind)) delete rest.configDir // API-key accounts always live in their managed dir
   if (patch.apiKey?.models && cur.apiKey?.provider === 'custom') {
     const next: ApiKeyConfig = { ...cur.apiKey, models: [...patch.apiKey.models] }
     const err = validateApiKeyConfig(cur.kind, next)
@@ -616,7 +619,7 @@ function agyTokenFiles(home: string): string[] {
 
 /** Best-effort "has this account completed OAuth" check, by kind. */
 function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
-  if (cfg.apiKey && cfg.kind !== 'reasonix') return secrets().has(cfg.id)
+  if (cfg.apiKey && canUseOAuthLogin(cfg.kind)) return secrets().has(cfg.id)
   switch (cfg.kind) {
     case 'claude': {
       // Default dir keeps its global config at ~/.claude.json; custom CLAUDE_CONFIG_DIR at <dir>/.claude.json.
@@ -819,7 +822,7 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
 
 /** The account's key env, or {} (subscription account, or no key saved yet). */
 function accountKeyEnv(cfg: ProfileConfig): Record<string, string> {
-  if (!cfg.apiKey || cfg.kind === 'reasonix') return {}
+  if (!cfg.apiKey || !canUseOAuthLogin(cfg.kind)) return {}
   const key = secrets().get(cfg.id)
   return key ? apiKeyEnv(cfg.kind, cfg.apiKey, key, cfg.defaultModel) : {}
 }

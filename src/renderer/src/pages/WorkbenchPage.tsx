@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
+import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
@@ -175,9 +176,7 @@ function mirrorSegments(text: string, spans: { index: number; length: number }[]
  * variants; Codex: 272k (its runs normally report the real window); Gemini and Reasonix: 1M.
  */
 function contextWindow(kind: ProfileState['kind'], model: string | null): number {
-  if (kind === 'claude') return /\[1m\]|-1m\b/i.test(model ?? '') ? 1_000_000 : 200_000
-  if (kind === 'codex') return 272_000
-  return 1_000_000
+  return defaultContextWindowFor(kind, model)
 }
 
 export function WorkbenchPage() {
@@ -1346,7 +1345,7 @@ function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: Assis
             )}
             <UsageLine
               usage={msg.usage}
-              reasonix={msg.agent.kind === 'reasonix'}
+              reasonix={getProviderCapabilities(msg.agent.kind).showsFineGrainedCost}
               costUsd={estimateMessageCost(msg.usage, msg.actualModel || msg.agent.model, usageSnap)}
               ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null}
             />
@@ -1508,7 +1507,7 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
         className={`flex h-7 max-w-[260px] items-center gap-1 rounded-full bg-black/[0.045] pr-2 pl-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : ''}`}
         title={t('wb.subModelHint')}
       >
-        <span className="truncate">{eff || account.kind === 'reasonix' ? modelLabel(eff, account.id) : t('common.default')}</span>
+        <span className="truncate">{eff || getProviderCapabilities(account.kind).hasExplicitDefaultModel ? modelLabel(eff, account.id) : t('common.default')}</span>
         <IconChevronDown size={12} className="shrink-0 text-ink-3" />
       </button>
       {open && (
@@ -1519,12 +1518,12 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
               {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
             </button>
           </div>
-          <EffortBar reasonix={account.kind === 'reasonix'} opt={cur.opt} effort={cur.effort} onChange={(e) => cur.model && onPick(withEffort(cur.opt, cur.model, e))} />
+          <EffortBar reasonix={getProviderCapabilities(account.kind).supportsDisabledEffort} opt={cur.opt} effort={cur.effort} onChange={(e) => cur.model && onPick(withEffort(cur.opt, cur.model, e))} />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <button onClick={() => pick(null)} className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors ${!model ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
               <span className="min-w-0 flex-1">
                 <span className="block text-[14px] leading-5 text-ink">{t('common.default')}</span>
-                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? t('wb.accountDefault', { model: modelLabel(account.defaultModel, account.id) }) : account.kind === 'reasonix' && list?.defaultModel ? modelLabel(null, account.id) : defaultHint(account.kind)}</span>
+                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? t('wb.accountDefault', { model: modelLabel(account.defaultModel, account.id) }) : getProviderCapabilities(account.kind).hasExplicitDefaultModel && list?.defaultModel ? modelLabel(null, account.id) : defaultHint(account.kind)}</span>
               </span>
               {!model && <IconCheck size={15} className="text-accent" />}
             </button>
@@ -1849,7 +1848,8 @@ function Composer({
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
       setMention(null)
-      // `/` (or full-width `／`) at the start of a line or after a space opens the skill menu
+      // `/` (or full-width `／`) at the start of a line or after a space opens the skill menu when skills are supported
+      if (driver && !getProviderCapabilities(driver.kind).skillTriggerPrefix) return setSlash(null)
       const sl = /(?:^|\s)[/／]([^\s/／]{0,48})$/.exec(before)
       if (!sl) return setSlash(null)
       // no account at all: the menu still opens, showing its empty state
@@ -2111,7 +2111,7 @@ function Composer({
                         className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-ink-2 hover:bg-black/[0.09]"
                         title={t('wb.pickSub')}
                       >
-                        {p.defaultModel || p.kind === 'reasonix' ? modelLabel(p.defaultModel, p.id) : t('common.default')} ›
+                        {p.defaultModel || getProviderCapabilities(p.kind).hasExplicitDefaultModel ? modelLabel(p.defaultModel, p.id) : t('common.default')} ›
                       </span>
                       </>
                     }
@@ -2129,7 +2129,7 @@ function Composer({
               return (
                 <div className={popover + ' flex max-h-[400px] w-80 flex-col'}>
                   <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.subModelsOf', { name: p.name })}</div>
-                  <EffortBar reasonix={p.kind === 'reasonix'} opt={hotOpt} effort={subEffort} onChange={setSubEffort} />
+                  <EffortBar reasonix={getProviderCapabilities(p.kind).supportsDisabledEffort} opt={hotOpt} effort={subEffort} onChange={setSubEffort} />
                   <div className="min-h-0 flex-1 overflow-y-auto">
                     {opts.map((m, j) => {
                       const o = m ? findModel(m, p.id)?.opt : null

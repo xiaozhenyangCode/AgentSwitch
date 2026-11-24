@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { KINDS, type ProfileKind, type ProfileState } from '@shared/types'
+import { canUseOAuthLogin, getProviderCapabilities } from '@shared/providerCapabilities'
 import { useApp } from '../state/AppContext'
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, ProfileAvatar } from '../components/common'
@@ -191,16 +192,19 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
     if (!r.ok && !r.cancelled) setFailed(r.error ?? t('ob.installFailed'))
   }
 
+  const caps = getProviderCapabilities(kind)
+  const oauth = canUseOAuthLogin(kind)
+
   /** Signs in the first account of this kind that is not ready, creating one if needed. */
   const doLogin = async () => {
-    if (kind === 'reasonix') return openAddAccount(kind)
+    if (!oauth) return openAddAccount(kind)
     setBusy(true)
     try {
       let target = accounts.find((p) => !isReady(p) && !p.apiKey) // API-key accounts never use the OAuth sheet
       if (!target) {
         const id = await window.agentswitch.profiles.add(kind)
         const home = info?.realHome ?? ''
-        const def = DEFAULT_DIR[kind]
+        const def = DEFAULT_DIR[kind as Exclude<ProfileKind, 'reasonix'>]
         const defAbs = def === '~' ? home : `${home}/${def.slice(2)}`
         const taken = profiles.some((p) => p.kind === kind && (p.configDir === def || p.resolvedConfigDir === defAbs))
         if (!taken) await window.agentswitch.profiles.update(id, { configDir: def })
@@ -251,12 +255,12 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
           ))}
         {stage === 'installed' && (
           <button className={btnSmall + ' bg-accent text-white hover:bg-accent-hover'} disabled={busy || loggingIn} onClick={() => void doLogin()}>
-            {busy || loggingIn ? <Spinner size={12} /> : null} {t(kind === 'reasonix' ? 'add.add' : 'eng.login')}
+            {busy || loggingIn ? <Spinner size={12} /> : null} {t(oauth ? 'eng.login' : 'add.add')}
           </button>
         )}
         {stage === 'ready' && <IconCheck size={18} className="shrink-0 text-ok" />}
       </div>
-      {kind === 'reasonix' && (
+      {caps.isUnmaintained && (
         <p className="mt-2 text-[12px] text-ink-3">
           {stage === 'uninstalled' && <code className="mr-2">npm i -g reasonix</code>}
           {t('reasonix.unmaintained')}

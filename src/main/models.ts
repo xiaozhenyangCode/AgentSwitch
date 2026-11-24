@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/types'
 import { EFFORT_SUFFIX_RE, effortRank } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, getKindConfig, isLoggedIn, KIND_DEFAULTS, kindBinaryPath } from './profiles'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { t } from './i18n'
 import { displayModel } from './apiKey'
 import { readReasonixConfig, reasonixDefaultModel } from './reasonix'
@@ -269,19 +270,18 @@ const inflight = new Map<ProfileId, Promise<ModelList>>()
 
 export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
   const cfg = getConfig(id)
-  if (cfg.kind === 'reasonix') return fetchLive(cfg, refresh).then((list) => ({ profileId: id, ...list }))
+  const caps = getProviderCapabilities(cfg.kind)
+  if (caps.modelListMode === 'direct-local') return fetchLive(cfg, refresh).then((list) => ({ profileId: id, ...list }))
   const c = loadCache()
   const cached = c[id]
-  // claude's catalog is a cheap local read: always re-read so new models appear promptly
-  const kind = cfg.kind
-  // Passive loads for agy never spawn `agy models` (it boots the full language server and MCPs).
-  if (!refresh && kind === 'gemini') {
+  // Providers without passive model discovery never spawn a heavy language server unless explicitly refreshed.
+  if (!refresh && !caps.supportsPassiveModelList) {
     if (cached && cached.source !== 'static') {
       return Promise.resolve(Date.now() - cached.fetchedAt < TTL ? cached : { ...cached, source: 'cache' })
     }
     return Promise.resolve({ profileId: id, models: staticList(cfg), source: 'static', fetchedAt: Date.now() })
   }
-  if (!refresh && cached && kind !== 'claude' && Date.now() - cached.fetchedAt < TTL && cached.source !== 'static') return Promise.resolve(cached)
+  if (!refresh && cached && caps.modelListMode === 'cached-ttl' && Date.now() - cached.fetchedAt < TTL && cached.source !== 'static') return Promise.resolve(cached)
   const running = inflight.get(id)
   if (running) return running
   const p = (async (): Promise<ModelList> => {

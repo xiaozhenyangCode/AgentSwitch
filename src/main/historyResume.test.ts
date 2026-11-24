@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/transcript'
+import { KINDS } from '@shared/types'
+import { getProviderCapabilities, shouldUnbindSessionsOnRewind } from '@shared/providerCapabilities'
 import { bindNativeSession, canResume, clearActiveSessions, nativeSessionEntries, recordUnconfirmedSession, type NativeSessions } from './historyResume'
+import { supportsThreadHistory } from './threadHistoryConfig'
 
 const state: NativeSessions = { sessions: { a: 'session-a', b: 'session-b' }, models: { a: 'small' } }
 const reply: TranscriptEntry = {
@@ -61,4 +64,15 @@ it('unbinds all active sessions on rewind while retaining them in priorSessions 
     ['a', 'session-a'],
     ['b', 'session-b']
   ])
+
+  // Capability-driven selective unbinding: preserves accounts whose predicate returns false
+  const partial = clearActiveSessions(state, (id) => id !== 'b')
+  expect(partial.sessions).toEqual({ b: 'session-b' })
+  expect(partial.priorSessions).toEqual([['a', 'session-a']])
+
+  // Main-process thread history MCP injection & rewind unbind stay strictly aligned with capability table
+  for (const kind of KINDS) {
+    expect(supportsThreadHistory(kind)).toBe(getProviderCapabilities(kind).supportsMcpTempInjection)
+    expect(shouldUnbindSessionsOnRewind(kind)).toBe(!getProviderCapabilities(kind).supportsNativeRewind)
+  }
 })

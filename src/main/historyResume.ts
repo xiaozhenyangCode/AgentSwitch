@@ -1,4 +1,5 @@
 import { historyModel, type TranscriptEntry } from '@shared/transcript'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import type { ProfileId, ProfileKind } from '@shared/types'
 
 export interface NativeSessions {
@@ -14,6 +15,7 @@ export function canResume(
   state: NativeSessions, profileId: ProfileId, kind: ProfileKind, model: string | null,
   history: TranscriptEntry[], takingOver: boolean
 ): string | null {
+  if (!getProviderCapabilities(kind).supportsResume) return null
   const session = state.sessions?.[profileId]
   if (!session || takingOver) return null
   const target = historyModel(model, kind)
@@ -82,12 +84,23 @@ export function bindNativeSession(
  * them in `priorSessions` so history filtering, usage accounting and thread deletion still work.
  * The next turn cannot `--resume` stale truncated context and falls back to budgeted handoff.
  */
-export function clearActiveSessions(state: NativeSessions): NativeSessions {
-  const priorSessions = nativeSessionEntries(state)
+export function clearActiveSessions(
+  state: NativeSessions,
+  shouldUnbind: (profileId: ProfileId) => boolean = () => true
+): NativeSessions {
+  const sessions: Record<ProfileId, string> = {}
+  const models: Record<ProfileId, string | null> = {}
+  for (const [account, sid] of Object.entries(state.sessions ?? {})) {
+    if (!shouldUnbind(account)) {
+      sessions[account] = sid
+      if (state.models && Object.hasOwn(state.models, account)) models[account] = state.models[account]
+    }
+  }
+  const priorSessions = nativeSessionEntries(state).filter(([account, sid]) => sessions[account] !== sid)
   return {
     ...state,
-    sessions: {},
-    models: {},
+    sessions,
+    models,
     priorSessions
   }
 }

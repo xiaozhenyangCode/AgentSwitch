@@ -1,6 +1,7 @@
 import { useApp } from '../state/AppContext'
 import { useEffect, useState, type ReactNode } from 'react'
-import type { EnvPreview, ProfileConfig, ProfileKind, ProfileState, PtyMode } from '@shared/types'
+import type { AutoApprove, EnvPreview, ProfileConfig, ProfileKind, ProfileState, PtyMode } from '@shared/types'
+import { canUseOAuthLogin, getProviderCapabilities, resolvePermissionMode } from '@shared/providerCapabilities'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { Modal, ProfileAvatar, Segmented } from './common'
 import { ChangeKeyModal } from './dialogs'
@@ -33,7 +34,24 @@ function textToEnv(text: string): Record<string, string> {
   return env
 }
 
-const dirHint = (kind: ProfileKind): string => t(kind === 'claude' ? 'cfg.dirHintClaude' : kind === 'gemini' ? 'cfg.dirHintGemini' : 'cfg.dirHintCodex')
+const DIR_HINT_KEY: Record<ProfileKind, 'cfg.dirHintClaude' | 'cfg.dirHintGemini' | 'cfg.dirHintCodex'> = {
+  claude: 'cfg.dirHintClaude',
+  gemini: 'cfg.dirHintGemini',
+  codex: 'cfg.dirHintCodex',
+  reasonix: 'cfg.dirHintCodex'
+}
+const dirHint = (kind: ProfileKind): string => t(DIR_HINT_KEY[kind])
+const PERM_OPT_LABEL: Record<AutoApprove, 'cfg.optCli' | 'cfg.optEdits' | 'cfg.optFull'> = {
+  cli: 'cfg.optCli',
+  edits: 'cfg.optEdits',
+  full: 'cfg.optFull'
+}
+const OFFICIAL_CONN_LABEL: Record<ProfileKind, 'add.conn.official.claude' | 'add.conn.official.codex' | 'add.conn.official.gemini' | 'apikey.section'> = {
+  claude: 'add.conn.official.claude',
+  codex: 'add.conn.official.codex',
+  gemini: 'add.conn.official.gemini',
+  reasonix: 'apikey.section'
+}
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -51,8 +69,9 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   const [form, setForm] = useState<ProfileConfig>(profile)
   const [envText, setEnvText] = useState(envToText(profile.extraEnv))
   const [preview, setPreview] = useState<EnvPreview | null>(null)
-  const reasonix = profile.kind === 'reasonix'
-  const [previewMode, setPreviewMode] = useState<PtyMode>(reasonix ? 'run' : 'login')
+  const caps = getProviderCapabilities(profile.kind)
+  const oauth = canUseOAuthLogin(profile.kind)
+  const [previewMode, setPreviewMode] = useState<PtyMode>(oauth ? 'login' : 'run')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const conn = profile.apiKey
@@ -74,7 +93,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
   ]
 
   const defSpec = resolveSpec(form.defaultModel, profile.id)
-  const acp = profile.kind === 'gemini' && form.agyTransport === 'acp'
+  const acp = caps.supportsInteractiveTransport && form.agyTransport === 'acp'
   const set = <K extends keyof ProfileConfig>(k: K, v: ProfileConfig[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const save = async () => {
@@ -89,8 +108,8 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         loginCommand: form.loginCommand,
         runCommand: form.runCommand,
         defaultModel: form.defaultModel ?? '',
-        autoApprove: form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli',
-        ...(profile.kind === 'gemini' ? { agyTransport: acp ? 'acp' : 'print' } : {}),
+        autoApprove: resolvePermissionMode(profile.kind, form.autoApprove),
+        ...(caps.supportsInteractiveTransport ? { agyTransport: acp ? 'acp' : 'print' } : {}),
         extraEnv: textToEnv(envText)
       })
       setPreview(await window.agentswitch.profiles.envPreview(profile.id, previewMode))
@@ -136,13 +155,13 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           <input className={inputCls} value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
 
-        {profile.kind !== 'reasonix' && conn && (
+        {oauth && conn && (
           <div className="space-y-4 rounded-xl bg-fill p-4">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-[13px] font-medium text-ink">{t('apikey.section')}</div>
                 <div className="mt-0.5 text-[13px] text-ink-2">
-                  {conn.provider === 'deepseek' ? t('add.conn.deepseek') : conn.provider === 'custom' ? t('add.conn.custom') : t(`add.conn.official.${profile.kind}`)}
+                  {conn.provider === 'deepseek' ? t('add.conn.deepseek') : conn.provider === 'custom' ? t('add.conn.custom') : t(OFFICIAL_CONN_LABEL[profile.kind])}
                   {' · '}
                   {profile.loggedIn ? t('apikey.saved') : t('apikey.noKey')}
                 </div>
@@ -164,7 +183,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         )}
 
-        {reasonix && (
+        {!oauth && (
           <div className="space-y-3 rounded-xl bg-fill p-4">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -187,7 +206,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         )}
 
-        {!conn && !reasonix && (
+        {!conn && oauth && (
         <Field label={t('cfg.dir')} hint={dirHint(profile.kind)}>
           <div className="flex gap-2">
             <input className={mono} value={form.configDir} onChange={(e) => set('configDir', e.target.value)} />
@@ -231,7 +250,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
                   set('defaultModel', m ? (withEffort(opt, m, defSpec.effort) ?? '') : '')
                 }}
               >
-                {m ? modelLabel(m, profile.id) : reasonix && models?.defaultModel ? modelLabel(null, profile.id) : t('common.default')}
+                {m ? modelLabel(m, profile.id) : caps.hasExplicitDefaultModel && models?.defaultModel ? modelLabel(null, profile.id) : t('common.default')}
               </button>
             ))}
             <button className="h-7 rounded-full px-2.5 text-[12px] text-ink-3 hover:bg-fill hover:text-ink" onClick={refreshModels} disabled={modelsLoading} title={t('wb.refetchModels')}>
@@ -240,7 +259,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
           {defSpec.opt?.efforts && defSpec.opt.efforts.length > 1 && (
             <div className="-mx-2 mt-3 w-[340px]">
-              <EffortBar reasonix={reasonix} opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
+              <EffortBar reasonix={caps.supportsDisabledEffort} opt={defSpec.opt} effort={defSpec.effort} onChange={(e) => defSpec.model && set('defaultModel', withEffort(defSpec.opt, defSpec.model, e) ?? '')} />
             </div>
           )}
           {models?.error && <div className="mt-1.5 text-[12px] text-warn">{t('cfg.modelsFailed', { src: models.source === 'cache' ? t('cfg.lastCache') : t('cfg.builtin'), error: models.error })}</div>}
@@ -249,7 +268,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         <Field
           label={t('cfg.approval')}
           hint={
-            reasonix
+            !oauth
               ? t(form.autoApprove === 'full' ? 'reasonix.approvalFull' : form.autoApprove === 'edits' ? 'reasonix.approvalEdits' : 'reasonix.approvalCli')
               : acp
               ? t(form.autoApprove === 'full' ? 'cfg.acpApprovalFull' : form.autoApprove === 'edits' ? 'cfg.acpApprovalEdits' : 'cfg.acpApprovalCli')
@@ -261,17 +280,13 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           }
         >
           <Segmented
-            value={form.autoApprove === 'full' || form.autoApprove === 'edits' ? form.autoApprove : 'cli'}
+            value={resolvePermissionMode(profile.kind, form.autoApprove)}
             onChange={(v) => set('autoApprove', v)}
-            options={[
-              { value: 'cli', label: t('cfg.optCli') },
-              { value: 'edits', label: t('cfg.optEdits') },
-              { value: 'full', label: t('cfg.optFull') }
-            ]}
+            options={caps.permissionModes.map((mode) => ({ value: mode, label: t(PERM_OPT_LABEL[mode]) }))}
           />
         </Field>
 
-        {profile.kind === 'gemini' && (
+        {caps.supportsInteractiveTransport && (
           <div>
             <label className="flex w-fit items-center gap-2 text-[13px] font-medium text-ink">
               <input
@@ -288,7 +303,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           </div>
         )}
 
-        {!conn && !reasonix && (
+        {!conn && oauth && (
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('cfg.loginCmd')}>
             <input className={mono} value={form.loginCommand} onChange={(e) => set('loginCommand', e.target.value)} />
@@ -313,7 +328,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
             <Segmented
               value={previewMode}
               onChange={setPreviewMode}
-              options={(reasonix ? ['install', 'run', 'shell'] as const : ['install', 'login', 'run', 'shell'] as const).map((m) => ({ value: m, label: m }))}
+              options={(oauth ? ['install', 'login', 'run', 'shell'] as const : ['install', 'run', 'shell'] as const).map((m) => ({ value: m, label: m }))}
             />
           </div>
           {preview && (

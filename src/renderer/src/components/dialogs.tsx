@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_KEY_PAGES, REASONIX_MODELS, type ReasonixModel, type ApiKeyConfig, type ProfileKind, type ProfileState } from '@shared/types'
+import { canUseOAuthLogin, getProviderCapabilities } from '@shared/providerCapabilities'
 import { ipcError, useApp } from '../state/AppContext'
 import { KIND_META, btnGhost, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { KindAvatar, Modal, ProfileAvatar } from './common'
@@ -17,11 +18,8 @@ function suggestName(kind: ProfileKind, used: string[], conn: Conn = 'subscripti
   }
 }
 
-const CONNS: Record<StandardKind, Conn[]> = {
-  claude: ['subscription', 'official', 'deepseek', 'custom'],
-  codex: ['subscription', 'official'],
-  gemini: ['subscription', 'official']
-}
+const connectionsFor = (kind: ProfileKind): Conn[] =>
+  getProviderCapabilities(kind).supportsThirdPartyApiKey ? ['subscription', 'official', 'deepseek', 'custom'] : ['subscription', 'official']
 
 const connLabel = (kind: StandardKind, c: Conn): string =>
   c === 'subscription'
@@ -36,7 +34,7 @@ const connLabel = (kind: StandardKind, c: Conn): string =>
 export function AddAccountModal() {
   const { addRequest } = useApp()
   if (!addRequest) return null
-  return addRequest.kind === 'reasonix' ? <ReasonixAccountModal /> : <StandardAccountModal kind={addRequest.kind} />
+  return !canUseOAuthLogin(addRequest.kind) ? <ReasonixAccountModal /> : <StandardAccountModal kind={addRequest.kind as StandardKind} />
 }
 
 function StandardAccountModal({ kind }: { kind: StandardKind }) {
@@ -116,7 +114,7 @@ function StandardAccountModal({ kind }: { kind: StandardKind }) {
         <div className="mt-6" role="radiogroup" aria-label={t('add.connect')}>
           <div className="mb-1.5 text-[13px] font-medium text-ink">{t('add.connect')}</div>
           <div className="flex flex-col gap-1">
-            {CONNS[kind].map((c) => (
+            {connectionsFor(kind).map((c) => (
               <label key={c} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[14px] text-ink hover:bg-fill">
                 <input type="radio" name="conn" checked={conn === c} onChange={() => pickConn(c)} className="accent-accent" />
                 {connLabel(kind, c)}
@@ -341,7 +339,7 @@ function ReasonixAccountModal() {
 
 /** Vendor page where the account's kind of key is created. */
 export const keyPageOf = (p: Pick<ProfileState, 'kind' | 'apiKey'>): string | null =>
-  p.kind === 'reasonix' ? API_KEY_PAGES.reasonix : p.apiKey?.provider === 'deepseek' ? API_KEY_PAGES.deepseek : p.apiKey?.provider === 'official' ? API_KEY_PAGES[p.kind] : null
+  !canUseOAuthLogin(p.kind) ? API_KEY_PAGES[p.kind] : p.apiKey?.provider === 'deepseek' ? API_KEY_PAGES.deepseek : p.apiKey?.provider === 'official' ? API_KEY_PAGES[p.kind] : null
 
 /** Replace an API-key account's key. The old key is never shown. */
 export function ChangeKeyModal({ profile, onClose }: { profile: ProfileState; onClose: () => void }) {
@@ -376,7 +374,7 @@ export function ChangeKeyModal({ profile, onClose }: { profile: ProfileState; on
           <ProfileAvatar profile={profile} size={36} />
           <div className="flex-1">
             <div className="text-[17px] font-semibold text-ink">{t('apikey.changeTitle', { name: profile.name })}</div>
-            <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{t(profile.kind === 'reasonix' ? 'reasonix.plaintext' : 'apikey.changeDesc')}</div>
+            <div className="mt-1 text-[13px] leading-relaxed text-ink-2">{t(canUseOAuthLogin(profile.kind) ? 'apikey.changeDesc' : 'reasonix.plaintext')}</div>
           </div>
         </div>
         <div className="mt-5">

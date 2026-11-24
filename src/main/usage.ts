@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
@@ -1166,6 +1166,12 @@ export function runBackfill(): Promise<void> {
  *  - claude: OAuth `/api/oauth/usage` via local credentials; when probe=true, accounts whose
  *            OAuth token expired or is unavailable fall back to a tiny haiku message.
  */
+/** Trigger provider-specific post-run quota refresh (kept inside the usage/quota adapter layer). */
+export function refreshPostRunQuota(cfg: { id: ProfileId; kind: ProfileKind }, ok: boolean): void {
+  if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
+  else if (cfg.kind === 'gemini' && ok) void refreshAgyQuota(cfg.id)
+}
+
 export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
   // API-key accounts have no subscription quota, and a probe would spend the user's credits.
   const configs = listConfigs().filter(hasSubscriptionQuota)

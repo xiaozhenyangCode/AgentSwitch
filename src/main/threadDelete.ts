@@ -2,6 +2,7 @@ import { app, shell } from 'electron'
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, sep } from 'node:path'
 import type { DeleteThreadRequest, DeleteThreadResult, ProfileConfig } from '@shared/types'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { expandHome, getConfig, hasProfile } from './profiles'
 import { agyConversationDb, deletedSessions, listHistory } from './history'
 import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
@@ -54,7 +55,7 @@ function listDir(dir: string): string[] {
 /** Native files of one CLI session (never the config dir itself). */
 function nativeFiles(cfg: ProfileConfig, sid: string): { root: string; files: string[] } {
   const home = expandHome(cfg.configDir)
-  if (cfg.kind === 'reasonix' || !sid || sid.length < 8 || /[/\\]/.test(sid)) return { root: home, files: [] }
+  if (!getProviderCapabilities(cfg.kind).supportsLocalHistory || !sid || sid.length < 8 || /[/\\]/.test(sid)) return { root: home, files: [] }
   if (cfg.kind === 'claude') {
     const root = join(home, 'projects')
     const files: string[] = []

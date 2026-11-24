@@ -5,6 +5,9 @@
  * model_reasoning_effort, agy model-id suffix).
  */
 
+import type { ProfileKind } from './types'
+import { getProviderCapabilities } from './providerCapabilities'
+
 export const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 export const EFFORT_LABEL: Record<string, string> = {
@@ -26,13 +29,14 @@ export const effortRank = (e: string): number => {
   return i < 0 ? 99 : i
 }
 
-export function splitSpec(spec: string | null | undefined, kind?: 'reasonix'): { model: string | null; effort: string | null } {
+export function splitSpec(spec: string | null | undefined, kind?: ProfileKind): { model: string | null; effort: string | null } {
   const s = spec?.trim()
   if (!s) return { model: null, effort: null }
   const i = s.lastIndexOf(':')
   if (i <= 0) return { model: s, effort: null }
   const e = s.slice(i + 1)
-  return EFFORT_LABEL[e] || (kind === 'reasonix' && e === 'disabled') ? { model: s.slice(0, i), effort: e } : { model: s, effort: null }
+  const allowDisabled = kind ? getProviderCapabilities(kind).supportsDisabledEffort : false
+  return EFFORT_LABEL[e] || (allowDisabled && e === 'disabled') ? { model: s.slice(0, i), effort: e } : { model: s, effort: null }
 }
 
 export const joinSpec = (model: string | null, effort: string | null): string | null => (model ? (effort ? `${model}:${effort}` : model) : null)

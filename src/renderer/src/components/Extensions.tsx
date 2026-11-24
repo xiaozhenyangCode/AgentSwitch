@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
 import type { MsgKey } from '@shared/i18n'
 import type { ExtFileText, ExtOverview, ExtSource, McpServer, ProfileKind, ProfileState, RuleScope, SkillItem } from '@shared/types'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { pinnedFirst, togglePin, usePins } from '../state/extensions'
 import { t } from '../state/i18n'
 import { IconChevronDown, IconFile, IconFolder, IconPuzzle, IconRefresh, IconSearch, IconSlash, IconStar, IconX, Spinner } from './icons'
@@ -329,7 +330,7 @@ function SkillsTab({ items, kind, q, onInsert }: { items: SkillItem[]; kind: Pro
 function AgentsTab({ data, kind, q, onInsert }: { data: ExtOverview; kind: ProfileKind | null; q: string; onInsert: (token: string) => void }) {
   const [open, setOpen] = useState<string | null>(null)
   const list = data.agents.filter((a) => has(q, a.name, a.description, a.path, a.plugin))
-  const phrase = (name: string) => t(kind === 'codex' ? 'ext.agentPhraseCodex' : 'ext.agentPhrase', { name })
+  const phrase = (name: string) => t(kind && getProviderCapabilities(kind).usesStandaloneAgentTerm ? 'ext.agentPhraseCodex' : 'ext.agentPhrase', { name })
   return (
     <>
       {list.map((a) => {
@@ -621,12 +622,12 @@ function ContextTab({
         <span className="text-[11px] font-medium text-ink-3">{t('ext.rules')}</span>
         <span className="text-[11px] font-medium text-ink-3 tabular-nums">{rules.length}</span>
         <span className="flex-1" />
-        {account.kind !== 'reasonix' && !hasGlobal && (
+        {getProviderCapabilities(account.kind).supportsExtensions && !hasGlobal && (
           <button onClick={() => void startCreate('global')} className={rowBtn}>
             {t('ext.newGlobalRule')}
           </button>
         )}
-        {account.kind !== 'reasonix' && projectDir && !hasProject && (
+        {getProviderCapabilities(account.kind).supportsExtensions && projectDir && !hasProject && (
           <button onClick={() => void startCreate('project')} className={rowBtn}>
             {t('ext.newProjectRule')}
           </button>

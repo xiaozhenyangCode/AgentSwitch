@@ -20,6 +20,7 @@ import type {
   SkillItem,
   SkillList
 } from '@shared/types'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { expandHome, getConfig } from './profiles'
 import { realHome } from './shellEnv'
 
@@ -335,7 +336,7 @@ export const canRevealExtFile = (path: string): boolean => allowed.has(resolve(p
 /** Resolves and allow-lists the canonical global or project rule file for an account. */
 export function prepareRuleTarget(id: ProfileId, cwd: string | null, scope: 'global' | 'project'): RuleTarget {
   const cfg = getConfig(id)
-  if (cfg.kind === 'reasonix') throw new Error(t('reasonix.extensionsUnavailable'))
+  if (!getProviderCapabilities(cfg.kind).supportsExtensions) throw new Error(t('reasonix.extensionsUnavailable'))
   const dir = expandHome(cfg.configDir)
   let target: string
   if (scope === 'project') {
@@ -590,9 +591,10 @@ const MANAGED = '/Library/Application Support/ClaudeCode'
 
 function scanClaude(dir: string, cwd: string | null, ctx: Ctx): Scan {
   // plugin skills are namespaced: /plugin:skill
+  const prefix = getProviderCapabilities('claude').skillTriggerPrefix ?? '/'
   const { skills, push } = collector(
     (name, plugin) => (plugin ? `${plugin}:${name}` : name),
-    (n) => `/${n}`
+    (n) => `${prefix}${n}`
   )
   const chain = projectChain(cwd)
   const root = cwd ? resolve(cwd) : null
@@ -760,9 +762,10 @@ function codexAgents(cfg: Record<string, any>, cfgDir: string, rolesDir: string,
 
 function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
   // Codex triggers a skill when the prompt names it as `$name` (works in `codex exec`)
+  const prefix = getProviderCapabilities('codex').skillTriggerPrefix ?? '$'
   const { skills, push } = collector(
     (name) => name,
-    (n) => `$${n}`
+    (n) => `${prefix}${n}`
   )
   const chain = projectChain(cwd)
   const cfg = readToml(join(dir, 'config.toml'), ctx) ?? {}
@@ -874,9 +877,10 @@ const AGY_ROOTS = ['.agents', '.agent', '_agents', '_agent']
 const AGY_MANIFESTS = ['plugin.json', '.antigravity-plugin/plugin.json', '.gemini-plugin/plugin.json']
 
 function scanAgy(home: string, cwd: string | null, ctx: Ctx): Scan {
+  const prefix = getProviderCapabilities('gemini').skillTriggerPrefix ?? '/'
   const { skills, push } = collector(
     (name) => name,
-    (n) => `/${n}`
+    (n) => `${prefix}${n}`
   )
   const chain = projectChain(cwd)
   const g = join(home, '.gemini')

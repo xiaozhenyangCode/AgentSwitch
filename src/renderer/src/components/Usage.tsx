@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
 import { KIND_META, btnPrimary, btnSecondary, inputCls, isReady } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
@@ -268,7 +269,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
               {u.quotaError}
             </div>
           ) : (
-            <div className="mt-2 text-[11px] text-ink-3">{t(p.apiKey || p.kind === 'reasonix' ? 'apikey.noQuota' : 'usage.noQuotaNote')}</div>
+            <div className="mt-2 text-[11px] text-ink-3">{t(canUseSubscriptionQuota(p.kind, !!p.apiKey) ? 'usage.noQuotaNote' : 'apikey.noQuota')}</div>
           )}
         </>
       )}

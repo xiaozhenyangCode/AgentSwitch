@@ -6,7 +6,7 @@ import { LEGACY_USER_DATA } from './legacy'
 import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
-import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuota } from './usage'
+import { recordLimited, recordQuota, recordRun, refreshPostRunQuota } from './usage'
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
@@ -14,6 +14,12 @@ import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript } from '@shared/transcript'
 import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
+import {
+  defaultContextWindowFor,
+  getProviderCapabilities,
+  shouldUnbindSessionsOnRewind,
+  usesInlineSystemPrompt
+} from '@shared/providerCapabilities'
 import { bindNativeSession, canResume, clearActiveSessions, recordUnconfirmedSession, type NativeSessions } from './historyResume'
 import { createThreadHistory, supportsThreadHistory } from './threadHistoryConfig'
 import { Checkpoints } from './checkpoints'
@@ -312,10 +318,13 @@ export class Orchestrator {
   clearThreadSessions(threadId: string): boolean {
     const f = sessionsFile(threadId)
     const previous = loadSessions(threadId)
-    const activeIds = Object.values(previous.sessions ?? {}).filter(Boolean)
-    if (!activeIds.length && !Object.keys(previous.models ?? {}).length) return false
-    for (const sid of activeIds) this.sentSystem.delete(sid)
-    const next = clearActiveSessions(previous)
+    const shouldUnbind = (profileId: ProfileId): boolean =>
+      !hasProfile(profileId) || shouldUnbindSessionsOnRewind(getConfig(profileId).kind)
+    const activeEntries = Object.entries(previous.sessions ?? {}).filter(([id, sid]) => !!sid && shouldUnbind(id))
+    const hasModelsToClear = Object.keys(previous.models ?? {}).some(shouldUnbind)
+    if (!activeEntries.length && !hasModelsToClear) return false
+    for (const [, sid] of activeEntries) this.sentSystem.delete(sid)
+    const next = clearActiveSessions(previous, shouldUnbind)
     mkdirSync(join(f, '..'), { recursive: true })
     writeFileSync(f, JSON.stringify(next, null, 2))
     return true
@@ -547,7 +556,10 @@ export class Orchestrator {
 
   private prompt(turn: Turn, step: Step, recap: string, resuming: boolean): StepPrompt {
     const cfg = getConfig(step.profileId)
+    const caps = getProviderCapabilities(cfg.kind)
     const rel = (p: string): string => relative(turn.cwd, p) || '.'
+    const permStyle = caps.permissionPromptStyle
+    const interactiveAcp = caps.supportsInteractiveTransport && cfg.agyTransport === 'acp'
     const sys: string[] = [
       `你在 AgentSwitch 中工作：一个把多个 AI 模型放进同一对话协作的桌面应用。你的身份：${cfg.name}（${KIND_LABEL[cfg.kind]} · ${modelText(cfg, step.model)}）。`,
       `项目目录（当前工作目录）：${turn.cwd}`,
@@ -555,18 +567,18 @@ export class Orchestrator {
       `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
       replyLanguage(turn.req.text),
       cfg.autoApprove === 'full'
-        ? (cfg.kind === 'reasonix'
+        ? (permStyle === 'reasonix'
           ? '当前授权：Reasonix 跳过权限审批，命令仍遵循 Reasonix 自身的沙箱设置。'
           : '当前授权：完全放行，可以执行命令。')
         : cfg.autoApprove === 'cli'
-          ? (cfg.kind === 'reasonix'
+          ? (permStyle === 'reasonix'
             ? '当前授权：沿用 Reasonix 自身的权限设置。无交互模式下遇到权限拒绝时，请说明原因。'
             : '当前授权：沿用 CLI 自身的权限设置（与用户在终端中使用时相同），可以按需执行命令；被拒绝的操作说明原因，让用户决定。')
-          : cfg.kind === 'reasonix'
+          : permStyle === 'reasonix'
           ? '当前授权：Reasonix acceptEdits 模式会自动允许文件编辑，其他操作仍受 Reasonix 权限规则约束。无交互模式下遇到权限拒绝时，请说明原因。'
-          : cfg.kind === 'codex'
+          : permStyle === 'workspace-sandbox'
           ? '当前授权：沙箱模式（workspace-write）。可以正常执行命令和读写项目内文件；沙箱内不能写项目以外的位置，也不能联网。'
-          : cfg.kind === 'gemini' && cfg.agyTransport === 'acp'
+          : interactiveAcp
           ? '当前授权：项目内的文件读写会自动允许；执行 shell 命令或修改项目以外的文件时，会在对话里请求用户确认。需要时可以直接调用命令工具，用户会在界面上允许或拒绝；被拒绝时说明原因，不要反复重试。'
           : '当前授权：只能读写项目内的文件，执行 shell 命令会被自动拒绝。请直接用文件读取 / 查看 / 编辑工具完成任务（图片可以直接用读取工具查看）；确实需要执行命令时，说明需要执行什么，让用户决定。'
     ]
@@ -698,7 +710,8 @@ export class Orchestrator {
     const takingOver = cfg.id === turn.req.driver.profileId && !!previousDriver && previousDriver !== cfg.id && !ranThisTurn
     const resume = sessions.scope === sessionScope ? canResume(sessions, cfg.id, cfg.kind, model, transcript, takingOver) : null
     const entries = unseenTranscript(numberTranscript(transcript), cfg.id, !!resume)
-    const budget = contextBudgetFor(reportedContextWindow(transcript, cfg.id, model, cfg.kind))
+    const caps = getProviderCapabilities(cfg.kind)
+    const budget = contextBudgetFor(reportedContextWindow(transcript, cfg.id, model, cfg.kind) ?? defaultContextWindowFor(cfg.kind, model))
     let recap = budgetedHandoff(entries, budget, !resume, supportsThreadHistory(cfg.kind))
     let history: ReturnType<typeof createThreadHistory> | undefined
     if (recap.readable) {
@@ -710,7 +723,7 @@ export class Orchestrator {
       }
     }
     const { prompt, system: fullSystem, fixed, turnOnly } = this.prompt(turn, step, recap.text, !!resume)
-    const inline = cfg.kind === 'codex' || cfg.kind === 'reasonix' || (cfg.kind === 'gemini' && cfg.agyTransport !== 'acp')
+    const inline = usesInlineSystemPrompt(cfg.kind, cfg.agyTransport)
     const sent = inline && resume ? this.sentSystem.get(resume) : undefined
     // the resumed session already holds the fixed instructions: only this turn's lines go again
     const compact = !!sent && sent.fixed === fixed && sent.turns < SYSTEM_RESEND_TURNS
@@ -759,7 +772,7 @@ export class Orchestrator {
         prompt,
         system,
         cwd: turn.cwd,
-        images: turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)),
+        images: caps.supportsImageInput ? turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [],
         resume,
         outDir: turn.outDir,
         threadHistory: history?.config
@@ -782,8 +795,7 @@ export class Orchestrator {
     // usage & quota bookkeeping never blocks the turn
     try {
       if (stepUsage || r.ok) recordRun(cfg.id, r.model || step.model || cfg.defaultModel || null, stepUsage)
-      if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
-      if (cfg.kind === 'gemini' && r.ok) void refreshAgyQuota(cfg.id)
+      if (caps.supportsUsageQuota) refreshPostRunQuota(cfg, r.ok)
     } catch (e) {
       this.log(cfg.id, `[usage] ${String(e)}\n`)
     }

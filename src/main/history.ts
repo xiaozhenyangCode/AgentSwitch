@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { AgentEvent, HistoryActivity, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, ProfileConfig, ProfileId } from '@shared/types'
 import { agyTool, capJson, capText, claudeResult, claudeTool, createdDiff, unwrapShell } from './agentRunner'
 import { expandHome, listConfigs } from './profiles'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { t } from './i18n'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
@@ -823,7 +824,7 @@ export function listHistory(force = false): HistoryEntry[] {
   }
   safe(() => listClaude(cfgs.filter((c) => c.kind === 'claude'), own, userData))
   for (const c of cfgs) {
-    if (c.kind === 'reasonix') continue // TODO(reasonix-history)
+    if (!getProviderCapabilities(c.kind).supportsLocalHistory) continue
     if (c.kind === 'codex') safe(() => listCodex(c, own, userData))
     if (c.kind === 'gemini') safe(() => listAgy(c, own, userData))
   }

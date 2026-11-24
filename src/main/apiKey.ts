@@ -9,6 +9,7 @@
  *   gemini (agy)     GEMINI_API_KEY + modelProvider "gemini" in its settings.json
  */
 import type { ApiKeyConfig, ProfileKind } from '@shared/types'
+import { canUseOAuthLogin, canUseSubscriptionQuota, getProviderCapabilities } from '@shared/providerCapabilities'
 
 /** DeepSeek's documented Claude Code setup (api-docs.deepseek.com, agent_integrations/claude_code). */
 export const DEEPSEEK = {
@@ -49,10 +50,12 @@ export const CREDENTIAL_VARS: Record<ProfileKind, string[]> = {
 export const SECRET_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY']
 
 /** API-key accounts connect via env only; the CLI's OAuth login would write a second credential. */
-export const ptyModeAllowed = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }, mode: string): boolean => !((cfg.apiKey || cfg.kind === 'reasonix') && mode === 'login')
+export const ptyModeAllowed = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }, mode: string): boolean =>
+  !((cfg.apiKey || (cfg.kind && !canUseOAuthLogin(cfg.kind))) && mode === 'login')
 
 /** Only subscription sign-ins have 5h/7d quota; probing an API-key account would spend the user's credits. */
-export const hasSubscriptionQuota = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }): boolean => !cfg.apiKey && cfg.kind !== 'reasonix'
+export const hasSubscriptionQuota = (cfg: { kind?: ProfileKind; apiKey?: ApiKeyConfig }): boolean =>
+  cfg.kind ? canUseSubscriptionQuota(cfg.kind, !!cfg.apiKey) : !cfg.apiKey
 
 const isThirdParty = (cfg: ApiKeyConfig): boolean => cfg.provider === 'deepseek' || cfg.provider === 'custom'
 
@@ -68,7 +71,8 @@ export function resolveApiKeyConfig(_kind: ProfileKind, cfg: ApiKeyConfig): ApiK
  */
 export function validateApiKeyConfig(kind: ProfileKind, cfg: ApiKeyConfig): string | null {
   if (!['official', 'deepseek', 'custom'].includes(cfg.provider)) return 'apikey.badProvider'
-  if (kind === 'reasonix' || (isThirdParty(cfg) && kind !== 'claude')) return 'apikey.badProvider'
+  const caps = getProviderCapabilities(kind)
+  if (!canUseOAuthLogin(kind) || (isThirdParty(cfg) && !caps.supportsThirdPartyApiKey)) return 'apikey.badProvider'
   if (cfg.provider !== 'custom') return null
   const url = (cfg.baseUrl ?? '').trim().replace(/\/+$/, '')
   if (!/^https?:\/\/[^\s/]+/i.test(url)) return 'apikey.badUrl'

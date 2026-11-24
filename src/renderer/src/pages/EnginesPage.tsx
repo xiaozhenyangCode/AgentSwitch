@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { KINDS, installSessionId, type ProfileKind, type ProfileState } from '@shared/types'
+import { canUseOAuthLogin, getProviderCapabilities } from '@shared/providerCapabilities'
 import { useApp } from '../state/AppContext'
 import { KIND_META } from '../lib/ui'
 import { KindAvatar } from '../components/common'
@@ -147,7 +148,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
             </span>
           </>
         ) : installed ? (
-          (kind !== 'reasonix' || ks?.updateCommand) && <button className={btnText} onClick={() => void install(kind, true)} title={ks?.updateCommand || ks?.installCommand}>
+          (!getProviderCapabilities(kind).isUnmaintained || ks?.updateCommand) && <button className={btnText} onClick={() => void install(kind, true)} title={ks?.updateCommand || ks?.installCommand}>
             {t('eng.checkUpdate')}
           </button>
         ) : (
@@ -165,7 +166,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
         </button>
       </div>
 
-      {kind === 'reasonix' && (
+      {getProviderCapabilities(kind).isUnmaintained && (
         <div className="px-4 pt-3 text-[12px] text-ink-3">
           {!installed && <code className="mr-2">npm i -g reasonix</code>}
           {t('reasonix.unmaintained')}
@@ -203,8 +204,8 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   const alert = alertOf(loggingIn ? 'login' : a.status)
   const [changingKey, setChangingKey] = useState(false)
   const keyAcct = !!a.apiKey
-  const reasonix = a.kind === 'reasonix'
-  const canChangeKey = keyAcct || (reasonix && !a.imported)
+  const oauth = canUseOAuthLogin(a.kind)
+  const canChangeKey = keyAcct || (!oauth && !a.imported)
   const host = (u?: string) => {
     try {
       return u ? new URL(u).host : ''
@@ -212,7 +213,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
       return u ?? ''
     }
   }
-  const where = reasonix && a.imported && !a.loggedIn ? t('reasonix.setupHint') : keyAcct
+  const where = !oauth && a.imported && !a.loggedIn ? t('reasonix.setupHint') : keyAcct
     ? a.apiKey!.provider === 'deepseek'
       ? `DeepSeek · ${t('apikey.badge')}`
       : a.apiKey!.provider === 'custom'
@@ -291,7 +292,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
           <button className={btnIcon} onClick={() => openConfig(a.id)} title={t('eng.accountSettings')}>
             <IconSliders size={15} />
           </button>
-        ) : reasonix ? (
+        ) : !oauth ? (
           <button className={btnSolid} disabled={!cliReady} onClick={() => void openTerminal()} title={t('reasonix.setupHint')}>
             {t('eng.openTerminal')}
           </button>
@@ -304,7 +305,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
           items={[
             ...(canChangeKey
               ? [{ label: t('apikey.change'), run: () => setChangingKey(true) }]
-              : a.loggedIn && !reasonix
+              : a.loggedIn && oauth
                 ? [{ label: t('eng.relogin'), run: () => openLogin(a.id), disabled: !cliReady || loggingIn }]
                 : []),
             ...(a.loggedIn ? [] : [{ label: t('eng.accountSettings'), run: () => openConfig(a.id) }]),

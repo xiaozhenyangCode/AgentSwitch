@@ -41,4 +41,11 @@ export const withEffort = (opt: ModelOption | null, model: string, effort: strin
 export const effectiveModel = (explicit: string | null | undefined, p: ProfileState | undefined): string | null =>
   explicit?.trim() || p?.defaultModel?.trim() || null
 
-export const defaultHint = (kind: ProfileKind): string => t(kind === 'claude' ? 'model.followClaude' : kind === 'codex' ? 'model.followCodex' : kind === 'reasonix' ? 'model.followReasonix' : 'model.followAgy')
+const DEFAULT_HINT_KEY: Record<ProfileKind, 'model.followClaude' | 'model.followCodex' | 'model.followReasonix' | 'model.followAgy'> = {
+  claude: 'model.followClaude',
+  codex: 'model.followCodex',
+  gemini: 'model.followAgy',
+  reasonix: 'model.followReasonix'
+}
+
+export const defaultHint = (kind: ProfileKind): string => t(DEFAULT_HINT_KEY[kind])

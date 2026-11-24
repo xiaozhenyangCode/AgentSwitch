@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TranscriptEntry } from '@shared/transcript'
 import type { ProfileKind } from '@shared/types'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { THREAD_HISTORY_FORMAT, threadTools } from './threadHistoryTools'
 
 export interface ThreadHistoryConfig {
@@ -11,7 +12,7 @@ export interface ThreadHistoryConfig {
   env: { ELECTRON_RUN_AS_NODE: '1' }
 }
 
-export const supportsThreadHistory = (kind: ProfileKind): boolean => kind === 'claude' || kind === 'codex'
+export const supportsThreadHistory = (kind: ProfileKind): boolean => getProviderCapabilities(kind).supportsMcpTempInjection
 
 export function createThreadHistory(threadId: string, messages: TranscriptEntry[]) {
   const dir = mkdtempSync(join(tmpdir(), 'agentswitch-history-'))

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { AccountUsage, PriceRate, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
+import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
 import { getSettings } from './settings'
@@ -104,7 +105,7 @@ export type QuotaLevel = 'ok' | 'warn' | 'danger'
 
 export function quotaLevel(p: ProfileState | undefined, u: AccountUsage | undefined, model?: string | null): { level: QuotaLevel; reason: string | null } {
   if (!p) return { level: 'ok', reason: null }
-  if (p.kind === 'reasonix') return p.status === 'rate_limited' ? { level: 'danger', reason: t('usage.limited') } : { level: 'ok', reason: null }
+  if (!getProviderCapabilities(p.kind).supportsUsageQuota) return p.status === 'rate_limited' ? { level: 'danger', reason: t('usage.limited') } : { level: 'ok', reason: null }
   const q = u?.quota
   const eff = effectiveQuota(u, model ?? p.defaultModel)
   const limited = p.status === 'rate_limited' || (!!q?.limited && !eff.group && Date.now() - q.fetchedAt < 6 * 3600_000)
