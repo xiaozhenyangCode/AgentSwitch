@@ -78,7 +78,7 @@ export function CheckpointUndo({ threadId, turnId, status, busy, onChange }: {
     }
   }
 
-  if (status === 'tooLarge') return <p className="mt-2 text-[12px] text-ink-3">{t('checkpoint.tooLarge')}</p>
+  if (status === 'tooLarge' || status === 'overlap') return <p className="mt-2 text-[12px] text-ink-3">{t(status === 'overlap' ? 'checkpoint.overlap' : 'checkpoint.tooLarge')}</p>
 
   const finished = undone || status === 'undone'
   const conflicts = new Set(plan?.conflicts)

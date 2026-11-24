@@ -762,6 +762,7 @@ export const zhTW: Dict = {
   'checkpoint.expand': '再顯示 {n} 個檔案',
   'checkpoint.collapse': '收合檔案清單',
   'checkpoint.tooLarge': '這輪變更太大，無法復原。',
+  'checkpoint.overlap': '這一輪執行時，另一個對話也在修改同一個專案，分不清變更來自哪一輪，所以無法復原。',
   'checkpoint.busy': '請等目前的工作結束後再復原變更。',
   'checkpoint.restoring': '請等檔案復原完成後，再於此資料夾開始工作。',
   'checkpoint.unavailable': '這些變更已無法復原。',

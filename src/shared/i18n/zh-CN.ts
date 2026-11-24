@@ -764,6 +764,7 @@ export const zhCN = {
   'checkpoint.expand': '再显示 {n} 个文件',
   'checkpoint.collapse': '收起文件列表',
   'checkpoint.tooLarge': '这轮改动太大，无法撤销。',
+  'checkpoint.overlap': '这一轮运行时，另一个对话也在改同一个项目，分不清改动来自哪一轮，所以无法撤销。',
   'checkpoint.busy': '请等当前任务结束后再撤销改动。',
   'checkpoint.restoring': '请等文件撤销完成后，再在此文件夹中开始任务。',
   'checkpoint.unavailable': '这些改动已无法撤销。',

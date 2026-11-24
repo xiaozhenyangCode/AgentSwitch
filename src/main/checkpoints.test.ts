@@ -229,9 +229,34 @@ describe('turn checkpoints', () => {
     await put('tracked.txt', 'overlapping change')
     await store.finish('one', 'first')
     await store.finish('two', 'second')
+    expect(await store.list('one')).toEqual([{ turnId: 'first', status: 'overlap' }])
+    expect(await store.list('two')).toEqual([{ turnId: 'second', status: 'overlap' }])
+    expect(await refs(repo)).toBe('')
+    expect(await store.action('one', 'first', idle)).toEqual({ kind: 'unavailable' })
+  })
+
+  it('says nothing about overlap when overlapping turns changed no files', async () => {
+    await init()
+    await store.begin('one', 'quiet-a', repo)
+    await store.begin('two', 'quiet-b', repo)
+    await store.finish('one', 'quiet-a')
+    await store.finish('two', 'quiet-b')
     expect(await store.list('one')).toEqual([])
     expect(await store.list('two')).toEqual([])
     expect(await refs(repo)).toBe('')
+  })
+
+  it('explains overlap for a turn that started while another was still running', async () => {
+    await init()
+    await store.begin('one', 'early', repo)
+    await store.finish('one', 'early')
+    await store.begin('one', 'long', repo)
+    await store.begin('two', 'late', repo)
+    await put('tracked.txt', 'changed by one of them')
+    await store.finish('two', 'late')
+    await store.finish('one', 'long')
+    expect(await store.list('one')).toEqual([{ turnId: 'long', status: 'overlap' }])
+    expect(await store.list('two')).toEqual([{ turnId: 'late', status: 'overlap' }])
   })
 
   it('keeps unowned checkpoint refs when publishing fails', async () => {

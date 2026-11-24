@@ -740,6 +740,7 @@ export const ja: Dict = {
   'checkpoint.expand': 'あと {n} 件を表示',
   'checkpoint.collapse': '一覧を折りたたむ',
   'checkpoint.tooLarge': '今回の変更は規模が大きいため、元に戻せません。',
+  'checkpoint.overlap': 'このターンの実行中に、別の会話も同じプロジェクトを変更していました。どちらの変更か区別できないため、元に戻せません。',
   'checkpoint.busy': '実行中の作業が終わってから元に戻してください。',
   'checkpoint.restoring': 'ファイルの復元が終わってから、このフォルダで作業を開始してください。',
   'checkpoint.unavailable': 'この変更はすでに元に戻せなくなっています。',

@@ -740,6 +740,7 @@ export const en: Dict = {
   'checkpoint.expand': 'Show {n} more files',
   'checkpoint.collapse': 'Show fewer files',
   'checkpoint.tooLarge': 'This turn changed too much to undo.',
+  'checkpoint.overlap': "Another chat changed this project while this turn was running. The changes can't be told apart, so this turn can't be undone.",
   'checkpoint.busy': 'Wait until the current task finishes before undoing changes.',
   'checkpoint.restoring': 'Wait until the file changes are undone before starting a task in this folder.',
   'checkpoint.unavailable': 'These changes are no longer available to undo.',

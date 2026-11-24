@@ -1,4 +1,4 @@
-export type CheckpointStatus = 'ready' | 'tooLarge' | 'undone'
+export type CheckpointStatus = 'ready' | 'tooLarge' | 'overlap' | 'undone'
 export interface TurnCheckpoint {
   turnId: string
   status: CheckpointStatus

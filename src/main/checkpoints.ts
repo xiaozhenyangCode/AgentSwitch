@@ -132,7 +132,7 @@ export class Checkpoints {
       const repo = await openCheckpointRepo(capture.dir, this.data)
       capture.dir = repo.root
       this.markOverlap(turnId, capture)
-      if (capture.overlap) return
+      // Still snapshot overlapping turns, so finish can tell whether the project changed and say why undo is unavailable.
       const record: RecordOnDisk = { threadId, turnId, repo, order, status: 'pending' }
       capture.record = record
       const before = await captureCheckpoint(repo, 'before', this.options.maxFiles)
@@ -157,7 +157,7 @@ export class Checkpoints {
       if (!record || record.threadId !== threadId) return
       await this.enqueue(async () => {
         try {
-          if (!capture.overlap && record.before) {
+          if (record.before) {
             const { sha: after } = await captureCheckpoint(record.repo, 'after', this.options.maxFiles)
             record.after = after
             await this.save({ ...record, permissions: undefined })
@@ -168,6 +168,11 @@ export class Checkpoints {
               const permissions = record.permissions?.filter(([path]) => changed.has(path))
               await this.save({ ...record, after, status: files.length ? 'ready' : 'unchanged', files, permissions })
               await this.prune(record.repo).catch(() => {})
+              return
+            }
+            // Another turn changed the same project meanwhile: the changes cannot be attributed, so explain instead of offering undo.
+            if (files.length) {
+              await this.discard(record, 'overlap')
               return
             }
           }
