@@ -6,7 +6,7 @@ Have it reviewed by qualified legal counsel before relying on it commercially.
 # AgentSwitch Individual Contributor License Agreement
 
 Thank you for your interest in contributing to AgentSwitch (the "Project"), currently maintained by
-xiaozhenyang (GitHub: @xiaozhenyangCode).
+Yitian (GitHub: @xiaozhenyangCode).
 
 This Agreement sets out the terms under which You make Contributions to the Project. You keep
 full ownership of the copyright in Your Contributions. Please read it carefully. You accept it by
@@ -15,7 +15,7 @@ commenting on a pull request with the sentence the CLA bot asks for.
 ## 1. Definitions
 
 - **"You"** means the individual who submits a Contribution to the Project.
-- **"Maintainer"** means xiaozhenyang (GitHub: @xiaozhenyangCode), and any corporate entity,
+- **"Maintainer"** means Yitian (GitHub: @xiaozhenyangCode), and any corporate entity,
   affiliate, successor, or assignee to which the Project or the Maintainer's rights under this
   Agreement are transferred.
 - **"Contribution"** means any original work of authorship, including any changes or additions
