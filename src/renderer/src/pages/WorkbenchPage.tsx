@@ -35,6 +35,8 @@ import {
   clearSuggestion,
   continueInNewThread,
   continueQueuedMessages,
+  compactContext,
+  dismissContextCost,
   dismissContextWarn,
   editQueuedMessage,
   exportHandoff,
@@ -317,18 +319,20 @@ export function WorkbenchPage() {
     let lastTokens = 0
     let model: string | null = null
     let reported = 0
+    let lastId = ''
     for (let i = thread?.carriedMessageCount ?? 0; i < messages.length; i++) {
       const m = messages[i]
       if (m.role === 'user' && m.kind !== 'handoff') userTurns++
       if (m.role === 'assistant' && m.agent.profileId === driverP?.id && m.usage?.context) {
         lastTokens = m.usage.context
+        lastId = m.id
         model = m.actualModel ?? m.agent.model
         reported = m.usage.contextWindow ?? 0
       }
     }
     // the window the CLI reported (codex) wins; otherwise it follows from the model
     const window = reported || (driverP ? contextWindow(driverP.kind, driverModel ?? model) : 0)
-    return { userTurns, lastTokens, window }
+    return { userTurns, lastTokens, window, lastId }
   }, [messages, driverP, driverModel, thread?.carriedMessageCount])
   const contextLong =
     !!thread &&
@@ -340,6 +344,28 @@ export function WorkbenchPage() {
     contextStats.window > 0 &&
     contextStats.lastTokens >= contextStats.window * CTX_WARN_RATIO &&
     (thread.contextWarnDismissedAt === undefined || contextStats.userTurns >= thread.contextWarnDismissedAt + CTX_REDISPLAY_TURNS)
+  // ---- costly context: far below the window, every tool round trip still re-reads the whole
+  // context. Offer a fresh CLI session with the budgeted handoff, in this same thread.
+  const CTX_COST_TOKENS = 180_000
+  const CTX_COST_REDISPLAY_TURNS = 5
+  const costDismissed = thread?.contextCostDismissed
+  const contextCostly =
+    !!thread &&
+    !!driverP &&
+    !contextLong &&
+    !isThreadBusy(thread) &&
+    !handoffNeeded &&
+    !handoffReady &&
+    !thread.pause &&
+    contextStats.lastTokens >= CTX_COST_TOKENS &&
+    contextStats.lastId !== costDismissed?.messageId &&
+    (!costDismissed || !!costDismissed.compacted || contextStats.userTurns >= costDismissed.userTurns + CTX_COST_REDISPLAY_TURNS)
+  const startCompact = () => {
+    if (!thread || !driverP) return
+    void compactContext(thread.id, [driverP.id], contextStats.lastId, contextStats.userTurns).then((ok) =>
+      toast(ok ? { kind: 'success', title: t('wb.ctxCompactDone', { name: driverP.name }) } : { kind: 'warn', title: t('wb.ctxCompactNone') })
+    )
+  }
   const ctxHandoffSrc = srcP && isReady(srcP) ? srcP : driverP && isReady(driverP) ? driverP : null
   const startHandoffToNew = () => {
     if (!thread || !driverP || !ctxHandoffSrc) return
@@ -659,7 +685,7 @@ export function WorkbenchPage() {
           className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center transition-all duration-200 ease-out ${
             !atBottom && messages.length > 0 ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-90 opacity-0'
           }`}
-          style={{ bottom: composerH + (thread?.pause || (!!driverP && (handoffNeeded || handoffReady || contextLong)) ? 54 : 8) }}
+          style={{ bottom: composerH + (thread?.pause || (!!driverP && (handoffNeeded || handoffReady || contextLong || contextCostly)) ? 54 : 8) }}
         >
           <button
             type="button"
@@ -781,6 +807,9 @@ export function WorkbenchPage() {
                   {exporting ? t('wb.exporting') : t('wb.ctxExportNew')}
                 </button>
               )}
+              <button className="h-7 shrink-0 rounded-full border border-accent/30 px-3 font-medium text-accent hover:bg-accent/10" onClick={startCompact} title={t('wb.ctxCompactHint')}>
+                {t('wb.ctxCompact')}
+              </button>
               <button className="h-7 shrink-0 rounded-full border border-accent/30 px-3 font-medium text-accent hover:bg-accent/10" onClick={startWithHistory}>
                 {t('wb.ctxCarryHistory')}
               </button>
@@ -788,6 +817,27 @@ export function WorkbenchPage() {
                 {t('wb.ctxNewDirect')}
               </button>
               <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}>
+                {t('wb.ctxContinue')}
+              </button>
+            </div>
+          </div>
+        )}
+        {contextCostly && thread && driverP && (
+          <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-2xl bg-surface px-4 py-2 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+              <button
+                onClick={() => dismissContextCost(thread.id, contextStats.lastId, contextStats.userTurns)}
+                className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                title={t('common.close')}
+                aria-label={t('common.close')}
+              >
+                <IconX size={14} />
+              </button>
+              <span className="min-w-40 flex-1 text-ink-2">{t('wb.ctxCostly', { name: driverP.name, tokens: fmtTokens(contextStats.lastTokens) })}</span>
+              <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startCompact} title={t('wb.ctxCompactHint')}>
+                {t('wb.ctxCompact')}
+              </button>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => dismissContextCost(thread.id, contextStats.lastId, contextStats.userTurns)}>
                 {t('wb.ctxContinue')}
               </button>
             </div>

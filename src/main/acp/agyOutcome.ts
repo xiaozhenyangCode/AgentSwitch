@@ -5,7 +5,8 @@ import { cleanTitle } from '@shared/markers'
 import { expandHome } from '../profiles'
 import type { ProfileConfig } from '@shared/types'
 import { RATE_LIMIT_RE } from '../agentRunner'
-import { agyConversationDb, withDb } from '../history'
+import { agyConversationDb, pbAll, withDb } from '../history'
+import type { AgyTotals } from '../usageDelta'
 import { t } from '../i18n'
 import { sanitize } from './stderr'
 
@@ -24,6 +25,37 @@ export function readAgyConversationTitle(cfg: ProfileConfig, id: string, home = 
   try {
     const row = withDb(dbPath, (db) => db.prepare('select title from conversation_summaries where conversation_id = ?').get(id) as { title?: unknown } | undefined)
     return cleanTitle(row?.title)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Running usage totals of an agy conversation: gen_metadata has one row per model call, its
+ * protobuf 1.4 the call's usage (2 uncached input · 3 output incl. thinking · 5 cache read ·
+ * 9 thinking, see usage.ts agyFileDays). null: no db / unreadable.
+ */
+export function readAgyConversationTotals(cfg: ProfileConfig, id: string, home = expandHome(cfg.configDir)): AgyTotals | null {
+  if (!/^[\w-]+$/.test(id)) return null
+  const path = agyConversationDb({ ...cfg, configDir: home }, id)
+  if (!existsSync(path)) return null
+  try {
+    const rows = withDb(path, (db) => db.prepare('select data from gen_metadata').all() as { data: Uint8Array | null }[])
+    if (!rows) return null
+    const t: AgyTotals = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
+    for (const r of rows) {
+      if (!r.data) continue
+      const b = Buffer.from(r.data)
+      const int = (f: number): number => {
+        const v = pbAll(b, [1, 4, f])[0]
+        return typeof v === 'number' ? v : 0
+      }
+      t.input += int(2)
+      t.output += int(3)
+      t.cacheRead += int(5)
+      t.reasoning += int(9)
+    }
+    return t
   } catch {
     return null
   }

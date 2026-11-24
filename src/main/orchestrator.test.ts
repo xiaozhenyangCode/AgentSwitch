@@ -89,6 +89,30 @@ describe('orchestrator history handoff', () => {
     await start(request([entry(1, 'ALREADY SEEN', null), entry(2, 'Last reply', 'a'), entry(3, 'New history', 'b')]))
   })
 
+  it('keeps the system text byte-identical across turns and puts per-turn lines at the end of the prompt', async () => {
+    const specs: RunSpec[] = []
+    runAgent.mockImplementation((spec: RunSpec) => {
+      specs.push(spec)
+      return { done: Promise.resolve({ ok: true, sessionId: 'previous-session' }), kill: vi.fn() }
+    })
+    const req = { ...request([]), text: '你好', participants: ['a', 'b'] }
+    await start({ ...req, turnId: 'turn-one' })
+    await start({ ...req, turnId: 'turn-two', text: 'hello in English please' })
+    const [one, two] = specs
+    expect(one.system).toBeTruthy()
+    expect(two.system).toBe(one.system)
+    for (const s of specs) {
+      expect(s.system).not.toMatch(/turn-one|turn-two|runs\/|outputs\//)
+      expect(s.system).not.toContain('回复使用 Markdown')
+    }
+    const env = (p: string) => p.slice(p.lastIndexOf('## 本轮环境'))
+    expect(env(one.prompt)).toContain('runs/turn-one/')
+    expect(env(one.prompt)).toContain('outputs/turn-one/')
+    expect(env(one.prompt)).toContain('用中文回复')
+    expect(env(two.prompt)).toContain('runs/turn-two/')
+    expect(two.prompt.trimEnd().endsWith('Language: the user writes in English. Reply in English.')).toBe(true)
+  })
+
   it.each(['stopped', 'error'] as const)('records a new %s session on disk without offering it for resume', async (status) => {
     const req = request([], 'portable-import')
     runAgent.mockReturnValueOnce({
@@ -140,6 +164,28 @@ describe('orchestrator checkpoints', () => {
       const orchestrator = new Orchestrator((event) => { if (event.kind === 'turn-end' && event.status === 'done') resolve() }, vi.fn(), vi.fn(), checkpoints)
       orchestrator.start(request([]))
     })
+    expect(runAgent).toHaveBeenCalledOnce()
+  })
+})
+
+describe('orchestrator compact sessions', () => {
+  it('unbinds only the named accounts, keeps the history ids, and the next turn hands off instead of resuming', async () => {
+    writeFileSync(join(data, 'threads', 'fixture.json'), JSON.stringify({ sessions: { a: 'long-session', b: 'other-session' }, models: { a: 'small', b: null } }))
+    const orchestrator = new Orchestrator(vi.fn(), vi.fn(), vi.fn())
+    expect(orchestrator.compactThreadSessions('fixture', ['a'])).toBe(true)
+    const state: NativeSessions = JSON.parse(readFileSync(join(data, 'threads', 'fixture.json'), 'utf8'))
+    expect(state.sessions).toEqual({ b: 'other-session' })
+    expect(nativeSessionEntries(state)).toContainEqual(['a', 'long-session'])
+    // nothing bound any more: no-op
+    expect(orchestrator.compactThreadSessions('fixture', ['a'])).toBe(false)
+
+    runAgent.mockImplementationOnce((spec: RunSpec) => {
+      expect(spec.resume).toBeNull()
+      expect(spec.prompt).toContain('## 之前的对话')
+      expect(spec.prompt).toContain('EARLIER WORK')
+      return { done: Promise.resolve({ ok: true, sessionId: 'fresh-session' }), kill: vi.fn() }
+    })
+    await start(request([entry(1, 'EARLIER WORK', null), entry(2, 'Reply', 'a')]))
     expect(runAgent).toHaveBeenCalledOnce()
   })
 })

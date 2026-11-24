@@ -51,22 +51,21 @@ const SYSTEM_RESEND_TURNS = 8
 
 interface StepPrompt {
   prompt: string
-  /** Full system text. */
+  /**
+   * System text: only what stays the same across turns (identity, project, permissions, dispatch
+   * rules). It sits in front of the whole history in every engine's prompt cache (claude
+   * --append-system-prompt, agy ACP systemPrompt.append), so any per-turn byte in it would
+   * invalidate the cached conversation. Per-turn lines (run / output dirs, reply language) go at
+   * the end of the prompt instead.
+   */
   system: string
-  /** The part that stays the same across turns (identity, permissions, dispatch rules). */
-  fixed: string
-  /** This turn's lines only (hand-off / output dirs, reply language). */
-  turnOnly: string
 }
 
-/** sys[2..4] are per turn (run dir, output dir, reply language); the rest is fixed. */
-function stepPrompt(parts: string[], sys: string[]): StepPrompt {
-  const TURN_LINES = [2, 3, 4]
+/** The prompt with this turn's environment lines appended (`tail`: lines that must stay last). */
+function stepPrompt(parts: string[], sys: string[], turnLines: string[], tail: string[] = []): StepPrompt {
   return {
-    prompt: parts.join('\n'),
-    system: sys.join('\n'),
-    fixed: sys.filter((_, i) => !TURN_LINES.includes(i)).join('\n'),
-    turnOnly: TURN_LINES.map((i) => sys[i]).join('\n')
+    prompt: [...parts, '', '## 本轮环境', ...turnLines, ...tail].join('\n'),
+    system: sys.join('\n')
   }
 }
 const REVIEW_RE = /验收|审核|审查|复核|评审|检查|review/i
@@ -316,10 +315,23 @@ export class Orchestrator {
    * turn starts fresh CLI sessions with P0-3 budgeted handoff instead of resuming truncated history.
    */
   clearThreadSessions(threadId: string): boolean {
+    return this.unbindSessions(threadId, (profileId) => !hasProfile(profileId) || shouldUnbindSessionsOnRewind(getConfig(profileId).kind))
+  }
+
+  /**
+   * 「新开会话并交接核心上下文」: unbinds these accounts' native sessions of `threadId` (the chat
+   * history stays), so their next turn starts a fresh CLI session with the P0-3 budgeted handoff
+   * (16k + read_thread) instead of resuming a long, expensive context.
+   */
+  compactThreadSessions(threadId: string, profileIds: ProfileId[]): boolean {
+    if (this.turns.has(threadId)) return false
+    const only = new Set(profileIds)
+    return this.unbindSessions(threadId, (profileId) => only.has(profileId))
+  }
+
+  private unbindSessions(threadId: string, shouldUnbind: (profileId: ProfileId) => boolean): boolean {
     const f = sessionsFile(threadId)
     const previous = loadSessions(threadId)
-    const shouldUnbind = (profileId: ProfileId): boolean =>
-      !hasProfile(profileId) || shouldUnbindSessionsOnRewind(getConfig(profileId).kind)
     const activeEntries = Object.entries(previous.sessions ?? {}).filter(([id, sid]) => !!sid && shouldUnbind(id))
     const hasModelsToClear = Object.keys(previous.models ?? {}).some(shouldUnbind)
     if (!activeEntries.length && !hasModelsToClear) return false
@@ -563,9 +575,7 @@ export class Orchestrator {
     const sys: string[] = [
       `你在 AgentSwitch 中工作：一个把多个 AI 模型放进同一对话协作的桌面应用。你的身份：${cfg.name}（${KIND_LABEL[cfg.kind]} · ${modelText(cfg, step.model)}）。`,
       `项目目录（当前工作目录）：${turn.cwd}`,
-      `本轮交接目录：${rel(turn.runDir)}/（task.json、用户附件、前序步骤的完整输出都在这里，可按需读取）。`,
-      `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
-      replyLanguage(turn.req.text),
+      '每轮的交接目录、产出目录和回复语言见用户消息末尾的「本轮环境」。',
       cfg.autoApprove === 'full'
         ? (permStyle === 'reasonix'
           ? '当前授权：Reasonix 跳过权限审批，命令仍遵循 Reasonix 自身的沙箱设置。'
@@ -583,13 +593,13 @@ export class Orchestrator {
           : '当前授权：只能读写项目内的文件，执行 shell 命令会被自动拒绝。请直接用文件读取 / 查看 / 编辑工具完成任务（图片可以直接用读取工具查看）；确实需要执行命令时，说明需要执行什么，让用户决定。'
     ]
     if (step.allowDispatch) {
-      const named = new Map(turn.named.map((r) => [r.profileId, r.model]))
-      const others = this.dispatchable(turn, step.profileId).map((p) => getConfig(p))
-      const modelOf = (o: ProfileConfig) => named.get(o.id) || o.defaultModel || 'CLI 默认'
+      // the thread's participants with their defaults only: accounts and models @-named this turn
+      // are listed in the prompt (「用户点名的协作者」), keeping this part the same every turn
+      const others = turn.req.participants.filter((p) => p !== step.profileId && hasProfile(p)).map((p) => getConfig(p))
       sys.push(
         '',
         '## 可调度的其他参与模型',
-        ...others.map((o) => `- account: "${o.id}" · ${o.name}（${KIND_LABEL[o.kind]}，${named.get(o.id) ? '用户指定子模型' : '默认子模型'} ${modelOf(o)}）`),
+        ...others.map((o) => `- account: "${o.id}" · ${o.name}（${KIND_LABEL[o.kind]}，默认子模型 ${o.defaultModel || 'CLI 默认'}）`),
         '仅当用户明确要求多模型协作、或任务明显需要其他参与模型配合时才调度；普通单轮问答直接回复即可。',
         '调度方法：先简要说明你的安排，然后在回复最后输出一个代码块（系统会按顺序执行，再把结果交回给你汇总）：',
         '```agentswitch:dispatch',
@@ -598,12 +608,17 @@ export class Orchestrator {
       )
     }
 
+    const turnLines = [
+      `本轮交接目录：${rel(turn.runDir)}/（task.json、用户附件、前序步骤的完整输出都在这里，可按需读取）。`,
+      `如果你生成了新文件（尤其是图片等素材），请保存到 ${rel(turn.outDir)}/ 下，并在回复中用相对路径引用，图片用 Markdown 图片语法，例如 ![说明](${rel(turn.outDir)}/name.png)。`,
+      replyLanguage(turn.req.text)
+    ]
     const parts: string[] = []
     if (recap) parts.push(resuming ? '## 你上次回复之后的对话（节选）' : '## 之前的对话（节选）', recap, '')
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
       parts.push('## 用户消息', turn.req.text, '', '## 你的任务', handoffPrompt(to))
-      return stepPrompt(parts, sys)
+      return stepPrompt(parts, sys, turnLines)
     }
     if (turn.req.handoffDoc) {
       let doc = ''
@@ -676,8 +691,8 @@ export class Orchestrator {
         '```'
       )
     // the prompt above is Chinese: restate the language last, where models weigh it most
-    if (userLanguage(turn.req.text) === 'en') parts.push('', 'Language: the user writes in English. Reply in English.')
-    return stepPrompt(parts, sys)
+    const tail = userLanguage(turn.req.text) === 'en' ? ['', 'Language: the user writes in English. Reply in English.'] : []
+    return stepPrompt(parts, sys, turnLines, tail)
   }
 
   private async next(turn: Turn): Promise<void> {
@@ -722,12 +737,12 @@ export class Orchestrator {
         recap = budgetedHandoff(entries, budget, !resume, false)
       }
     }
-    const { prompt, system: fullSystem, fixed, turnOnly } = this.prompt(turn, step, recap.text, !!resume)
+    const { prompt, system: fixed } = this.prompt(turn, step, recap.text, !!resume)
     const inline = usesInlineSystemPrompt(cfg.kind, cfg.agyTransport)
     const sent = inline && resume ? this.sentSystem.get(resume) : undefined
-    // the resumed session already holds the fixed instructions: only this turn's lines go again
+    // the resumed session already holds the fixed instructions (this turn's lines are in the prompt)
     const compact = !!sent && sent.fixed === fixed && sent.turns < SYSTEM_RESEND_TURNS
-    const system = compact ? turnOnly : fullSystem
+    const system = compact ? null : fixed
     let stepUsage: Usage | null = null
     const allowNativeTitle = turn.req.wantTitle === true && (step.kind === 'own' || step.kind === 'summary')
     const emit = (event: AgentEvent): void => {

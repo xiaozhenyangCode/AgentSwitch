@@ -8,11 +8,11 @@ import { agyModelId } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
-import { readAgyConversationTitle } from './acp/agyOutcome'
+import { readAgyConversationTitle, readAgyConversationTotals } from './acp/agyOutcome'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
 import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
-import { claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost } from './usageDelta'
+import { agyTurnUsage, claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost, type AgyTotals } from './usageDelta'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -651,8 +651,10 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
 
 // ---- agy -----------------------------------------------------------------------------------
 
-function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
+export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
   let session: string | null = s.resume
+  /** The conversation's totals before this run (`result.usage` is the conversation's running total); null: unknown. */
+  const totalsBefore: AgyTotals | null = s.resume ? readAgyConversationTotals(s.cfg, s.resume, home) : { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
   let model: string | null = s.model
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
@@ -662,6 +664,13 @@ function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
   let lastContext = 0
   /** Usage of each finished step (one model call), reported when the run ends without its result. */
   const stepUsage = new Map<number, Usage>()
+  /** Sum over the run's finished steps (null: none finished). */
+  const stepTotal = (): Usage | null => {
+    if (!stepUsage.size) return null
+    const t = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
+    for (const u of stepUsage.values()) for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += u[k] ?? 0
+    return { ...t, cacheRead: t.cacheRead || undefined }
+  }
   const args = ['--output-format', 'stream-json']
   // cli: agy's own default mode (runs commands in -p, measured 1.5.13)
   if (s.cfg.autoApprove === 'full') args.push('--dangerously-skip-permissions')
@@ -678,11 +687,8 @@ function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
     result: () => result,
     // no result event (stopped, killed): the finished steps' own usage; also pick up agy's native title
     finish: (emit) => {
-      if (!result && stepUsage.size) {
-        const t = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
-        for (const u of stepUsage.values()) for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += u[k] ?? 0
-        emit({ t: 'usage', usage: { ...t, cacheRead: t.cacheRead || undefined, context: lastContext || undefined } })
-      }
+      const steps = result ? null : stepTotal()
+      if (steps) emit({ t: 'usage', usage: { ...steps, context: lastContext || undefined } })
       if (session) {
         const title = readAgyConversationTitle(s.cfg, session, home)
         if (title) emit({ t: 'title', title })
@@ -714,7 +720,8 @@ function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
                 emit({ t: 'text', delta: u.text_delta })
               }
               // each finished step is one request: its input is the context at that point
-              const stepCtx = (Number(u.usage?.input_tokens) || 0) + (Number(u.usage?.output_tokens) || 0)
+              // input_tokens is the uncached part only: the cached prefix is context too
+              const stepCtx = (Number(u.usage?.input_tokens) || 0) + (Number(u.usage?.cache_read_tokens) || 0) + (Number(u.usage?.output_tokens) || 0)
               if (u.state === 'DONE' && stepCtx > 0) lastContext = stepCtx
               if (u.state === 'DONE' && u.usage && typeof u.step_index === 'number')
                 stepUsage.set(u.step_index, { input: Number(u.usage.input_tokens) || 0, output: Number(u.usage.output_tokens) || 0, cacheRead: Number(u.usage.cache_read_tokens) || 0, reasoning: Number(u.usage.thinking_tokens) || 0 })
@@ -739,8 +746,7 @@ function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
           const r = d.result ?? {}
           if (Array.isArray(r.denied_actions) && r.denied_actions.length)
             emit({ t: 'notice', message: deniedText(r.denied_actions.map((x: any) => x?.display_name ?? x?.action ?? 'tool'), s.cfg.autoApprove) })
-          const u = r.usage ?? {}
-          emit({ t: 'usage', usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_tokens || undefined, reasoning: u.thinking_tokens, context: lastContext || undefined } })
+          emit({ t: 'usage', usage: { ...agyTurnUsage(r.usage ?? {}, totalsBefore, stepTotal()), context: lastContext || undefined } })
           session = r.conversation_id ?? session
           result = r.status === 'SUCCESS' ? { ok: true, error: null } : { ok: false, error: String(r.error ?? r.status ?? 'error') }
           break

@@ -166,6 +166,11 @@ export interface Thread {
   suggestedInput?: string | null
   /** User turn count when the user dismissed the long-context warning. */
   contextWarnDismissedAt?: number
+  /**
+   * The costly-context notice was handled for the reply `messageId` (whose context crossed the
+   * threshold): dismissed at `userTurns`, or `compacted` (sessions unbound for a fresh handoff).
+   */
+  contextCostDismissed?: { messageId: string; userTurns: number; compacted?: boolean }
   /** Unread completion badge for turns that finished in the background (or while unfocused). */
   unread?: 'done' | 'error' | 'paused' | null
   /** Kept at the top of its project group in the sidebar. */

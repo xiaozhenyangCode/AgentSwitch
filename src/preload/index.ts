@@ -123,7 +123,9 @@ const api = {
       ipcRenderer.invoke(IPC.chatRewindPlan, threadId, turnIds),
     rewind: (threadId: string, turnIds: string[], restoreFiles: boolean, choice?: CheckpointChoice): Promise<RewindExecuteResult> =>
       ipcRenderer.invoke(IPC.chatRewind, threadId, turnIds, restoreFiles, choice),
-    deleteThread: (req: DeleteThreadRequest): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.chatDeleteThread, req)
+    deleteThread: (req: DeleteThreadRequest): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.chatDeleteThread, req),
+    /** Unbinds these accounts' CLI sessions of the thread: their next turn starts fresh with a budgeted handoff. */
+    compactSessions: (threadId: string, profileIds: string[]): Promise<boolean> => ipcRenderer.invoke(IPC.chatCompactSessions, threadId, profileIds)
   },
   usage: {
     get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),

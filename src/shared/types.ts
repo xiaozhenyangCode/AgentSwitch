@@ -603,6 +603,7 @@ export const IPC = {
   chatCheckpointAction: 'chat:checkpointAction',
   chatRewindPlan: 'chat:rewindPlan',
   chatRewind: 'chat:rewind',
+  chatCompactSessions: 'chat:compact-sessions',
   historyList: 'history:list',
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',

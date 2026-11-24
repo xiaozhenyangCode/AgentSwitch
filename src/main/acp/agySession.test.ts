@@ -9,7 +9,7 @@ import { runAgent, type RunSpec } from '../agentRunner'
 import { startAcpProcess } from './acpProcess'
 import { autoDecision } from './agySession'
 import { JsonRpc } from './jsonrpc'
-import { agyAcpPool } from './pool'
+import { agyAcpPool, IDLE_MS } from './pool'
 import { permissions, PERMISSION_TIMEOUT } from './permissions'
 
 const stubs = vi.hoisted(() => ({ buildSpawnSpec: vi.fn(), getConfig: vi.fn(), spawn: vi.fn() }))
@@ -419,10 +419,10 @@ describe('agy ACP runs', () => {
     vi.useFakeTimers()
     cli.send(cli.update({ ...call('in_progress'), kind: 'execute' }), { id: prompt.id, result })
     await run.done
-    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.advanceTimersByTimeAsync(IDLE_MS)
     expect(cli.process.terminate).not.toHaveBeenCalled()
     cli.send(cli.update(call('completed')))
-    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.advanceTimersByTimeAsync(IDLE_MS)
     expect(cli.process.terminate).toHaveBeenCalledTimes(1)
   })
 })

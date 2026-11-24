@@ -8,8 +8,9 @@ import { startAcpProcess, type AcpProcess } from './acpProcess'
 import { JsonRpcError } from './jsonrpc'
 import { cancelledPermission, permissions, type PermissionReply } from './permissions'
 
-const IDLE_MS = 10 * 60_000
-const MAX_IDLE_DEFERRAL = 60 * 60_000
+/** A retired process loses the warm session: the next turn resumes it and agy's prompt cache starts cold. */
+export const IDLE_MS = 30 * 60_000
+const MAX_IDLE_DEFERRAL = 90 * 60_000
 const MAX_START_FAILURES = 3
 
 export type AcpFields = Record<string, any>

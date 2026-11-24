@@ -446,6 +446,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const clearedSessions = orchestrator.clearThreadSessions(threadId)
     return { ...res, clearedSessions }
   })
+  ipcMain.handle(IPC.chatCompactSessions, (_e, threadId: unknown, profileIds: unknown) => {
+    if (typeof threadId !== 'string' || !Array.isArray(profileIds)) return false
+    return orchestrator.compactThreadSessions(threadId, profileIds.filter((id): id is string => typeof id === 'string'))
+  })
   ipcMain.handle(IPC.chatDeleteThread, async (_e, req: unknown) => {
     const r = req as Record<string, unknown> | null
     if (!r || typeof r.threadId !== 'string') throw new Error('bad request')

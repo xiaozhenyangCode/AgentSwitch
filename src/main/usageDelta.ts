@@ -127,6 +127,33 @@ export function codexTurnUsage(after: CodexTotals, before: CodexTotals | null): 
   }
 }
 
+// ---- agy (print) -----------------------------------------------------------------------------
+
+/**
+ * Totals of an agy conversation (sum over `gen_metadata`, one row per model call). `input` is
+ * uncached only, `output` includes thinking.
+ */
+export interface AgyTotals {
+  input: number
+  output: number
+  cacheRead: number
+  reasoning: number
+}
+
+/**
+ * This run's usage from agy `-p --conversation`'s `result.usage`, which is the conversation's
+ * running total (measured: the last run's report equals the sum over the conversation db), minus
+ * the totals before the run. A total below the previous one means agy counted over: the report is
+ * the run's own. Without a baseline, `steps` (the run's finished steps) stands in.
+ */
+export function agyTurnUsage(after: Record<string, unknown>, before: AgyTotals | null, steps: Usage | null): Usage {
+  const now: AgyTotals = { input: num(after.input_tokens), output: num(after.output_tokens), cacheRead: num(after.cache_read_tokens), reasoning: num(after.thinking_tokens) }
+  const base = before && now.input >= before.input && now.output >= before.output && now.cacheRead >= before.cacheRead ? before : null
+  if (!base && !before && steps) return { ...steps, cacheRead: steps.cacheRead || undefined }
+  const d = (k: keyof AgyTotals): number => Math.max(0, now[k] - (base?.[k] ?? 0))
+  return { input: d('input'), output: d('output'), cacheRead: d('cacheRead') || undefined, reasoning: d('reasoning') }
+}
+
 // ---- stopped runs ------------------------------------------------------------------------------
 
 /**
