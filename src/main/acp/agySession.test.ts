@@ -1,7 +1,8 @@
 import { PassThrough } from 'node:stream'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AutoApprove, ProfileConfig } from '@shared/types'
 import { runAgent, type RunSpec } from '../agentRunner'
@@ -230,7 +231,8 @@ describe('agy ACP runs', () => {
     const prompt = await sendPrompt(cli)
     expect(prompt.params.prompt).toEqual([{ type: 'text', text: 'First' }])
     cli.send(
-      cli.update({ sessionUpdate: 'session_info_update', title: 'Ignored' }),
+      cli.update({ sessionUpdate: 'session_info_update', title: '  "Probe session"  ' }),
+      cli.update({ sessionUpdate: 'session_info_update', title: '   ' }),
       cli.update(text('Before.')),
       cli.update({ ...call('in_progress'), sessionUpdate: 'tool_call', kind: 'execute', title: 'Probe', rawInput: { CommandLine: 'echo acp-probe' } }),
       cli.update(call('pending')),
@@ -245,6 +247,7 @@ describe('agy ACP runs', () => {
     await expect(run.done).resolves.toMatchObject({ ok: true, sessionId })
     expect(emit.mock.calls.map(([event]) => event)).toEqual([
       { t: 'session', id: sessionId, model: null },
+      { t: 'title', title: 'Probe session' },
       { t: 'text', delta: 'Before.' },
       ...['running', 'running', 'running'].map((status) => expect.objectContaining({ t: 'activity', id: 'agy:call_1', target: 'echo acp-probe', type: 'run', status })),
       expect.objectContaining({ t: 'activity', id: 'agy:call_1', target: 'echo acp-probe', type: 'run', status: 'done', detail: expect.objectContaining({ exitCode: 0, output: 'acp-probe' }) }),
@@ -254,6 +257,27 @@ describe('agy ACP runs', () => {
       { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64 } }
     ])
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Late.'))
+  })
+
+  it('falls back to conversation_summaries.db for the native title when ACP omits session_info_update', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentswitch-agy-title-'))
+    try {
+      const dbDir = join(home, '.gemini', 'antigravity-cli')
+      mkdirSync(dbDir, { recursive: true })
+      const db = new DatabaseSync(join(dbDir, 'conversation_summaries.db'))
+      db.exec('create table conversation_summaries (conversation_id text primary key, title text)')
+      db.prepare('insert into conversation_summaries (conversation_id, title) values (?, ?)').run(sessionId, 'DB Native Title')
+      db.close()
+
+      stubs.buildSpawnSpec.mockReturnValue({ env: { HOME: home }, injected: [] })
+      const { run, cli } = await begin()
+      const prompt = await sendPrompt(cli)
+      cli.send(cli.update(text('Hello')), { id: prompt.id, result })
+      await expect(run.done).resolves.toMatchObject({ ok: true, sessionId })
+      expect(emit.mock.calls.map(([event]) => event)).toContainEqual({ t: 'title', title: 'DB Native Title' })
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it('uses the shared 200-event limit and finalizes a background command', async () => {

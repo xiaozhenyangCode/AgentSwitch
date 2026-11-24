@@ -143,3 +143,26 @@ describe('orchestrator checkpoints', () => {
     expect(runAgent).toHaveBeenCalledOnce()
   })
 })
+
+describe('orchestrator native titles', () => {
+  it('forwards native title events only when wantTitle is requested', async () => {
+    const collect = (wantTitle: boolean) => new Promise<unknown[]>((resolve) => {
+      const events: unknown[] = []
+      runAgent.mockImplementationOnce((_spec: RunSpec, emit: (event: unknown) => void) => {
+        emit({ t: 'title', title: 'Native Title' })
+        return { done: Promise.resolve({ ok: true, sessionId: 's1' }), kill: vi.fn() }
+      })
+      const orchestrator = new Orchestrator((event) => {
+        events.push(event)
+        if (event.kind === 'turn-end') resolve(events)
+      }, vi.fn(), vi.fn())
+      orchestrator.start({ ...request([]), wantTitle })
+    })
+
+    const withTitle = await collect(true)
+    expect(withTitle).toContainEqual(expect.objectContaining({ kind: 'agent', event: { t: 'title', title: 'Native Title' } }))
+
+    const withoutTitle = await collect(false)
+    expect(withoutTitle).not.toContainEqual(expect.objectContaining({ kind: 'agent', event: { t: 'title', title: 'Native Title' } }))
+  })
+})

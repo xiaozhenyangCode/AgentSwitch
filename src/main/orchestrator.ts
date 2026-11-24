@@ -692,8 +692,10 @@ export class Orchestrator {
     const compact = !!sent && sent.fixed === fixed && sent.turns < SYSTEM_RESEND_TURNS
     const system = compact ? turnOnly : fullSystem
     let stepUsage: Usage | null = null
+    const allowNativeTitle = turn.req.wantTitle === true && (step.kind === 'own' || step.kind === 'summary')
     const emit = (event: AgentEvent): void => {
       if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
+      if (event.t === 'title' && !allowNativeTitle) return
       if (event.t === 'usage') stepUsage = { ...(stepUsage ?? {}), ...event.usage }
       if (event.t === 'text') step.text += event.delta
       if (event.t === 'output' || (event.t === 'activity' && event.type === 'write')) {

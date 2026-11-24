@@ -354,6 +354,8 @@ export type PendingPermissionEntry = StepRef & { event: PermissionEvent }
 /** Normalised event from any CLI adapter. */
 export type AgentEvent =
   | { t: 'session'; id: string; model: string | null }
+  /** Native conversation title reported by the CLI (e.g. agy ACP session_info_update). */
+  | { t: 'title'; title: string }
   | { t: 'text'; delta: string }
   /** Thinking/reasoning text (may be '' when the provider hides it) and/or a running token estimate. */
   | { t: 'thinking'; delta: string; tokens?: number }

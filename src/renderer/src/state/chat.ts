@@ -5,7 +5,7 @@ import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
 import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, QueuedMessage, Thinking, Thread, UserMessage } from '@shared/chat'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
-import { readMarks, stripMarks } from '@shared/markers'
+import { cleanTitle, readMarks, stripMarks } from '@shared/markers'
 import { transcriptEntry } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
 import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQueue'
@@ -27,6 +27,8 @@ let status: ChatStatus = 'loading'
 let state: ChatState = { threads: [], activeId: null }
 const listeners = new Set<() => void>()
 const statusListeners = new Set<() => void>()
+/** Turns that received a CLI-native title (e.g. agy session_info_update), taking precedence over marker titles. */
+const nativeTitleTurns = new Set<string>()
 const writes = new ChatWrites()
 let session = 0
 let revision = 0
@@ -151,6 +153,7 @@ export function useChat(): ChatState {
 }
 
 export const activeThread = (s: ChatState): Thread | null => s.threads.find((t) => t.id === s.activeId) ?? null
+export const getThread = (id: string): Thread | null => state.threads.find((t) => t.id === id) ?? null
 export const isThreadBusy = (t: Thread | null) => !!t?.activeTurn
 const msgAt = (m: Message): number => (m.role === 'user' ? m.createdAt : (m.startedAt ?? 0))
 
@@ -539,6 +542,14 @@ function onEvent(e: ChatEvent) {
       return patchMsg(e.threadId, e.stepId, (m) => ({ ...m, status: 'streaming', startedAt: now() }))
     case 'agent': {
       const ev = e.event
+      if (ev.t === 'title') {
+        const title = cleanTitle(ev.title)
+        if (title) {
+          nativeTitleTurns.add(`${e.threadId}:${e.turnId}`)
+          patchThread(e.threadId, (t) => (!t.titleLocked && t.titleTurn === e.turnId ? { ...t, title } : t))
+        }
+        return
+      }
       if (ev.t === 'permission' && !permissionEventsDuringRestore?.has(ev.requestId)) permissionEventsDuringRestore?.set(ev.requestId, null)
       if (ev.t === 'permission_resolved') {
         const { t: _type, requestId, ...resolution } = ev
@@ -602,10 +613,11 @@ function onEvent(e: ChatEvent) {
       const raw = state.threads.find((t) => t.id === e.threadId)?.messages.find((m) => m.id === e.stepId)
       const marks = raw?.role === 'assistant' ? readMarks(raw.content) : { title: null, next: null }
       patchMsg(e.threadId, e.stepId, (m) => ({ ...m, content: stripMarks(m.content), phase: null, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
-      if (marks.title || marks.next)
+      const markTitle = marks.title && !nativeTitleTurns.has(`${e.threadId}:${e.turnId}`) ? marks.title : null
+      if (markTitle || marks.next)
         patchThread(e.threadId, (t) => ({
           ...t,
-          ...(marks.title && !t.titleLocked && t.titleTurn === e.turnId ? { title: marks.title, titleTurn: null } : {}),
+          ...(markTitle && !t.titleLocked && t.titleTurn === e.turnId ? { title: markTitle, titleTurn: null } : {}),
           ...(marks.next ? { suggestedInput: marks.next } : {})
         }))
       return
@@ -644,6 +656,7 @@ function onEvent(e: ChatEvent) {
       return
     }
     case 'turn-end': {
+      nativeTitleTurns.delete(`${e.threadId}:${e.turnId}`)
       const prev = state.threads.find((t) => t.id === e.threadId)
       const autoSend = prev && shouldAutoSendQueued(prev, e.turnId, e.status)
       const turnSteps = prev ? prev.messages.filter((m): m is AssistantMessage => m.role === 'assistant' && m.turnId === e.turnId) : []
@@ -655,6 +668,7 @@ function onEvent(e: ChatEvent) {
       patchThread(e.threadId, (t) => ({
         ...t,
         activeTurn: t.activeTurn === e.turnId ? null : t.activeTurn,
+        ...(t.titleTurn === e.turnId ? { titleTurn: null } : {}),
         ...(t.activeTurn === e.turnId && e.status !== 'done' && t.queuedMessages?.length ? { queueHold: 'manual' as const } : {}),
         pause: t.pause?.turnId === e.turnId ? null : t.pause,
         updatedAt: now(),

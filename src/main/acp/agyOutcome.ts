@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
+import { cleanTitle } from '@shared/markers'
 import { expandHome } from '../profiles'
 import type { ProfileConfig } from '@shared/types'
 import { RATE_LIMIT_RE } from '../agentRunner'
@@ -13,6 +15,18 @@ const MAX_PAYLOAD = 16 * 1024
 export interface AgyOutcome {
   error: string
   rateLimited: boolean
+}
+
+export function readAgyConversationTitle(cfg: ProfileConfig, id: string, home = expandHome(cfg.configDir)): string | null {
+  if (!/^[\w-]+$/.test(id)) return null
+  const dbPath = join(home, '.gemini', 'antigravity-cli', 'conversation_summaries.db')
+  if (!existsSync(dbPath)) return null
+  try {
+    const row = withDb(dbPath, (db) => db.prepare('select title from conversation_summaries where conversation_id = ?').get(id) as { title?: unknown } | undefined)
+    return cleanTitle(row?.title)
+  } catch {
+    return null
+  }
 }
 
 export function agyOutcomeReader(cfg: ProfileConfig, id: string, onLog: (text: string) => void, home = expandHome(cfg.configDir)) {

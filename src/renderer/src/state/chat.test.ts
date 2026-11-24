@@ -180,3 +180,45 @@ describe('chat queue dispatch', () => {
     expect(sent()).toEqual(['edited', 'new turn', 'last turn'])
   })
 })
+
+describe('chat native title updates', () => {
+  const stepAdd = (threadId: string, turnId: string, stepId = 'step-1') =>
+    emit({ kind: 'step-add', threadId, turnId, stepId, profileId: 'test', name: 'Gemini', profileKind: 'gemini', model: null, dispatchedBy: null, review: false, retry: 0, after: null })
+
+  it('prefers the CLI-native title over a hidden title marker while still stripping markers', async () => {
+    await open()
+    await send('帮我排查一下 agy 的标题同步问题')
+    const { threadId, turnId } = api.send.mock.lastCall![0]
+    stepAdd(threadId, turnId)
+    emit({ kind: 'agent', threadId, turnId, stepId: 'step-1', event: { t: 'title', title: 'agy 原生会话标题' } })
+    expect(chat.getThread(threadId)?.title).toBe('agy 原生会话标题')
+
+    emit({ kind: 'agent', threadId, turnId, stepId: 'step-1', event: { t: 'text', delta: '查到了原因。\n<!-- agentswitch:title:标记标题 -->' } })
+    emit({ kind: 'step-end', threadId, turnId, stepId: 'step-1', status: 'done' })
+    finish()
+
+    const th = chat.getThread(threadId)
+    expect(th?.title).toBe('agy 原生会话标题')
+    const reply = th?.messages.find((m) => m.role === 'assistant')
+    expect(reply?.role === 'assistant' ? reply.content : '').toBe('查到了原因。')
+  })
+
+  it('falls back to the hidden title marker when no native title arrives and respects manual renames', async () => {
+    await open()
+    await send('第一条消息')
+    const { threadId, turnId } = api.send.mock.lastCall![0]
+    stepAdd(threadId, turnId)
+    emit({ kind: 'agent', threadId, turnId, stepId: 'step-1', event: { t: 'text', delta: '好的。\n<!-- agentswitch:title:标记兜底标题 -->' } })
+    emit({ kind: 'step-end', threadId, turnId, stepId: 'step-1', status: 'done' })
+    finish()
+    expect(chat.getThread(threadId)?.title).toBe('标记兜底标题')
+
+    const second = chat.newThread({ projectDir: null, participants: ['test'], driver: fixture.driver })
+    await send('另一条消息', second)
+    const req2 = api.send.mock.lastCall![0]
+    stepAdd(req2.threadId, req2.turnId, 'step-2')
+    chat.renameThread(second, '我手动改的标题')
+    emit({ kind: 'agent', threadId: req2.threadId, turnId: req2.turnId, stepId: 'step-2', event: { t: 'title', title: '不该覆盖手动标题' } })
+    expect(chat.getThread(second)?.title).toBe('我手动改的标题')
+  })
+})

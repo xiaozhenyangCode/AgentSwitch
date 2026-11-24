@@ -12,8 +12,13 @@ export interface ReplyMarks {
 }
 
 const clean = (s: string, max: number): string | null => {
-  const v = s.replace(/\s+/g, ' ').replace(/^["'“”「『]+|["'“”」』]+$/g, '').trim()
+  const v = s.replace(/\s+/g, ' ').trim().replace(/^["'“”「『]+|["'“”」』]+$/g, '').trim()
   return v ? v.slice(0, max) : null
+}
+
+/** Normalises a CLI-reported conversation title (whitespace, wrapping quotes, length cap). */
+export function cleanTitle(raw: unknown, max = 80): string | null {
+  return typeof raw === 'string' ? clean(raw, max) : null
 }
 
 export function readMarks(text: string): ReplyMarks {

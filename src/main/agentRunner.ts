@@ -8,6 +8,7 @@ import { agyModelId } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
+import { readAgyConversationTitle } from './acp/agyOutcome'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
 import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
@@ -650,7 +651,7 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
 
 // ---- agy -----------------------------------------------------------------------------------
 
-function agyAdapter(s: RunSpec): Adapter {
+function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
   let session: string | null = s.resume
   let model: string | null = s.model
   let result: { ok: boolean; error: string | null } | null = null
@@ -675,12 +676,17 @@ function agyAdapter(s: RunSpec): Adapter {
     sessionId: () => session,
     model: () => model,
     result: () => result,
-    // no result event (stopped, killed): the finished steps' own usage
+    // no result event (stopped, killed): the finished steps' own usage; also pick up agy's native title
     finish: (emit) => {
-      if (result || !stepUsage.size) return
-      const t = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
-      for (const u of stepUsage.values()) for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += u[k] ?? 0
-      emit({ t: 'usage', usage: { ...t, cacheRead: t.cacheRead || undefined, context: lastContext || undefined } })
+      if (!result && stepUsage.size) {
+        const t = { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
+        for (const u of stepUsage.values()) for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += u[k] ?? 0
+        emit({ t: 'usage', usage: { ...t, cacheRead: t.cacheRead || undefined, context: lastContext || undefined } })
+      }
+      if (session) {
+        const title = readAgyConversationTitle(s.cfg, session, home)
+        if (title) emit({ t: 'title', title })
+      }
     },
     onLine: (d, emit) => {
       switch (d.event) {
@@ -989,7 +995,7 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
   const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =
     cfg.kind === 'claude' ? claudeAdapter(spec) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt)
-      : reasonix ? reasonixAdapter({ ...spec, cfg }) : agyAdapter(spec)
+      : reasonix ? reasonixAdapter({ ...spec, cfg }) : agyAdapter(spec, env.HOME ?? expandHome(cfg.configDir))
 
   let child: ChildProcess | null = null
   let stopped = false

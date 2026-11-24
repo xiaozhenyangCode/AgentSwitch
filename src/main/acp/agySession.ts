@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { constants, realpathSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve, sep } from 'node:path'
+import { cleanTitle } from '@shared/markers'
 import { joinSpec, splitSpec } from '@shared/modelSpec'
 import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption } from '@shared/types'
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
 import { t } from '../i18n'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
-import { agyOutcomeReader } from './agyOutcome'
+import { agyOutcomeReader, readAgyConversationTitle } from './agyOutcome'
 import { agyAcpPool, type AcpConnection, type AcpFields } from './pool'
 import { cancelledPermission, permissions, PERMISSION_TIMEOUT, type PermissionReply } from './permissions'
 import { sanitize } from './stderr'
@@ -116,10 +117,12 @@ function turnEvents(emit: Emit) {
   const tools = new Map<string, { call: AcpFields; activity: Activity }>()
   let used = 0
   let hasText = false
+  let hasTitle = false
   let nextSegment = false
   let messageId: unknown
   return {
     tool: (id: string) => tools.get(id)?.call,
+    hasTitle: () => hasTitle,
     update(update: AcpFields): void {
       const kind = update.sessionUpdate
       switch (kind) {
@@ -165,7 +168,14 @@ function turnEvents(emit: Emit) {
         case 'usage_update':
           if (typeof update.used === 'number') used = update.used
           break
-        case 'session_info_update':
+        case 'session_info_update': {
+          const title = cleanTitle(update.title)
+          if (title) {
+            hasTitle = true
+            emit({ t: 'title', title })
+          }
+          break
+        }
         case 'available_commands_update':
         case 'config_option_update':
           break
@@ -408,6 +418,10 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       }
       events.usage(response ?? {})
       if (response?.stopReason !== 'end_turn') return fail(t('main.acpStopReason', { reason: String(response?.stopReason ?? '?') }))
+      if (!events.hasTitle()) {
+        const title = readAgyConversationTitle(spec.cfg, id, conn.home)
+        if (title) emit({ t: 'title', title })
+      }
       const outcome = reader.after(start)
       if (!outcome) return result(true)
       if (outcome.rateLimited) emit({ t: 'rate_limited' })
