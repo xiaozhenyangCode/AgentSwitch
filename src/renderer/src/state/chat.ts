@@ -918,13 +918,6 @@ export async function exportHandoff(threadId: string, to: AgentRef, toNewThread 
 
 export const skipHandoff = (threadId: string, to: ProfileId) => patchThread(threadId, (t) => ({ ...t, handoffSkip: [...new Set([...(t.handoffSkip ?? []), to])], handoffFailed: null }))
 
-export const dismissContextWarn = (threadId: string, turns: number) => patchThread(threadId, (t) => ({ ...t, contextWarnDismissedAt: turns }))
-
-/** Hides the costly-context notice for this reply (shown again after a few more turns). */
-export function dismissContextCost(threadId: string, messageId: string, userTurns: number): void {
-  patchThread(threadId, (t) => ({ ...t, contextCostDismissed: { messageId, userTurns } }))
-}
-
 /**
  * 「压缩上下文 / 新开会话并交接核心上下文」: unbinds the accounts' CLI sessions of the thread (the
  * chat history stays visible) and appends a lightweight system divider so the next turn starts a
@@ -947,7 +940,6 @@ export async function compactContext(threadId: string, profileIds: string[], mes
       ...t,
       messages: [...t.messages, divider],
       ...(messageId ? { contextCostDismissed: { messageId, userTurns, compacted: true } } : {}),
-      contextWarnDismissedAt: userTurns,
       updatedAt: now()
     }
   })

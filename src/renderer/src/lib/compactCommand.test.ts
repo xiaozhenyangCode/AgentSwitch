@@ -3,6 +3,9 @@ import type { AssistantMessage, Message, SystemMessage, UserMessage } from '@sha
 import type { SkillItem } from '@shared/types'
 import {
   COMPACT_COMMAND_INSERT,
+  CTX_COST_REDISPLAY_TURNS,
+  CTX_REDISPLAY_TURNS,
+  computeContextNotice,
   computeContextState,
   isCliCompactCommand,
   isCompactCommand,
@@ -146,5 +149,34 @@ describe('compactCommand helpers', () => {
     expect(computeContextState([], 'a', 0, imported, true).hasActiveSession).toBe(false)
     expect(computeContextState([], 'a', 0, imported, false).hasActiveSession).toBe(true)
     expect(computeContextState([compactDivider('c2', ['a'])], 'a', 0, imported, false).hasActiveSession).toBe(false)
+  })
+
+  it('shows context notices again after switching threads while respecting in-visit dismissals', () => {
+    // 1M window at 190k tokens -> costly notice
+    const costlyBase = { threadId: 't1', lastTokens: 190_000, lastId: 'm1', window: 1_000_000, userTurns: 6 }
+    expect(computeContextNotice({ ...costlyBase, dismissed: null })).toBe('costly')
+
+    // Dismissing hides it during the current visit (same reply or before redisplay turns)
+    const dismissedCost = { threadId: 't1', cost: { messageId: 'm1', userTurns: 6 } }
+    expect(computeContextNotice({ ...costlyBase, dismissed: dismissedCost })).toBe(null)
+    expect(computeContextNotice({ ...costlyBase, lastId: 'm2', userTurns: 6 + CTX_COST_REDISPLAY_TURNS - 1, dismissed: dismissedCost })).toBe(null)
+    expect(computeContextNotice({ ...costlyBase, lastId: 'm3', userTurns: 6 + CTX_COST_REDISPLAY_TURNS, dismissed: dismissedCost })).toBe('costly')
+
+    // Switching away and returning resets dismissal (null or stale threadId) -> notice shows again
+    expect(computeContextNotice({ ...costlyBase, dismissed: null })).toBe('costly')
+    expect(computeContextNotice({ ...costlyBase, dismissed: { threadId: 't2', cost: { messageId: 'm1', userTurns: 6 } } })).toBe('costly')
+
+    // Compacted fallback suppresses re-prompting for the exact same messageId
+    expect(computeContextNotice({ ...costlyBase, dismissed: null, compactedMessageId: 'm1' })).toBe(null)
+
+    // 200k window at 185k tokens (>= 70% AND >= 180k) -> long notice; dismissing does not fall through to costly
+    const longBase = { threadId: 't1', lastTokens: 185_000, lastId: 'm4', window: 200_000, userTurns: 8 }
+    expect(computeContextNotice({ ...longBase, dismissed: null })).toBe('long')
+    const dismissedLong = { threadId: 't1', warnAt: 8 }
+    expect(computeContextNotice({ ...longBase, dismissed: dismissedLong })).toBe(null)
+    expect(computeContextNotice({ ...longBase, userTurns: 8 + CTX_REDISPLAY_TURNS - 1, dismissed: dismissedLong })).toBe(null)
+    expect(computeContextNotice({ ...longBase, userTurns: 8 + CTX_REDISPLAY_TURNS, dismissed: dismissedLong })).toBe('long')
+    // Switching back to t1 shows long notice again
+    expect(computeContextNotice({ ...longBase, dismissed: { threadId: 't2', warnAt: 8 } })).toBe('long')
   })
 })

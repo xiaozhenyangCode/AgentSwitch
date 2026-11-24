@@ -24,7 +24,15 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
-import { COMPACT_COMMAND_INSERT, computeContextState, isCompactCommand, makeCompactSlashItem, mergeSlashCommands } from '../lib/compactCommand'
+import {
+  COMPACT_COMMAND_INSERT,
+  computeContextNotice,
+  computeContextState,
+  isCompactCommand,
+  makeCompactSlashItem,
+  mergeSlashCommands,
+  type ContextNoticeDismissal
+} from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
 import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
@@ -37,8 +45,6 @@ import {
   continueInNewThread,
   continueQueuedMessages,
   compactContext,
-  dismissContextCost,
-  dismissContextWarn,
   editQueuedMessage,
   exportHandoff,
   isThreadBusy,
@@ -311,43 +317,52 @@ export function WorkbenchPage() {
     }
   }
 
-  // ---- long-context warning: suggest generating a handoff and moving to a fresh thread
-  // Only the current account's own context counts (its CLI session is what the next message
-  // continues), measured on its latest reply against that model's window.
-  const CTX_WARN_RATIO = 0.7
-  const CTX_REDISPLAY_TURNS = 10
+  // ---- context notices: ephemeral per-visit dismissal so switching away and returning shows
+  // them again while context stays above threshold.
+  const [ctxDismissed, setCtxDismissed] = useState<ContextNoticeDismissal | null>(null)
+  useEffect(() => {
+    setCtxDismissed(null)
+  }, [thread?.id])
   const contextStats = useMemo(() => {
     const state = computeContextState(messages, driverP?.id, thread?.carriedMessageCount ?? 0, thread?.imported, thread?.preview)
     // the window the CLI reported (codex, agy ACP) wins; otherwise it follows from the model
     const window = state.reportedWindow || (driverP ? contextWindow(driverP.kind, driverModel ?? state.model) : 0)
     return { ...state, window }
   }, [messages, driverP, driverModel, thread?.carriedMessageCount, thread?.imported, thread?.preview])
-  const contextLong =
+  const canShowContextNotice =
     !!thread &&
     !!driverP &&
     !isThreadBusy(thread) &&
     !handoffNeeded &&
     !handoffReady &&
-    !thread.pause &&
-    contextStats.window > 0 &&
-    contextStats.lastTokens >= contextStats.window * CTX_WARN_RATIO &&
-    (thread.contextWarnDismissedAt === undefined || contextStats.userTurns >= thread.contextWarnDismissedAt + CTX_REDISPLAY_TURNS)
-  // ---- costly context: far below the window, every tool round trip still re-reads the whole
-  // context. Offer a fresh CLI session with the budgeted handoff, in this same thread.
-  const CTX_COST_TOKENS = 180_000
-  const CTX_COST_REDISPLAY_TURNS = 5
-  const costDismissed = thread?.contextCostDismissed
-  const contextCostly =
-    !!thread &&
-    !!driverP &&
-    !contextLong &&
-    !isThreadBusy(thread) &&
-    !handoffNeeded &&
-    !handoffReady &&
-    !thread.pause &&
-    contextStats.lastTokens >= CTX_COST_TOKENS &&
-    contextStats.lastId !== costDismissed?.messageId &&
-    (!costDismissed || !!costDismissed.compacted || contextStats.userTurns >= costDismissed.userTurns + CTX_COST_REDISPLAY_TURNS)
+    !thread.pause
+  const contextNotice = canShowContextNotice
+    ? computeContextNotice({
+        threadId: thread.id,
+        lastTokens: contextStats.lastTokens,
+        lastId: contextStats.lastId,
+        window: contextStats.window,
+        userTurns: contextStats.userTurns,
+        dismissed: ctxDismissed,
+        compactedMessageId: thread.contextCostDismissed?.compacted ? thread.contextCostDismissed.messageId : null
+      })
+    : null
+  const contextLong = contextNotice === 'long'
+  const contextCostly = contextNotice === 'costly'
+  const dismissWarn = () => {
+    if (!thread) return
+    setCtxDismissed((prev) => ({
+      ...(prev?.threadId === thread.id ? prev : { threadId: thread.id }),
+      warnAt: contextStats.userTurns
+    }))
+  }
+  const dismissCost = () => {
+    if (!thread) return
+    setCtxDismissed((prev) => ({
+      ...(prev?.threadId === thread.id ? prev : { threadId: thread.id }),
+      cost: { messageId: contextStats.lastId, userTurns: contextStats.userTurns }
+    }))
+  }
   const [compacting, setCompacting] = useState(false)
   const canCompact = !!thread && !!driverP && !isThreadBusy(thread) && !thread.pause && contextStats.hasActiveSession
   const startCompact = useCallback(async () => {
@@ -788,7 +803,7 @@ export function WorkbenchPage() {
           <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
             <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
               <button
-                onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}
+                onClick={dismissWarn}
                 className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
                 title={t('common.close')}
                 aria-label={t('common.close')}
@@ -826,7 +841,7 @@ export function WorkbenchPage() {
               <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => startThread(ctx.projectDir)}>
                 {t('wb.ctxNewDirect')}
               </button>
-              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={dismissWarn}>
                 {t('wb.ctxContinue')}
               </button>
             </div>
@@ -836,7 +851,7 @@ export function WorkbenchPage() {
           <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
             <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-2xl bg-surface px-4 py-2 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
               <button
-                onClick={() => dismissContextCost(thread.id, contextStats.lastId, contextStats.userTurns)}
+                onClick={dismissCost}
                 className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
                 title={t('common.close')}
                 aria-label={t('common.close')}
@@ -847,7 +862,7 @@ export function WorkbenchPage() {
               <button className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90" onClick={startCompact} title={t('wb.ctxCompactHint')}>
                 {t('wb.ctxCompact')}
               </button>
-              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => dismissContextCost(thread.id, contextStats.lastId, contextStats.userTurns)}>
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={dismissCost}>
                 {t('wb.ctxContinue')}
               </button>
             </div>

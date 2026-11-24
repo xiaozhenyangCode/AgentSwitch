@@ -62,6 +62,49 @@ export interface ContextState {
   hasActiveSession: boolean
 }
 
+export const CTX_WARN_RATIO = 0.7
+export const CTX_REDISPLAY_TURNS = 10
+export const CTX_COST_TOKENS = 180_000
+export const CTX_COST_REDISPLAY_TURNS = 5
+
+/** Ephemeral per-visit dismissal state: resets whenever the user switches away and returns. */
+export interface ContextNoticeDismissal {
+  threadId: string
+  warnAt?: number
+  cost?: { messageId: string; userTurns: number }
+}
+
+/**
+ * Decides which context notice banner (if any) to display for the active thread.
+ * Dismissals are scoped to the current visit (`dismissed.threadId === threadId`) so switching to
+ * another thread and coming back shows the notice again while context remains above threshold.
+ */
+export function computeContextNotice(params: {
+  threadId: string
+  lastTokens: number
+  lastId: string
+  window: number
+  userTurns: number
+  dismissed: ContextNoticeDismissal | null
+  compactedMessageId?: string | null
+}): 'long' | 'costly' | null {
+  const active = params.dismissed?.threadId === params.threadId ? params.dismissed : null
+  const overLong = params.window > 0 && params.lastTokens >= params.window * CTX_WARN_RATIO
+  if (overLong) {
+    const hidden = active?.warnAt !== undefined && params.userTurns < active.warnAt + CTX_REDISPLAY_TURNS
+    return hidden ? null : 'long'
+  }
+  if (params.lastTokens >= CTX_COST_TOKENS) {
+    if (params.compactedMessageId && params.lastId === params.compactedMessageId) return null
+    const cost = active?.cost
+    const hidden =
+      !!cost &&
+      (params.lastId === cost.messageId || params.userTurns < cost.userTurns + CTX_COST_REDISPLAY_TURNS)
+    return hidden ? null : 'costly'
+  }
+  return null
+}
+
 /**
  * Computes the lead account's active context stats since the latest compact divider (or carried
  * history boundary), driving both the toolbar compact button and the long/costly context notices.
