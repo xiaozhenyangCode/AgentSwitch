@@ -10,6 +10,7 @@ import type { AgentEvent, HistoryActivity, HistoryEntry, HistoryMessage, History
 import { agyTool, capJson, capText, claudeResult, claudeTool, createdDiff, unwrapShell } from './agentRunner'
 import { expandHome, listConfigs } from './profiles'
 import { t } from './i18n'
+import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
  * Local CLI history (strictly read-only): claude ~/.claude/projects/*.jsonl, codex
@@ -73,9 +74,9 @@ export function ownSessions(): Set<string> {
   }
   for (const f of files) {
     try {
-      const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { sessions?: Record<string, string>; imported?: string[] }
+      const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as NativeSessions
       const imp = new Set(j.imported ?? [])
-      for (const sid of Object.values(j.sessions ?? {})) if (!imp.has(sid)) out.add(sid)
+      for (const [, sid] of nativeSessionEntries(j)) if (!imp.has(sid)) out.add(sid)
     } catch {
       /* skip */
     }

@@ -153,8 +153,9 @@ export interface RunRequest {
   mentions: RunAgentRef[]
   /** Accounts allowed to take part (driver may dispatch to these). */
   participants: ProfileId[]
-  /** Recap of the recent conversation, oldest first (each step only gets what its session has not seen). */
+  /** History before the current user message, in display order. */
   transcript: TranscriptEntry[]
+  sessionScope?: string
   /** 'handoff': the driver only writes a handoff document (saved to .agentswitch/handoffs/). */
   mode?: 'chat' | 'handoff'
   /** Handoff target account (mode 'handoff'). */

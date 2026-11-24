@@ -7,7 +7,12 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     resolve: { alias: { '@shared': resolve('src/shared') } },
-    build: { rollupOptions: { external: ['node-pty'] } }
+    build: {
+      rollupOptions: {
+        external: ['node-pty'],
+        input: { index: resolve('src/main/index.ts'), threadHistoryServer: resolve('src/main/threadHistoryServer.ts') }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

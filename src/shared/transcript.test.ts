@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { capTranscript, transcriptText, unseenTranscript, type TranscriptEntry } from './transcript'
+import { numberTranscript, reportedContextWindow, unseenTranscript, type TranscriptEntry } from './transcript'
 
-const u = (text: string): TranscriptEntry => ({ profileId: null, text: `用户：${text}` })
-const a = (id: string, text: string): TranscriptEntry => ({ profileId: id, text: `${id}：${text}` })
+const u = (text: string): TranscriptEntry => ({ id: text, turnId: text, profileId: null, speaker: '用户', time: 1, text })
+const a = (id: string, text: string): TranscriptEntry => ({ id: text, turnId: text, profileId: id, speaker: id, time: 2, text })
 
 describe('unseenTranscript', () => {
   const entries = [u('q1'), a('claude-1', 'r1'), u('q2'), a('codex-1', 'r2'), u('q3'), a('codex-1', 'r3')]
@@ -21,14 +21,18 @@ describe('unseenTranscript', () => {
   })
 })
 
-describe('capTranscript', () => {
-  it('keeps the newest entries within the budget', () => {
-    const out = capTranscript([u('a'.repeat(50)), u('b'.repeat(10)), a('x', 'c'.repeat(10))], 40)
-    expect(out.map((e) => e.text)).toEqual(['用户：bbbbbbbbbb', 'x：cccccccccc'])
-    expect(transcriptText(out).length).toBeLessThanOrEqual(40)
-  })
-  it('cuts the oldest kept entry from the front', () => {
-    const out = capTranscript([u('0123456789')], 5)
-    expect(out).toEqual([{ profileId: null, text: '56789' }])
-  })
+it('preserves message numbers after applying the resume cutoff and skips placeholders', () => {
+  const entries = numberTranscript([u('q1'), a('claude-1', 'r1'), u('q2'), { ...a('claude-1', 'placeholder'), replied: false }])
+  expect(unseenTranscript(entries, 'claude-1', true).map((entry) => entry.number)).toEqual([3, 4])
+})
+
+it('uses context windows reported by the matching model and account', () => {
+  const entries = [
+    { ...a('codex-1', 'r1'), model: 'small:high', actualModel: 'small-v1', contextWindow: 32_000 },
+    { ...a('codex-1', 'r2'), model: 'big', contextWindow: 100_000 },
+    { ...a('codex-2', 'r3'), model: 'small', contextWindow: 24_000 }
+  ]
+  expect(reportedContextWindow(entries, 'codex-1', 'small:low', 'codex')).toBe(32_000)
+  expect(reportedContextWindow(entries, 'codex-1', 'small-v1', 'codex')).toBe(32_000)
+  expect(reportedContextWindow(entries, 'codex-1', 'unknown', 'codex')).toBeUndefined()
 })

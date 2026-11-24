@@ -8,11 +8,14 @@ import { runAgent, type RunHandle } from './agentRunner'
 import { FileBaseline } from './fileBaseline'
 import { recordLimited, recordQuota, recordRun, refreshAgyQuota, refreshCodexQuota } from './usage'
 import { allowRoot } from './fileProtocol'
-import { KIND_LABEL, getConfig, hasProfile, sessionStoreKeyOf } from './profiles'
+import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
-import { transcriptText, unseenTranscript } from '@shared/transcript'
+import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript } from '@shared/transcript'
+import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
+import { bindNativeSession, canResume, recordUnconfirmedSession, type NativeSessions } from './historyResume'
+import { createThreadHistory, supportsThreadHistory } from './threadHistoryConfig'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -103,49 +106,25 @@ const uid = (): string => randomBytes(6).toString('hex')
 // ---- per-thread CLI sessions ----------------------------------------------------------------
 
 const sessionsFile = (threadId: string): string => join(app.getPath('userData'), 'threads', `${threadId.replace(/[^\w-]/g, '')}.json`)
-function loadSessions(threadId: string): Record<string, string> {
+function loadSessions(threadId: string): NativeSessions {
   try {
-    return JSON.parse(readFileSync(sessionsFile(threadId), 'utf8')).sessions ?? {}
+    return JSON.parse(readFileSync(sessionsFile(threadId), 'utf8')) ?? {}
   } catch {
     return {}
   }
 }
-function resolveResumeSession(sessions: Record<string, string>, cfg: ProfileConfig): string | null {
-  if (sessions[cfg.id]) return sessions[cfg.id]
-  const myKey = sessionStoreKeyOf(cfg)
-  for (const [otherId, sid] of Object.entries(sessions)) {
-    if (!sid || !hasProfile(otherId)) continue
-    const other = getConfig(otherId)
-    if (other.kind === cfg.kind && sessionStoreKeyOf(other) === myKey) return sid
-  }
-  return null
-}
 
-function saveSession(threadId: string, profileId: ProfileId, sid: string, imported = false): void {
+function saveSession(
+  threadId: string, profileId: ProfileId, sid: string,
+  binding: Parameters<typeof bindNativeSession>[3] | { unconfirmed: true }
+): void {
   const f = sessionsFile(threadId)
+  const previous = loadSessions(threadId)
+  const state = 'unconfirmed' in binding
+    ? recordUnconfirmedSession(previous, profileId, sid)
+    : bindNativeSession(previous, profileId, sid, binding)
   mkdirSync(join(f, '..'), { recursive: true })
-  let prev: { sessions?: Record<string, string>; imported?: string[]; importedAt?: Record<string, number> } = {}
-  try {
-    prev = JSON.parse(readFileSync(f, 'utf8'))
-  } catch {
-    /* new */
-  }
-  const sessions = { ...(prev.sessions ?? {}), [profileId]: sid }
-  // Keep peer accounts that share the same physical session store in sync.
-  if (hasProfile(profileId)) {
-    const me = getConfig(profileId)
-    const myKey = sessionStoreKeyOf(me)
-    for (const otherId of Object.keys(sessions)) {
-      if (otherId === profileId || !hasProfile(otherId)) continue
-      const other = getConfig(otherId)
-      if (other.kind === me.kind && sessionStoreKeyOf(other) === myKey) sessions[otherId] = sid
-    }
-  }
-  const imp = new Set(prev.imported ?? [])
-  if (imported) imp.add(sid)
-  const importedAt = { ...(prev.importedAt ?? {}) }
-  if (imported && !importedAt[sid]) importedAt[sid] = Date.now()
-  writeFileSync(f, JSON.stringify({ sessions, imported: [...imp], importedAt }, null, 2))
+  writeFileSync(f, JSON.stringify(state, null, 2))
 }
 
 /**
@@ -179,8 +158,8 @@ function titleLanguage(text: string): string {
 }
 
 /** Imported CLI history: the thread continues that native session (--resume / exec resume / --conversation). */
-export const importSession = (threadId: string, profileId: ProfileId, sid: string): void => saveSession(threadId, profileId, sid, true)
-export const threadSessions = (threadId: string): Record<string, string> => loadSessions(threadId)
+export const importSession = (threadId: string, profileId: ProfileId, sid: string): void =>
+  saveSession(threadId, profileId, sid, { importedAt: Date.now() })
 
 /** Folder a thread's runs use: its project, or AgentSwitch's private workspace when unset/missing. */
 export function threadCwd(threadId: string, projectDir: string | null): string {
@@ -507,7 +486,7 @@ export class Orchestrator {
    */
   private sentSystem = new Map<string, { fixed: string; turns: number }>()
 
-  private prompt(turn: Turn, step: Step): StepPrompt {
+  private prompt(turn: Turn, step: Step, recap: string, resuming: boolean): StepPrompt {
     const cfg = getConfig(step.profileId)
     const rel = (p: string): string => relative(turn.cwd, p) || '.'
     const sys: string[] = [
@@ -549,13 +528,10 @@ export class Orchestrator {
     }
 
     const parts: string[] = []
-    // a resumed session already holds the conversation up to its own last reply: send only the rest
-    const resuming = !!resolveResumeSession(loadSessions(turn.req.threadId), cfg)
-    const recap = transcriptText(unseenTranscript(turn.req.transcript, cfg.id, resuming))
     if (recap) parts.push(resuming ? '## 你上次回复之后的对话（节选）' : '## 之前的对话（节选）', recap, '')
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
-      parts.push('## 你的任务', handoffPrompt(to))
+      parts.push('## 用户消息', turn.req.text, '', '## 你的任务', handoffPrompt(to))
       return stepPrompt(parts, sys)
     }
     if (turn.req.handoffDoc) {
@@ -647,9 +623,26 @@ export class Orchestrator {
     const baseline = new FileBaseline(turn.cwd)
     const reported = new Set<string>()
     const written = new Set<string>()
-    const { prompt, system: fullSystem, fixed, turnOnly } = this.prompt(turn, step)
-    const sessions = loadSessions(turn.req.threadId)
-    const resume = resolveResumeSession(sessions, cfg)
+    const { transcript, threadId, sessionScope } = turn.req
+    const model = step.model || cfg.defaultModel || null
+    const sessions = loadSessions(threadId)
+    const previousDriver = [...transcript].reverse().find((entry) => entry.driverId)?.driverId
+    const ranThisTurn = turn.steps.slice(0, turn.idx).some((previous) => previous.profileId === cfg.id && previous.status === 'done')
+    const takingOver = cfg.id === turn.req.driver.profileId && !!previousDriver && previousDriver !== cfg.id && !ranThisTurn
+    const resume = sessions.scope === sessionScope ? canResume(sessions, cfg.id, cfg.kind, model, transcript, takingOver) : null
+    const entries = unseenTranscript(numberTranscript(transcript), cfg.id, !!resume)
+    const budget = contextBudgetFor(reportedContextWindow(transcript, cfg.id, model, cfg.kind))
+    let recap = budgetedHandoff(entries, budget, !resume, supportsThreadHistory(cfg.kind))
+    let history: ReturnType<typeof createThreadHistory> | undefined
+    if (recap.readable) {
+      try {
+        history = createThreadHistory(threadId, transcript)
+      } catch (error) {
+        this.log(cfg.id, `[thread history] ${String(error)}\n`)
+        recap = budgetedHandoff(entries, budget, !resume, false)
+      }
+    }
+    const { prompt, system: fullSystem, fixed, turnOnly } = this.prompt(turn, step, recap.text, !!resume)
     const inline = cfg.kind === 'codex' || cfg.kind === 'reasonix' || (cfg.kind === 'gemini' && cfg.agyTransport !== 'acp')
     const sent = inline && resume ? this.sentSystem.get(resume) : undefined
     // the resumed session already holds the fixed instructions: only this turn's lines go again
@@ -693,19 +686,26 @@ export class Orchestrator {
       {
         ref: ids,
         cfg,
-        model: step.model || cfg.defaultModel || null,
+        model,
         prompt,
         system,
         cwd: turn.cwd,
         images: turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)),
         resume,
-        outDir: turn.outDir
+        outDir: turn.outDir,
+        threadHistory: history?.config
       },
       emit,
       (text) => this.log(cfg.id, text)
     )
     turn.current = handle
-    const r = await handle.done
+    const r = await handle.done.finally(() => {
+      try {
+        history?.dispose()
+      } catch (error) {
+        this.log(cfg.id, `[thread history] ${String(error)}\n`)
+      }
+    })
     turn.current = null
     this.busy.set(cfg.id, Math.max(0, (this.busy.get(cfg.id) ?? 1) - 1))
     if (r.ok) this.rateLimited.delete(cfg.id)
@@ -718,7 +718,11 @@ export class Orchestrator {
     } catch (e) {
       this.log(cfg.id, `[usage] ${String(e)}\n`)
     }
-    if (r.sessionId) saveSession(turn.req.threadId, cfg.id, r.sessionId)
+    if (r.sessionId) {
+      saveSession(threadId, cfg.id, r.sessionId, r.ok && !r.stopped && !turn.stopped
+        ? { scope: sessionScope, model: historyModel(model, cfg.kind) }
+        : { unconfirmed: true })
+    }
     if (inline && r.ok && r.sessionId) this.sentSystem.set(r.sessionId, compact && sent ? { fixed, turns: sent.turns + 1 } : { fixed, turns: 0 })
 
     // files changed on disk but not reported by the CLI's own events

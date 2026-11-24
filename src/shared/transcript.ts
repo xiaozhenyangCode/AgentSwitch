@@ -1,49 +1,81 @@
-import type { ProfileId } from './types'
+import type { Message } from './chat'
+import { splitSpec } from './modelSpec'
+import type { ProfileId, ProfileKind } from './types'
 
-/** One recent chat message; `profileId` is the replying account (null: the user). */
 export interface TranscriptEntry {
+  id: string
+  turnId: string
   profileId: ProfileId | null
+  speaker: string
+  time: number | null
   text: string
+  details?: string
+  driverId?: ProfileId
+  model?: string | null
+  actualModel?: string | null
+  contextWindow?: number
+  replied?: boolean
 }
 
-/** Character budget of the recap that goes into a prompt (newest entries win). */
-export const TRANSCRIPT_CHARS = 12000
-
-/** Keeps the newest entries that fit the budget (only a lone newest entry is cut, from the front). */
-export function capTranscript(entries: TranscriptEntry[], max = TRANSCRIPT_CHARS): TranscriptEntry[] {
-  const out: TranscriptEntry[] = []
-  let left = max
-  for (let i = entries.length - 1; i >= 0 && left > 0; i--) {
-    const e = entries[i]
-    if (e.text.length > left && out.length) break
-    const text = e.text.length > left ? e.text.slice(-left) : e.text
-    out.unshift({ profileId: e.profileId, text })
-    left -= text.length + 1
-  }
-  return out
-}
-
-/**
- * The part of the recap the account has not seen yet.
- *
- * A resumed CLI session already holds everything up to the account's own last reply, so only what
- * came after it (other accounts' replies, earlier user messages it never answered) is new. Sending
- * the whole recap again would add it to the session history on every turn and re-bill it on every
- * later request. A fresh session (no native session yet) gets the whole recap.
- */
-export function unseenTranscript(entries: TranscriptEntry[], profileId: ProfileId, resuming: boolean): TranscriptEntry[] {
-  if (!resuming) return entries
-  let last = -1
-  for (let i = entries.length - 1; i >= 0; i--)
-    if (entries[i].profileId === profileId) {
-      last = i
-      break
+export function transcriptEntry(message: Message): TranscriptEntry {
+  const { id, turnId } = message
+  if (message.role === 'user') {
+    return {
+      id, turnId, profileId: null, speaker: '用户', time: message.createdAt, text: message.text,
+      driverId: message.kind === 'handoff' ? undefined : message.driver.profileId,
+      details: message.attachments.length ? `附件：${message.attachments.map((a) => a.name).join('、')}` : undefined
     }
-  return entries.slice(last + 1)
+  }
+  const details = [
+    message.verdict && `审核结论：${message.verdict.status} ${message.verdict.reason}`,
+    message.outputs.length && `产出文件：${message.outputs.join('、')}`,
+    message.error && `报错：${message.error}`
+  ].filter(Boolean).join('\n')
+  return {
+    id, turnId, profileId: message.agent.profileId, speaker: message.agent.name, time: message.startedAt, text: message.content,
+    details: details || undefined, model: message.agent.model, actualModel: message.actualModel,
+    contextWindow: message.usage?.contextWindow, replied: message.status === 'done' || !!message.content.trim()
+  }
 }
 
-export const transcriptText = (entries: TranscriptEntry[]): string =>
-  entries
-    .map((e) => e.text.trim())
-    .filter(Boolean)
-    .join('\n')
+/** Validate history received over IPC and from the per-run snapshot. */
+export function isTranscriptEntry(value: unknown): value is TranscriptEntry {
+  const entry = value as Partial<TranscriptEntry> | null
+  return !!entry && typeof entry.id === 'string' && typeof entry.turnId === 'string' &&
+    (entry.profileId === null || typeof entry.profileId === 'string') && typeof entry.speaker === 'string' &&
+    (entry.time === null || Number.isFinite(entry.time)) && typeof entry.text === 'string' &&
+    (entry.details === undefined || typeof entry.details === 'string') &&
+    (entry.driverId === undefined || typeof entry.driverId === 'string') &&
+    (entry.model == null || typeof entry.model === 'string') &&
+    (entry.actualModel == null || typeof entry.actualModel === 'string') &&
+    (entry.contextWindow === undefined || Number.isFinite(entry.contextWindow)) &&
+    (entry.replied === undefined || typeof entry.replied === 'boolean')
+}
+
+export type NumberedEntry = TranscriptEntry & { number: number }
+
+export const numberTranscript = (entries: TranscriptEntry[]): NumberedEntry[] =>
+  entries.map((entry, index) => ({ ...entry, number: index + 1 }))
+
+/** Resuming only needs the messages after the account's last reply. */
+export function unseenTranscript<T extends Pick<TranscriptEntry, 'profileId' | 'replied'>>(entries: T[], profileId: ProfileId, resuming: boolean): T[] {
+  if (!resuming) return entries
+  for (let i = entries.length - 1; i >= 0; i--)
+    if (entries[i].profileId === profileId && entries[i].replied !== false) return entries.slice(i + 1)
+  return entries
+}
+
+export const historyModel = (spec: string | null | undefined, kind: ProfileKind): string | null =>
+  splitSpec(spec, kind === 'reasonix' ? kind : undefined).model
+
+export function reportedContextWindow(entries: TranscriptEntry[], profileId: ProfileId, model: string | null, kind: ProfileKind): number | undefined {
+  const target = historyModel(model, kind)
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.profileId === profileId && entry.contextWindow && entry.contextWindow > 0 &&
+        (target === historyModel(entry.model, kind) || (target && target === historyModel(entry.actualModel, kind)))) {
+      return entry.contextWindow
+    }
+  }
+  return undefined
+}

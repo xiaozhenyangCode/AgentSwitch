@@ -28,6 +28,7 @@ import { findModel, getModelList, loadModels, useModels, useModelsVersion } from
 import {
   activeThread,
   clearSuggestion,
+  continueInNewThread,
   dismissContextWarn,
   exportHandoff,
   isThreadBusy,
@@ -303,7 +304,8 @@ export function WorkbenchPage() {
     let lastTokens = 0
     let model: string | null = null
     let reported = 0
-    for (const m of messages) {
+    for (let i = thread?.carriedMessageCount ?? 0; i < messages.length; i++) {
+      const m = messages[i]
       if (m.role === 'user' && m.kind !== 'handoff') userTurns++
       if (m.role === 'assistant' && m.agent.profileId === driverP?.id && m.usage?.context) {
         lastTokens = m.usage.context
@@ -314,7 +316,7 @@ export function WorkbenchPage() {
     // the window the CLI reported (codex) wins; otherwise it follows from the model
     const window = reported || (driverP ? contextWindow(driverP.kind, driverModel ?? model) : 0)
     return { userTurns, lastTokens, window }
-  }, [messages, driverP, driverModel])
+  }, [messages, driverP, driverModel, thread?.carriedMessageCount])
   const contextLong =
     !!thread &&
     !!driverP &&
@@ -339,6 +341,11 @@ export function WorkbenchPage() {
       handoffTo: ref(driverP, driverModel),
       newThreadOnHandoff: true
     })
+  }
+  const startWithHistory = () => {
+    if (!thread || !driverP) return
+    stick.current = true
+    continueInNewThread(thread.id, { profileId: driverP.id, model: driverModel }, participants)
   }
   useLayoutEffect(() => {
     const el = scroller.current
@@ -604,7 +611,7 @@ export function WorkbenchPage() {
         )}
         {contextLong && thread && driverP && (
           <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
               <button
                 onClick={() => dismissContextWarn(thread.id, contextStats.userTurns)}
                 className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
@@ -613,7 +620,7 @@ export function WorkbenchPage() {
               >
                 <IconX size={14} />
               </button>
-              <span className="min-w-0 flex-1">
+              <span className="min-w-40 flex-1">
                 {t('wb.ctxLongTokens', {
                   name: driverP.name,
                   tokens: fmtTokens(contextStats.lastTokens),
@@ -635,6 +642,9 @@ export function WorkbenchPage() {
                   {exporting ? t('wb.exporting') : t('wb.ctxExportNew')}
                 </button>
               )}
+              <button className="h-7 shrink-0 rounded-full border border-accent/30 px-3 font-medium text-accent hover:bg-accent/10" onClick={startWithHistory}>
+                {t('wb.ctxCarryHistory')}
+              </button>
               <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={() => startThread(ctx.projectDir)}>
                 {t('wb.ctxNewDirect')}
               </button>

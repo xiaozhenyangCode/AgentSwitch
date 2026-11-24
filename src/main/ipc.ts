@@ -99,7 +99,7 @@ import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
 import { getBaseEnv, realHome, shellEnvStatus } from './shellEnv'
-import { capTranscript } from '@shared/transcript'
+import { isTranscriptEntry } from '@shared/transcript'
 
 const assertId = (x: unknown): ProfileId => {
   if (!hasProfile(x)) throw new Error(`unknown account: ${String(x)}`)
@@ -380,11 +380,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       driver: { profileId: assertId(req.driver?.profileId), model: req.driver?.model || null },
       mentions: (Array.isArray(req.mentions) ? req.mentions : []).filter((m) => hasProfile(m?.profileId)).map((m) => ({ profileId: m.profileId, model: m.model || null })),
       participants: (Array.isArray(req.participants) ? req.participants : []).filter((p) => hasProfile(p)),
-      transcript: capTranscript(
-        (Array.isArray(req.transcript) ? req.transcript : [])
-          .filter((e) => e && typeof e.text === 'string')
-          .map((e) => ({ profileId: typeof e.profileId === 'string' && hasProfile(e.profileId) ? e.profileId : null, text: e.text }))
-      ),
+      transcript: Array.isArray(req.transcript) ? req.transcript.filter(isTranscriptEntry) : [],
+      sessionScope: typeof req.sessionScope === 'string' ? req.sessionScope : undefined,
       mode: req.mode === 'handoff' ? 'handoff' : 'chat',
       handoffTo: hasProfile(req.handoffTo) ? req.handoffTo : undefined,
       handoffDoc: typeof req.handoffDoc === 'string' && isAbsolute(req.handoffDoc) ? req.handoffDoc : null,

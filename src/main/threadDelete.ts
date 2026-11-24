@@ -5,6 +5,7 @@ import type { DeleteThreadRequest, DeleteThreadResult, ProfileConfig } from '@sh
 import { expandHome, getConfig, hasProfile } from './profiles'
 import { agyConversationDb, deletedSessions, listHistory } from './history'
 import { LEGACY_PROJECT_DIR, LEGACY_USER_DATA } from './legacy'
+import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
  * Deleting a chat thread for real:
@@ -119,11 +120,11 @@ export async function deleteThreadData(req: DeleteThreadRequest): Promise<Delete
 
   // 1. per-thread session map
   const mapFile = join(userData(), 'threads', `${id}.json`)
-  let sessions: Record<string, string> = {}
+  let sessions: NativeSessions = {}
   let imported = new Set<string>()
   try {
     const j = JSON.parse(readFileSync(mapFile, 'utf8'))
-    sessions = j.sessions ?? {}
+    sessions = j
     imported = new Set(j.imported ?? [])
   } catch {
     /* thread never ran */
@@ -144,7 +145,7 @@ export async function deleteThreadData(req: DeleteThreadRequest): Promise<Delete
   }
 
   // 3. native CLI sessions
-  const entries = Object.entries(sessions).filter(([, sid]) => typeof sid === 'string' && sid)
+  const entries = nativeSessionEntries(sessions)
   if (req.purgeCli) {
     for (const [profileId, sid] of entries) {
       if (!hasProfile(profileId)) continue

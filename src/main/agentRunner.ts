@@ -10,6 +10,7 @@ import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
+import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
 import { claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost } from './usageDelta'
 
 /**
@@ -37,6 +38,7 @@ export interface RunSpec {
   resume: string | null
   /** Where generated files must end up (codex built-in image gen is copied here). */
   outDir: string
+  threadHistory?: ThreadHistoryConfig
 }
 
 export interface RunResult {
@@ -167,7 +169,7 @@ function codexTopKeys(codexHome: string): Set<string> {
 
 // ---- claude --------------------------------------------------------------------------------
 
-function claudeAdapter(s: RunSpec): Adapter {
+export function claudeAdapter(s: RunSpec): Adapter {
   let session: string | null = null
   let model: string | null = s.model
   let result: { ok: boolean; error: string | null } | null = null
@@ -182,20 +184,16 @@ function claudeAdapter(s: RunSpec): Adapter {
   const streamed = new MessageUsage()
   let streamMsg: string | null = null
   const tools = new Map<string, { name: string; input: Record<string, any>; activity: Extract<AgentEvent, { t: 'activity' }> | null }>()
-  const args = [
-    '-p',
-    '--output-format',
-    'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--permission-mode',
-    s.cfg.autoApprove === 'full' ? 'bypassPermissions' : s.cfg.autoApprove === 'edits' ? 'acceptEdits' : claudeCliMode(s.cfg, s.cwd)
-  ]
+  const permissionMode = s.cfg.autoApprove === 'full' ? 'bypassPermissions'
+    : s.cfg.autoApprove === 'edits' ? 'acceptEdits' : claudeCliMode(s.cfg, s.cwd)
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', permissionMode]
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', spec.model)
   if (spec.effort) args.push('--effort', spec.effort)
   if (s.resume) args.push('--resume', s.resume)
   if (s.system) args.push('--append-system-prompt', s.system)
+  // Keep the prompt on stdin: a trailing argument would be consumed by --allowedTools.
+  args.push(...threadHistoryArgs('claude', s.threadHistory, permissionMode === 'bypassPermissions'))
   const text = (delta: string, emit: Emit) => {
     textSoFar += delta
     emit({ t: 'text', delta })
@@ -378,6 +376,9 @@ export function claudeTool(id: string, name: string, input: Record<string, any>)
     case 'web_search':
     case 'web_fetch':
       return { ...base, type: 'search', target: String(input.query ?? input.url ?? ''), detail: { tool: name, input: capJson(input) } }
+    case 'mcp__agentswitch__read_thread':
+    case 'mcp__agentswitch__search_thread':
+      return { ...base, type: 'tool', target: t('main.threadHistory'), detail: { tool: name, input: capJson(input) } }
     case 'TodoWrite':
       return { ...base, type: 'tool', target: t('main.updateTodos'), detail: { tool: name, input: capJson(input) } }
     default:
@@ -465,7 +466,7 @@ function codexContext(codexHome: string, session: string): { context: number; wi
   return null
 }
 
-function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter {
+export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter {
   let session: string | null = s.resume
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
@@ -483,6 +484,7 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
     '--json',
     '--skip-git-repo-check',
     ...policy,
+    ...threadHistoryArgs('codex', s.threadHistory),
     ...(spec.model ? ['-m', spec.model] : []),
     ...(spec.effort ? ['-c', `model_reasoning_effort="${spec.effort}"`] : []),
     // reasoning items are only emitted with a summary level set (measured 0.171.0)
@@ -546,7 +548,8 @@ function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter
           t: 'activity',
           id: item.id,
           type: 'tool',
-          target: `${item.server ?? 'mcp'}.${item.tool ?? ''}`,
+          target: item.server === 'agentswitch' && (item.tool === 'read_thread' || item.tool === 'search_thread')
+            ? t('main.threadHistory') : `${item.server ?? 'mcp'}.${item.tool ?? ''}`,
           status: done ? (item.error || item.status === 'failed' ? 'error' : 'done') : 'running',
           detail: {
             tool: 'mcp_tool_call',

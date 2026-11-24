@@ -108,6 +108,10 @@ export interface Thread {
   participants: ProfileId[]
   driver: { profileId: ProfileId | null; model: string | null }
   messages: Message[]
+  /** Keeps a portable import separate from any native sessions previously bound to this ID. */
+  sessionScope?: string
+  /** History copied when starting a fresh native session in a new chat. */
+  carriedMessageCount?: number
   /** Running turn, if any. */
   activeTurn: string | null
   /** Review gave up after max retries; waiting for the user. */

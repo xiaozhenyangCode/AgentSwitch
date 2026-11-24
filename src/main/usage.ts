@@ -13,6 +13,7 @@ import { claudeSessionLog } from './usageDelta'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
 import { realHome } from './shellEnv'
+import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
  * Per-account token / cost statistics and quota windows.
@@ -881,13 +882,13 @@ function ownSessionFiles(): { path: string; profileId: ProfileId; kind: string; 
     return []
   }
   for (const f of files) {
-    let j: { sessions?: Record<string, string>; imported?: string[]; importedAt?: Record<string, number> }
+    let j: NativeSessions
     try {
       j = JSON.parse(readFileSync(join(dir, f), 'utf8'))
     } catch {
       continue
     }
-    for (const [profileId, sid] of Object.entries(j.sessions ?? {})) {
+    for (const [profileId, sid] of nativeSessionEntries(j)) {
       if (!sid || !hasProfile(profileId)) continue
       const cfg = getConfig(profileId)
       let path: string | null = null

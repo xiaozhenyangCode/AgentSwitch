@@ -6,7 +6,7 @@ import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Messa
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
-import type { TranscriptEntry } from '@shared/transcript'
+import { transcriptEntry } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
 
 /**
@@ -197,10 +197,17 @@ export function lastSpeaker(t: Thread): AgentRef | null {
 
 // ---- thread management -----------------------------------------------------------------
 
-export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'> & { handoff?: Thread['handoff'] }): string {
+export function newThread(init: Pick<Thread, 'projectDir' | 'participants' | 'driver'> & Partial<Pick<Thread, 'handoff' | 'messages' | 'title' | 'carriedMessageCount'>>): string {
   const t: Thread = { id: uid(), title: tr('chat.newThread'), workdir: init.projectDir, messages: [], activeTurn: null, pause: null, createdAt: now(), updatedAt: now(), ...init }
   set({ threads: [t, ...state.threads], activeId: t.id })
   return t.id
+}
+
+export function continueInNewThread(threadId: string, driver: Thread['driver'], participants: ProfileId[]): void {
+  const source = state.threads.find((t) => t.id === threadId)
+  if (!source || source.activeTurn) return
+  const messages = threadMessages(source).slice()
+  newThread({ projectDir: source.projectDir, title: source.title, driver, participants, messages, carriedMessageCount: messages.length })
 }
 
 export const selectThread = (id: string) => {
@@ -280,27 +287,11 @@ export async function deleteThread(id: string, purgeCli = false) {
   if (t.activeTurn) await window.agentswitch.chat.stop(id)
   const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
-  const turnIds = [...new Set(t.messages.map((m) => m.turnId).filter(Boolean))]
+  const turnIds = [...new Set(t.messages.slice(t.carriedMessageCount ?? 0).map((m) => m.turnId).filter(Boolean))]
   return window.agentswitch.chat.deleteThread({ threadId: id, projectDir: t.workdir ?? t.projectDir, turnIds, purgeCli })
 }
 
 // ---- sending ---------------------------------------------------------------------------------
-
-const TRANSCRIPT_MSGS = 10
-const TRANSCRIPT_EACH = 800
-
-function transcriptOf(t: Thread): TranscriptEntry[] {
-  return threadMessages(t)
-    .filter((m) => !(m.role === 'user' && m.kind === 'handoff'))
-    .slice(-TRANSCRIPT_MSGS)
-    .map((m): TranscriptEntry | null => {
-      if (m.role === 'user') return { profileId: null, text: `用户：${m.text}${m.attachments.length ? `（附件 ${m.attachments.map((a) => a.name).join('、')}）` : ''}` }
-      if (!m.content.trim()) return null
-      const body = plainExcerpt(stripMarks(m.content))
-      return { profileId: m.agent.profileId, text: `${m.agent.name}：${body.length > TRANSCRIPT_EACH ? body.slice(0, TRANSCRIPT_EACH) + '…' : body}` }
-    })
-    .filter((e): e is TranscriptEntry => !!e)
-}
 
 const errorMessage = (turnId: string, agent: AgentRef, error: string): AssistantMessage => ({
   role: 'assistant',
@@ -384,7 +375,7 @@ function sendNow(threadId: string, input: SendInput): void {
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
   const wantTitle = firstTurn && mode === 'chat' && !thread.titleLocked && !thread.imported
-  const transcript = transcriptOf(thread)
+  const transcript = threadMessages(thread).map(transcriptEntry)
   // first message in a history preview: it becomes a real chat continuing that CLI session
   const promote = thread.preview && thread.imported
   const ready = promote ? window.agentswitch.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
@@ -416,6 +407,7 @@ function sendNow(threadId: string, input: SendInput): void {
         mentions: input.mentions.map((m) => ({ profileId: m.profileId, model: m.model })),
         participants: input.participants,
         transcript,
+        sessionScope: thread.sessionScope,
         mode,
         handoffTo: input.handoffTo?.profileId,
         handoffDoc: doc?.path ?? null,
@@ -697,18 +689,6 @@ const titleFrom = (text: string) => {
 
 // ---- helpers -----------------------------------------------------------------------------
 
-/** One-line plain-text preview of markdown. */
-export const plainExcerpt = (md: string): string =>
-  md
-    .replace(/```agentswitch:dispatch[\s\S]*?(```|$)/g, ' ')
-    .replace(/```[\s\S]*?(```|$)/g, ' ')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^\s*\|?[\s:-]+\|[\s|:-]*$/gm, ' ')
-    .replace(/[#>*`|_~]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|heic|svg)$/i
 
 /** Edge of the stored square thumbnail: 2× the largest tile it fills (96px bubble), so Retina stays sharp. */
@@ -844,6 +824,7 @@ export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; k
       createdAt: th.createdAt,
       updatedAt: th.updatedAt,
       ...(th.titleLocked ? { titleLocked: true } : {}),
+      ...(th.carriedMessageCount ? { carriedMessageCount: th.carriedMessageCount } : {}),
       ...(th.suggestedInput ? { suggestedInput: th.suggestedInput } : {}),
       ...(th.pinned ? { pinned: true } : {})
     }
@@ -940,7 +921,8 @@ export function applyThreadImport(
       handoffFailed: null,
       unread: null,
       preview: false,
-      imported: undefined
+      imported: undefined,
+      sessionScope: uid() + uid()
     }
 
     if (existingIdx !== undefined && !makeCopy) {

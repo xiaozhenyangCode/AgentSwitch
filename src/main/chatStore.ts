@@ -58,7 +58,7 @@ function parseMessage(message: Message | null): Message {
   throw new Error('Invalid chat message')
 }
 
-function parseThread(value: unknown): StoredThread {
+export function parseThread(value: unknown): StoredThread {
   if (!hasChatFields(value)) throw new Error('Invalid chat')
   const t = value as StoredThread
   return storedThread({
