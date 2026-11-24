@@ -5,15 +5,15 @@
 <h1 align="center">AgentSwitch</h1>
 
 <p align="center">
-  把你已经在用的 AI 编程助手（Claude Code、Codex CLI、Gemini / Antigravity CLI）放进同一个对话里协作的桌面应用。
+  把你已经在用的 AI 编程助手（Claude Code、Codex CLI、Gemini / Antigravity CLI 和 DeepSeek（Reasonix））放进同一个对话里协作的桌面应用。
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
-  <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" />
+  <img alt="Platform: macOS (Apple Silicon)" src="https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29-lightgrey.svg" />
 </p>
 
-<p align="center"><a href="https://agentswitch.app">官网</a> · <a href="README.md">English</a> · 简体中文</p>
+<p align="center"><a href="https://agentswitch.app">官网</a> · <a href="https://github.com/yitian-builds/AgentSwitch">yitian-builds/AgentSwitch</a> · <a href="LICENSE">AGPL-3.0-only</a> · <a href="README.md">English</a> · 简体中文</p>
 
 <p align="center"><img src="docs/demo.gif" width="900" alt="Claude 写出 slugify.js，Codex 审查并修复边界情况，Gemini 补测试并运行" /></p>
 
@@ -23,11 +23,11 @@
 
 - **多模型同一个对话**：先和一个模型聊，再 `@` 另一个来审查、接着做或者接手。模型之间可以互相派活，失败的步骤可以打回重做。
 - **用你自己的订阅**：直接驱动你本机已经安装并登录好的官方 CLI。AgentSwitch 不接触、不保存你的账号密码，也不转售任何 API。
-- **本机历史集中管理**：各个 CLI 在本机留下的会话都能在这里浏览、搜索，并接着在对话里继续。
+- **本机历史**：浏览和搜索受支持的 CLI 保存在本机的会话，并在对话中继续。
 - **用量和花费一目了然**：显示当前模型的上下文占用；CLI 提供额度数据时，还会显示 5 小时和 7 天额度，快用完时会提醒。另外会按各模型的官方价格换算花费，可按今天、7 天、30 天和全部查看。
 - **账号隔离**：同一个 CLI 可以加多个账号，比如工作号和私人号，各自独立登录、互不干扰。
 - **API Key 账号**：不登录也能用，给账号填 API Key 即可，支持官方 Key、DeepSeek 和自定义的 Anthropic 兼容接口。Key 会用 macOS 钥匙串里的密钥加密保存。
-- **扩展管理**：集中管理各个 CLI 加载的 MCP 服务器、技能（skills）和规则。
+- **扩展**：在同一个可搜索的面板中查看已加载的 MCP 服务器、技能、插件和规则。
 - **Git 管理（按需开启）**：在「设置 → 开发者 → 显示 Git 管理」中打开后，输入框下方会显示当前分支和与远程的领先/落后数，可以切换或新建分支、获取、拉取（仅快进）和推送，并在「文件修改」面板里暂存、丢弃和提交。默认关闭，面板只用来查看改动。
 - **内置终端**：用来安装、登录和调试各个 CLI。
 
@@ -40,11 +40,11 @@
 | Gemini | Antigravity CLI（`agy`） | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` |
 | DeepSeek | Reasonix（`reasonix`） | `npm i -g reasonix` |
 
-Reasonix 不需要登录，用 DeepSeek API Key 即可：可以导入你已有的 `~/.reasonix` 配置，也可以在应用里直接填 Key。所有 CLI 都能在应用里一键安装和登录。之后会支持更多助手和本地模型。
+Reasonix 使用 DeepSeek API Key。可以导入已有的 `~/.reasonix` 配置，也可以在应用里直接填 Key。应用也可以安装 CLI，并为支持登录的 CLI 提供登录引导。更多助手和本地模型仍在计划中。
 
 ## 安装
 
-从 [Releases](../../releases) 页面下载最新的 `.dmg`。
+从 [Releases](https://github.com/yitian-builds/AgentSwitch/releases) 页面下载最新的 `.dmg`。
 
 应用只做了本地签名（ad-hoc），没有经过 Apple 公证，所以第一次打开会被 macOS 拦截。解决方法：右键点击应用选「打开」，或者运行：
 
@@ -72,7 +72,7 @@ pnpm dist      # 在 dist/ 下生成 .dmg
 
   其余请求，包括模型调用和 DeepSeek 余额查询，都由各个 CLI 自己发出。
 - **API Key 只存在本机**：API Key 账号的 Key 用 Electron safeStorage 加密（密钥保存在 macOS 钥匙串里），不会显示在界面上，只在运行 CLI 时传给它。给 Reasonix 填的 DeepSeek Key 会写入该账号目录下的 `.env` 文件，权限为仅本人可读（600），因为 Reasonix CLI 从这里读取。
-- **不改 CLI 的文件**：`~/.claude`、`~/.codex`、`~/.gemini` 里的会话只读不写。只有你明确选择删除某个会话时才会动它，而且是移到废纸篓。
+- **不改写你的 CLI 数据**：浏览本机历史时，AgentSwitch 只读取 `~/.claude`、`~/.codex` 和 `~/.gemini` 中的会话。只有你在「扩展」中保存规则时，才会创建或修改规则文件。如果你明确选择删除某个 CLI 会话，相关文件会移到废纸篓。
 
 ## 开发
 
