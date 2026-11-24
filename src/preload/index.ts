@@ -105,7 +105,7 @@ const api = {
     send: (req: RunRequest): Promise<void> => ipcRenderer.invoke(IPC.chatSend, req),
     stop: (threadId: string): Promise<void> => ipcRenderer.invoke(IPC.chatStop, threadId),
     /** Turns the main process is still running (after a window reload). */
-    active: (): Promise<{ threadId: string; turnId: string; running: string[] }[]> => ipcRenderer.invoke(IPC.chatActive),
+    active: (): Promise<{ threadId: string; turnId: string; running: string[]; pauseReason: string | null }[]> => ipcRenderer.invoke(IPC.chatActive),
     permissionReply: (requestId: string, optionId: string | null): Promise<boolean> => ipcRenderer.invoke(IPC.chatPermissionReply, requestId, optionId),
     pendingPermissions: (): Promise<PendingPermissionEntry[]> => ipcRenderer.invoke(IPC.chatPendingPermissions),
     resume: (threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): Promise<void> =>

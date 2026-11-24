@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { storedThread, type ChatChanges, type ChatIndex, type ChatState, type Message, type OpenChats, type StoredThread } from '@shared/chat'
+import { storedThread, type ChatChanges, type ChatIndex, type ChatState, type Message, type OpenChats, type QueuedMessage, type StoredThread } from '@shared/chat'
 
 const INDEX = 'index.json'
 const BACKUP = 'legacy-localstorage-backup.json'
@@ -58,12 +58,24 @@ function parseMessage(message: Message | null): Message {
   throw new Error('Invalid chat message')
 }
 
+function isQueuedMessage(message: QueuedMessage | null): message is QueuedMessage {
+  return typeof message?.id === 'string' && typeof message.text === 'string' &&
+    typeof message.driver?.profileId === 'string' && Array.isArray(message.mentions) &&
+    message.mentions.every((mention) => typeof mention?.profileId === 'string') &&
+    Array.isArray(message.participants) && (message.projectDir === null || typeof message.projectDir === 'string') &&
+    Array.isArray(message.attachments) && message.attachments.every((attachment) => typeof attachment?.name === 'string')
+}
+
 export function parseThread(value: unknown): StoredThread {
   if (!hasChatFields(value)) throw new Error('Invalid chat')
   const t = value as StoredThread
   return storedThread({
     ...t,
     messages: t.messages.map(parseMessage),
+    ...(t.queuedMessages === undefined ? {} : {
+      queuedMessages: Array.isArray(t.queuedMessages) ? t.queuedMessages.filter(isQueuedMessage) : []
+    }),
+    ...(t.queueHold === undefined || t.queueHold === 'manual' || t.queueHold === 'external' ? {} : { queueHold: undefined }),
     projectDir: typeof t.projectDir === 'string' ? t.projectDir : null,
     workdir: typeof t.workdir === 'string' ? t.workdir : null,
     participants: Array.isArray(t.participants) ? t.participants : [],

@@ -441,10 +441,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   /** Pasted (in-memory) attachments get a real file so CLIs can read them. */
   const stageDir = join(app.getPath('userData'), 'staging')
   try {
-    // housekeeping: drop staged files older than 3 days
-    for (const f of readdirSync(stageDir)) {
+    const files = readdirSync(stageDir)
+    // Queued messages can still need pasted files after the normal staging lifetime.
+    const queuedPaths = new Set(chatStore.load().threads.flatMap((thread) =>
+      thread.queuedMessages?.flatMap((message) => message.attachments.map((attachment) => attachment.path)) ?? []
+    ))
+    for (const f of files) {
       const p = join(stageDir, f)
-      if (Date.now() - statSync(p).mtimeMs > 3 * 86400_000) rmSync(p, { force: true })
+      if (!queuedPaths.has(p) && Date.now() - statSync(p).mtimeMs > 3 * 86400_000) rmSync(p, { force: true })
     }
   } catch {
     /* no staging dir yet */

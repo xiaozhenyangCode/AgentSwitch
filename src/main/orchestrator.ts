@@ -94,7 +94,7 @@ interface Turn {
   idx: number
   current: RunHandle | null
   stopped: boolean
-  paused: { reviewIdx: number } | null
+  paused: { reviewIdx: number; reason: string } | null
   retryBudget: number
   counter: number
   /** Accounts the user @-named mid-sentence: the driver plans and dispatches to them (with these models). */
@@ -366,8 +366,12 @@ export class Orchestrator {
   }
 
   /** Turns still in flight (a reloaded window re-attaches to them instead of marking them stopped). */
-  active(): { threadId: string; turnId: string; running: string[] }[] {
-    return [...this.turns.values()].map((t) => ({ threadId: t.req.threadId, turnId: t.req.turnId, running: t.steps.filter((s) => s.status === 'running').map((s) => s.id) }))
+  active(): { threadId: string; turnId: string; running: string[]; pauseReason: string | null }[] {
+    return [...this.turns.values()].map((t) => ({
+      threadId: t.req.threadId, turnId: t.req.turnId,
+      running: t.steps.filter((s) => s.status === 'running').map((s) => s.id),
+      pauseReason: t.paused?.reason ?? null
+    }))
   }
 
   activeProjects(): { threadId: string; dir: string }[] {
@@ -778,9 +782,10 @@ export class Orchestrator {
       const used = step.retry
       if (used < turn.retryBudget) this.requeueRetry(turn, turn.idx, verdict.reason)
       else {
-        turn.paused = { reviewIdx: turn.idx }
+        const reason = t('main.rejectedN', { n: used + 1, reason: verdict.reason })
+        turn.paused = { reviewIdx: turn.idx, reason }
         this.writeTask(turn)
-        this.emit({ kind: 'paused', threadId: turn.req.threadId, turnId: turn.req.turnId, reason: t('main.rejectedN', { n: used + 1, reason: verdict.reason }) })
+        this.emit({ kind: 'paused', threadId: turn.req.threadId, turnId: turn.req.turnId, reason })
         return
       }
     }

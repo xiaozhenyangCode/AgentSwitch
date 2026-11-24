@@ -60,6 +60,24 @@ describe('ChatStore', () => {
     expect(store.load().threads).toEqual([thread('good')])
   })
 
+  it('restores a pending queue with its send parameters and removes it with the chat', () => {
+    const driver = { profileId: 'driver', name: 'Driver', kind: 'claude' as const, model: 'model' }
+    const queued = {
+      ...thread('queued'), queueHold: 'external' as const,
+      queuedMessages: [{
+        id: 'pending', text: 'Waiting', driver, mentions: [driver], participants: [driver.profileId],
+        projectDir: '/tmp/project', attachments: [{ id: 'file', name: 'notes.txt', path: '/tmp/notes.txt', size: 14, isImage: false, thumb: null }]
+      }]
+    }
+    const { session } = store.open(null, false)
+    expect(store.save(session, 1, { upserts: [queued], deletes: [] })).toBe(true)
+    const reopened = new ChatStore(userData)
+    const loaded = reopened.open(null, false)
+    expect(loaded.threads).toEqual([queued])
+    expect(reopened.save(loaded.session, 1, { upserts: [], deletes: [queued.id] })).toBe(true)
+    expect(reopened.load().threads).toEqual([])
+  })
+
   it('skips damaged chats and stale index entries while recovering unindexed files', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { session } = store.open(null, false)

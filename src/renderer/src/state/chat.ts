@@ -2,12 +2,13 @@ import { useSyncExternalStore } from 'react'
 import { KINDS } from '@shared/types'
 import type { ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
 import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
-import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, Thinking, Thread, UserMessage } from '@shared/chat'
+import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, QueuedMessage, Thinking, Thread, UserMessage } from '@shared/chat'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { readMarks, stripMarks } from '@shared/markers'
 import { transcriptEntry } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
+import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQueue'
 
 /**
  * Threads: one unified multi-model conversation each. Module-level store (survives page
@@ -284,9 +285,9 @@ export async function deleteThread(id: string, purgeCli = false) {
   if (!t) return null
   drafts.delete(id)
   deletedDrafts.add(id)
-  if (t.activeTurn) await window.agentswitch.chat.stop(id)
   const threads = state.threads.filter((x) => x.id !== id)
   set({ threads, activeId: state.activeId === id ? (threads[0]?.id ?? null) : state.activeId })
+  if (t.activeTurn) await window.agentswitch.chat.stop(id)
   const turnIds = [...new Set(t.messages.slice(t.carriedMessageCount ?? 0).map((m) => m.turnId).filter(Boolean))]
   return window.agentswitch.chat.deleteThread({ threadId: id, projectDir: t.workdir ?? t.projectDir, turnIds, purgeCli })
 }
@@ -316,31 +317,31 @@ const errorMessage = (turnId: string, agent: AgentRef, error: string): Assistant
   endedAt: now()
 })
 
-type SendInput = {
-  text: string
-  attachments: Attachment[]
-  driver: AgentRef
-  mentions: AgentRef[]
-  participants: ProfileId[]
-  projectDir: string | null
+type SendInput = MessageInput & {
   handoffTo?: AgentRef
   /** When true, once the handoff document is ready, open a fresh thread carrying it. */
   newThreadOnHandoff?: boolean
 }
-const gating = new Set<string>()
+const gating = new Map<string, 'direct' | 'queue'>()
 const handoffToNewThread = new Set<string>()
 
 /**
  * Sends a message. A chat bound to a CLI session first catches up with turns written elsewhere,
  * so the screen matches what --resume will see; when the session file is being written right
  * now, `confirmBusy` decides whether to go ahead. Resolves false only when the user declined
- * there (the composer gives the draft back); a duplicate submit is dropped and resolves true.
+ * there or when a queued send is being checked (the composer gives the draft back).
  */
 export async function send(threadId: string, input: SendInput, confirmBusy?: () => Promise<boolean>): Promise<boolean> {
   const thread = state.threads.find((t) => t.id === threadId)
-  if (!thread || thread.activeTurn || gating.has(threadId)) return true
+  if (!thread || gating.get(threadId) === 'direct') return true
+  if (gating.get(threadId) === 'queue') return false
+  if (thread.activeTurn) {
+    const queuedMessages = enqueueMessage(thread.queuedMessages, uid(), input)
+    if (queuedMessages !== thread.queuedMessages) patchThread(threadId, (t) => ({ ...t, queuedMessages }))
+    return true
+  }
   if (thread.imported) {
-    gating.add(threadId)
+    gating.set(threadId, 'direct')
     try {
       const r = await syncExternal(threadId)
       if (r.writing && confirmBusy && !(await confirmBusy())) return false
@@ -352,7 +353,51 @@ export async function send(threadId: string, input: SendInput, confirmBusy?: () 
   return true
 }
 
-function sendNow(threadId: string, input: SendInput): void {
+export function editQueuedMessage(threadId: string, messageId: string, text: string) {
+  const trimmed = text.trim()
+  patchThread(threadId, (t) => ({
+    ...t,
+    queuedMessages: t.queuedMessages?.map((message) =>
+      message.id === messageId && (trimmed || message.attachments.length) ? { ...message, text: trimmed } : message
+    )
+  }))
+}
+
+export function removeQueuedMessage(threadId: string, messageId: string) {
+  patchThread(threadId, (t) => ({ ...t, queuedMessages: t.queuedMessages?.filter((message) => message.id !== messageId) }))
+}
+
+export function clearQueuedMessages(threadId: string) {
+  patchThread(threadId, (t) => ({ ...t, queuedMessages: [] }))
+}
+
+export function continueQueuedMessages(threadId: string, confirmBusy: () => Promise<boolean>) {
+  return sendNextQueued(threadId, confirmBusy)
+}
+
+async function sendNextQueued(threadId: string, confirmBusy?: () => Promise<boolean>) {
+  const thread = state.threads.find((t) => t.id === threadId)
+  if (!thread?.queuedMessages?.length || thread.activeTurn || thread.pause || gating.has(threadId) || (!confirmBusy && thread.queueHold)) return
+  if (thread.imported) {
+    gating.set(threadId, 'queue')
+    try {
+      const { writing } = await syncExternal(threadId, true)
+      if (writing && (!confirmBusy || !(await confirmBusy()))) {
+        patchThread(threadId, (t) => t.queuedMessages?.length ? { ...t, queueHold: 'external' } : t)
+        return
+      }
+    } finally {
+      gating.delete(threadId)
+    }
+  }
+  // The queue can be edited or cleared while the imported session is checked.
+  const current = state.threads.find((t) => t.id === threadId)
+  if (!current || current.activeTurn || current.pause || (!confirmBusy && current.queueHold)) return
+  const next = dequeueMessage(current.queuedMessages)
+  if (next) sendNow(threadId, next.message, next.remaining)
+}
+
+function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]): void {
   const thread = state.threads.find((t) => t.id === threadId)
   if (!thread || thread.activeTurn) return
   const turnId = uid() + uid()
@@ -386,6 +431,7 @@ function sendNow(threadId: string, input: SendInput): void {
     titleTurn: wantTitle ? turnId : null,
     suggestedInput: null,
     messages: [...t.messages, user],
+    ...(remaining ? { queuedMessages: remaining, queueHold: undefined } : t.queuedMessages?.length ? {} : { queueHold: undefined }),
     activeTurn: turnId,
     pause: null,
     unread: null,
@@ -420,12 +466,13 @@ function sendNow(threadId: string, input: SendInput): void {
       patchThread(threadId, (t) => ({
         ...t,
         messages: [...t.messages, errorMessage(turnId, input.driver, msg)],
-        activeTurn: t.activeTurn === turnId ? null : t.activeTurn
+        ...(t.activeTurn === turnId ? { activeTurn: null, queueHold: t.queuedMessages?.length ? 'manual' as const : undefined } : {})
       }))
     })
 }
 
 export function stop(threadId: string) {
+  patchThread(threadId, (t) => t.activeTurn ? { ...t, queueHold: 'manual' } : t)
   void window.agentswitch.chat.stop(threadId)
 }
 
@@ -584,11 +631,13 @@ function onEvent(e: ChatEvent) {
     }
     case 'paused': {
       const th = state.threads.find((t) => t.id === e.threadId)
+      if (th?.activeTurn !== e.turnId) return
       const bg = state.activeId !== e.threadId
       const unfocused = typeof document !== 'undefined' && !document.hasFocus()
       patchThread(e.threadId, (t) => ({
         ...t,
         pause: { turnId: e.turnId, reason: e.reason },
+        queueHold: 'manual',
         ...(bg || unfocused ? { unread: 'paused' as const } : {})
       }))
       if (th) notifyTurnDone({ threadId: e.threadId, title: th.title, outcome: 'paused', background: bg })
@@ -596,6 +645,7 @@ function onEvent(e: ChatEvent) {
     }
     case 'turn-end': {
       const prev = state.threads.find((t) => t.id === e.threadId)
+      const autoSend = prev && shouldAutoSendQueued(prev, e.turnId, e.status)
       const turnSteps = prev ? prev.messages.filter((m): m is AssistantMessage => m.role === 'assistant' && m.turnId === e.turnId) : []
       const hadError = turnSteps.some((m) => m.status === 'error' || !!m.error)
       const hadDone = turnSteps.some((m) => m.status === 'done')
@@ -605,6 +655,7 @@ function onEvent(e: ChatEvent) {
       patchThread(e.threadId, (t) => ({
         ...t,
         activeTurn: t.activeTurn === e.turnId ? null : t.activeTurn,
+        ...(t.activeTurn === e.turnId && e.status !== 'done' && t.queuedMessages?.length ? { queueHold: 'manual' as const } : {}),
         pause: t.pause?.turnId === e.turnId ? null : t.pause,
         updatedAt: now(),
         ...(outcome && (bg || unfocused) ? { unread: outcome } : {}),
@@ -612,6 +663,7 @@ function onEvent(e: ChatEvent) {
           m.role === 'assistant' && m.turnId === e.turnId && (m.status === 'queued' || m.status === 'streaming') ? { ...m, status: 'stopped', endedAt: m.startedAt ? now() : null } : m
         )
       }))
+      if (autoSend) void sendNextQueued(e.threadId)
       if (prev && outcome) notifyTurnDone({ threadId: e.threadId, title: prev.title, outcome, background: bg })
       return
     }
@@ -630,6 +682,7 @@ window.agentswitch.chat.onEvent((event) => {
  */
 async function reattach() {
   const loaded = new Map(state.threads.filter((t) => t.activeTurn).map((t) => [t.id, t.activeTurn!]))
+  const paused = new Map(state.threads.map((t) => [t.id, t.pause]))
   const inflight = (m: Message) => m.role === 'assistant' && (m.status === 'streaming' || m.status === 'queued')
   const recoverTurns = loaded.size > 0 || state.threads.some((t) => t.messages.some(inflight))
   if (!recoverTurns && !state.threads.length) {
@@ -656,13 +709,17 @@ async function reattach() {
     ...state,
     threads: state.threads.map((t) => {
       const run = byThread.get(t.id)
-      const turnId = run && (!t.activeTurn || t.activeTurn === run.turnId) ? run.turnId : null
+      const endedSinceLoad = loaded.has(t.id) && !t.activeTurn
+      const turnId = run && !endedSinceLoad && (!t.activeTurn || t.activeTurn === run.turnId) ? run.turnId : null
       // a turn started after this window loaded is not ours to settle
       if (t.activeTurn && t.activeTurn !== loaded.get(t.id) && t.activeTurn !== turnId) return t
       if (!turnId && !t.activeTurn && !t.messages.some((m) => inflight(m) || (m.role === 'assistant' && m.permissions?.some(isPendingPermission)))) return t
+      const pause = turnId && run?.pauseReason && t.pause === paused.get(t.id) ? { turnId, reason: run.pauseReason } : t.pause
       return {
         ...t,
         activeTurn: turnId,
+        pause: turnId ? pause : null,
+        ...(pause || (!turnId && t.queuedMessages?.length) ? { queueHold: t.queueHold ?? 'manual' as const } : {}),
         messages: t.messages.map((m) => {
           if (m.role !== 'assistant') return m
           const snapshot = pendingByStep.get(stepKey(t.id, m.turnId, m.id)) ?? []
@@ -1083,21 +1140,24 @@ export const onExternalSync = (cb: (e: ExternalSync) => void) => (syncSubs.add(c
  * Stats the session's files (cheap); when they changed since the last parse, re-reads them and
  * merges the new turns. AgentSwitch's own state (its turns, handoff cards, usage) is untouched.
  */
-export function syncExternal(threadId: string): Promise<ExternalSync> {
+export function syncExternal(threadId: string, checkUnloaded = false): Promise<ExternalSync> {
   const running = syncing.get(threadId)
   if (running) return running
   const none: ExternalSync = { threadId, added: 0, writing: false }
+  const t = state.threads.find((x) => x.id === threadId)
+  const base = syncBase.get(threadId)
+  const canMerge = !!t?.history && !t.historyState && !!base
+  // Queued sends still need to check for external writes if history has not loaded.
+  if (!t?.imported || t.activeTurn || (!canMerge && !checkUnloaded)) return Promise.resolve(none)
+  const { key, profileId } = t.imported
   const p = (async (): Promise<ExternalSync> => {
-    const t = state.threads.find((x) => x.id === threadId)
-    const base = syncBase.get(threadId)
-    // our own run is writing the file, or the history is not loaded yet (loadHistory reads it fresh)
-    if (!t?.imported || t.activeTurn || !t.history || t.historyState || !base) return none
-    const stat = await window.agentswitch.history.stat(t.imported.key).catch(() => null)
+    const stat = await window.agentswitch.history.stat(key).catch(() => null)
     if (!stat) return none
-    const lastOwn = Math.max(0, ...t.messages.map((m) => (m.role === 'assistant' && m.agent.profileId === t.imported!.profileId ? (m.endedAt ?? 0) : 0)))
+    const lastOwn = Math.max(0, ...t.messages.map((m) => (m.role === 'assistant' && m.agent.profileId === profileId ? (m.endedAt ?? 0) : 0)))
     const writing = Date.now() - stat.mtimeMs < BUSY_MS && stat.mtimeMs > lastOwn + 1500
+    if (!canMerge) return { ...none, writing }
     if (base.stat && base.stat.mtimeMs === stat.mtimeMs && base.stat.size === stat.size) return { ...none, writing }
-    const h = await window.agentswitch.history.open(t.imported.key).catch(() => null)
+    const h = await window.agentswitch.history.open(key).catch(() => null)
     const cur = state.threads.find((x) => x.id === threadId)
     if (!h || !cur?.history || cur.activeTurn) return { ...none, writing }
     syncBase.set(threadId, { ...base, stat })

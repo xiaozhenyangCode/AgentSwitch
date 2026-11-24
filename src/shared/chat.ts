@@ -24,6 +24,19 @@ export interface AgentRef {
   model: string | null
 }
 
+export interface MessageInput {
+  text: string
+  attachments: Attachment[]
+  driver: AgentRef
+  mentions: AgentRef[]
+  participants: ProfileId[]
+  projectDir: string | null
+}
+
+export interface QueuedMessage extends MessageInput {
+  id: string
+}
+
 export interface UserMessage {
   role: 'user'
   id: string
@@ -108,6 +121,8 @@ export interface Thread {
   participants: ProfileId[]
   driver: { profileId: ProfileId | null; model: string | null }
   messages: Message[]
+  queuedMessages?: QueuedMessage[]
+  queueHold?: 'manual' | 'external'
   /** Keeps a portable import separate from any native sessions previously bound to this ID. */
   sessionScope?: string
   /** History copied when starting a fresh native session in a new chat. */

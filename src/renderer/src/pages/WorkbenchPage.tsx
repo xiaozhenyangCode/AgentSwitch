@@ -22,19 +22,23 @@ import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
-import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
+  clearQueuedMessages,
   clearSuggestion,
   continueInNewThread,
+  continueQueuedMessages,
   dismissContextWarn,
+  editQueuedMessage,
   exportHandoff,
   isThreadBusy,
   lastSpeaker,
   loadHistory,
   newThread,
+  removeQueuedMessage,
   skipHandoff,
   threadMessages,
   onExternalSync,
@@ -367,6 +371,7 @@ export function WorkbenchPage() {
 
   const [composerH, setComposerH] = useState(150)
   const ref = (p: ProfileState, model: string | null): AgentRef => ({ profileId: p.id, name: p.name, kind: p.kind, model: effectiveModel(model, p) })
+  const confirmExternalBusy = () => confirm({ title: t('wb.extBusyTitle'), message: t('wb.extBusyDesc'), confirmLabel: t('wb.extBusySend') })
 
   const onSend = (text: string, attachments: Attachment[]) => {
     if (!driverP) return
@@ -378,8 +383,7 @@ export function WorkbenchPage() {
     if (!id) id = newThread({ ...ctx, participants: joined, driver: { profileId: driverP.id, model: driverModel } })
     else if (joined.length !== participants.length) updateThread(id, { participants: joined })
     stick.current = true
-    const busy = () => confirm({ title: t('wb.extBusyTitle'), message: t('wb.extBusyDesc'), confirmLabel: t('wb.extBusySend') })
-    return send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir }, busy)
+    return send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir }, confirmExternalBusy)
   }
 
   // turns continued elsewhere (terminal, another app) merged into the open chat: a short notice
@@ -550,6 +554,7 @@ export function WorkbenchPage() {
           onHeight={setComposerH}
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
+          queue={thread?.queuedMessages?.length ? <QueuedMessages key={thread.id} thread={thread} confirmBusy={confirmExternalBusy} /> : null}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
           history={inputHistory}
           footer={
@@ -1286,6 +1291,71 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
   )
 }
 
+function QueuedMessages({ thread, confirmBusy }: { thread: Thread; confirmBusy: () => Promise<boolean> }) {
+  const [edit, setEdit] = useState<{ id: string; text: string } | null>(null)
+  const action = 'rounded-md px-2 py-1 text-ink-2 hover:bg-fill hover:text-ink disabled:opacity-50'
+  return (
+    <section aria-label={t('wb.queueHeading')} className="mb-2 rounded-2xl bg-surface px-3 py-2 text-[13px] text-ink ring-1 ring-[var(--ring)]">
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-auto flex items-center gap-2 px-1 font-medium">
+          <IconClock size={14} /> {t('wb.queueHeading')}
+        </span>
+        {(thread.queueHold || !thread.activeTurn) && (
+          <button
+            className={action + ' font-medium text-accent'}
+            disabled={!!thread.activeTurn || !!thread.pause}
+            onClick={() => void continueQueuedMessages(thread.id, confirmBusy)}
+          >
+            {t('wb.queueContinue')}
+          </button>
+        )}
+        <button className={action} onClick={() => {
+          setEdit(null)
+          clearQueuedMessages(thread.id)
+        }}>{t('wb.queueClear')}</button>
+      </div>
+      {(thread.queueHold === 'external' || thread.pause) && (
+        <p role="status" className="px-1 py-1 text-ink-2">{t(thread.pause ? 'wb.queueReview' : 'wb.queueExternal')}</p>
+      )}
+      <ul className="max-h-40 overflow-y-auto overscroll-contain">
+        {thread.queuedMessages?.map((message) => {
+          const summary = message.text || message.attachments.map((file) => file.name).join(t('common.listSep'))
+          return (
+            <li key={message.id} className="border-t border-[var(--ring)]">
+              {edit?.id === message.id ? (
+                <form className="flex items-start gap-1 py-1" onSubmit={(e) => {
+                  e.preventDefault()
+                  if (!edit.text.trim() && !message.attachments.length) return
+                  editQueuedMessage(thread.id, message.id, edit.text)
+                  setEdit(null)
+                }}>
+                  <textarea
+                    autoFocus
+                    aria-label={t('wb.queueEdit')}
+                    value={edit.text}
+                    rows={2}
+                    className="min-w-0 flex-1 resize-y rounded-md bg-fill px-2 py-1 text-ink outline-accent"
+                    onChange={(e) => setEdit({ ...edit, text: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === 'Escape' && !e.nativeEvent.isComposing) setEdit(null) }}
+                  />
+                  <button className={action} type="submit" disabled={!edit.text.trim() && !message.attachments.length}>{t('common.save')}</button>
+                  <button className={action} type="button" onClick={() => setEdit(null)}>{t('common.cancel')}</button>
+                </form>
+              ) : (
+                <div className="flex min-w-0 items-center gap-1 py-0.5">
+                  <span className="flex-1 truncate px-1" title={summary}>{summary}</span>
+                  <button className={action} onClick={() => setEdit({ id: message.id, text: message.text })}>{t('wb.queueEdit')}</button>
+                  <button className={action} onClick={() => removeQueuedMessage(thread.id, message.id)}>{t('common.remove')}</button>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 function Composer({
   driver,
   driverModel,
@@ -1297,6 +1367,7 @@ function Composer({
   onHeight,
   onSend,
   onStop,
+  queue,
   suggestion,
   history,
   footer
@@ -1313,6 +1384,7 @@ function Composer({
   /** Resolves false when the user declined to send (the draft comes back). */
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | void
   onStop: () => void
+  queue?: ReactNode
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
   /** Text-only sent history (oldest -> newest) for ↑/↓ recall. */
@@ -1550,9 +1622,8 @@ function Composer({
     setAtts((a) => [...a, ...next].slice(0, 12))
   }
 
-  const canSend = !busy && !!driver && (text.trim().length > 0 || atts.length > 0)
+  const canSend = !!driver && (text.trim().length > 0 || atts.length > 0)
   const doSend = () => {
-    if (busy) return toast({ kind: 'info', title: t('wb.busyTitle'), desc: t('wb.busyDesc') })
     if (!driver) return toast({ kind: 'warn', title: t('wb.noModel'), action: { label: t('wb.addAccount'), run: () => navigate('engines') } })
     if (!text.trim() && !atts.length) return
     if (!isReady(driver))
@@ -1574,6 +1645,11 @@ function Composer({
     // cancelled (e.g. the session is being written elsewhere): give the draft back if still empty
     void r?.then((ok) => {
       if (ok) return
+      if (live.current.key !== draftKey) {
+        const draft = composerDraft(draftKey)
+        saveComposerDraft(draftKey, draft?.text || sentText, draft?.atts.length ? draft.atts : sentAtts)
+        return
+      }
       setText((cur) => cur || sentText)
       setAtts((cur) => (cur.length ? cur : sentAtts))
     })
@@ -1706,6 +1782,7 @@ function Composer({
   return (
     <div ref={wrap} className="pointer-events-none absolute inset-x-0 bottom-0 bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)] px-8 pt-8 pb-6">
       <div className="pointer-events-auto relative mx-auto max-w-[820px]">
+        {queue}
         {extOpen && (
           <div className="absolute bottom-full left-0 z-30 mb-2">
             <ExtensionsPanel account={driver} projectDir={projectDir} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
@@ -1908,20 +1985,19 @@ function Composer({
               }}
             />
             <div className="flex-1" />
-            {busy ? (
+            {busy && (
               <button onClick={onStop} className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-canvas transition-transform active:scale-95" title={t('common.stop')}>
                 <IconStop size={14} />
               </button>
-            ) : (
-              <button
-                onClick={doSend}
-                disabled={!canSend}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgba(0,122,255,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:bg-black/[0.08] disabled:text-ink-3 disabled:shadow-none"
-                title={t('wb.sendHint', { key: sendKeys(sendKey).send })}
-              >
-                <IconArrowUp size={17} strokeWidth={2.2} />
-              </button>
             )}
+            <button
+              onClick={doSend}
+              disabled={!canSend}
+              className={`flex h-8 items-center justify-center rounded-full bg-accent text-white shadow-[0_1px_2px_rgba(0,122,255,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:text-ink-3 disabled:shadow-none ${busy ? 'gap-1.5 px-3 text-[13px] font-medium disabled:bg-fill' : 'w-8 disabled:bg-black/[0.08]'}`}
+              title={t(busy ? 'wb.queueHint' : 'wb.sendHint', { key: sendKeys(sendKey).send })}
+            >
+              {busy ? <><IconClock size={15} /> {t('wb.queueSend')}</> : <IconArrowUp size={17} strokeWidth={2.2} />}
+            </button>
           </div>
         </div>
         {footer}

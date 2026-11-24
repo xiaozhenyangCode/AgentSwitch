@@ -33,7 +33,7 @@ export function restoreChats(loaded: ChatState): { state: ChatState; viewedOnly:
   const threads: Thread[] = []
   const viewedOnly: Thread[] = []
   for (const thread of loaded.threads) {
-    if (thread.imported && !thread.messages.length) {
+    if (thread.imported && !thread.messages.length && !thread.queuedMessages?.length) {
       viewedOnly.push(thread)
       continue
     }
@@ -43,7 +43,8 @@ export function restoreChats(loaded: ChatState): { state: ChatState; viewedOnly:
       changed = true
       return { ...m, permissions: reconcilePermissions(m.permissions, [], false) }
     })
-    threads.push(changed ? { ...thread, pause: null, messages } : thread)
+    const queueHold = thread.queueHold ?? (thread.queuedMessages?.length && (!thread.activeTurn || thread.pause) ? 'manual' : undefined)
+    threads.push(changed || queueHold !== thread.queueHold ? { ...thread, ...(queueHold ? { queueHold } : {}), pause: null, messages } : thread)
   }
   const activeId = threads.some((t) => t.id === loaded.activeId) ? loaded.activeId : (threads[0]?.id ?? null)
   return { state: { threads, activeId }, viewedOnly }
