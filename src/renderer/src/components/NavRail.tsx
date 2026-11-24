@@ -2,12 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { createPortal } from 'react-dom'
 import type { HistoryEntry, HistoryThread, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
-import { activeThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, useChat, type Thread } from '../state/chat'
+import { activeThread, archiveThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, unarchiveThread, useChat, type Thread } from '../state/chat'
 import { useEscape } from '../lib/escStack'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { IconCheck, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
+import { IconArchive, IconCheck, IconChevronDown, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
@@ -98,18 +98,26 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
     return () => window.removeEventListener('agentswitch:focus-search', focus)
   }, [])
 
-  // group by project; groups ordered by their most recent thread
-  const groups = useMemo(() => {
+  const [archivedOpen, setArchivedOpen] = useState(false)
+
+  // group active threads by project (pinned lead); archived threads go in their own collapsible section
+  const { groups, archivedThreads } = useMemo(() => {
     const map = new Map<string, Thread[]>()
-    // pinned chats lead their project group (and bring the group up with them)
-    for (const t of [...chat.threads].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt)) {
-      if (t.preview) continue
-      if (q && !t.title.toLowerCase().includes(q) && !(t.projectDir ?? '').toLowerCase().includes(q)) continue
-      const k = t.projectDir ?? ''
-      map.set(k, [...(map.get(k) ?? []), t])
+    const archived: Thread[] = []
+    for (const th of [...chat.threads].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt)) {
+      if (th.preview) continue
+      if (q && !th.title.toLowerCase().includes(q) && !(th.projectDir ?? '').toLowerCase().includes(q)) continue
+      if (th.archived) {
+        archived.push(th)
+        continue
+      }
+      const k = th.projectDir ?? ''
+      map.set(k, [...(map.get(k) ?? []), th])
     }
-    return [...map.entries()]
+    archived.sort((a, b) => (b.archivedAt ?? b.updatedAt) - (a.archivedAt ?? a.updatedAt))
+    return { groups: [...map.entries()], archivedThreads: archived }
   }, [chat.threads, q])
+  const showArchived = archivedOpen || (!!q && archivedThreads.length > 0) || !!current?.archived
 
   const remove = async (th: Thread) => {
     let purgeCli = false
@@ -211,7 +219,9 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
         <HistoryList query={q} />
       ) : (
       <div className="no-drag min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        {groups.length === 0 && <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? t('nav.noMatchThreads') : t('nav.noThreads')}</div>}
+        {groups.length === 0 && archivedThreads.length === 0 && (
+          <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? t('nav.noMatchThreads') : t('nav.noThreads')}</div>
+        )}
         {groups.map(([dir, threads]) => (
           <div key={dir || '_'} className="mb-3.5">
             <div className="group flex h-8 items-center gap-2 pr-1 pl-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || undefined}>
@@ -240,6 +250,35 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
             ))}
           </div>
         ))}
+        {archivedThreads.length > 0 && (
+          <div className="mt-2 border-t border-black/[0.05] pt-2 dark:border-white/[0.06]">
+            <button
+              onClick={() => setArchivedOpen((o) => !o)}
+              className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[12.5px] font-medium text-ink-3 transition-colors hover:bg-black/[0.04] hover:text-ink-2 dark:hover:bg-white/[0.05]"
+            >
+              <IconArchive size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{t('nav.archivedGroup', { n: archivedThreads.length })}</span>
+              <IconChevronDown size={13} className={`shrink-0 transition-transform duration-150 ${showArchived ? '' : '-rotate-90'}`} />
+            </button>
+            {showArchived && (
+              <div className="mt-0.5 space-y-0.5 opacity-85">
+                {archivedThreads.map((th) => (
+                  <ThreadRow
+                    key={th.id}
+                    t={th}
+                    active={th.id === current?.id}
+                    onOpen={() => {
+                      selectThread(th.id)
+                      navigate('workbench')
+                    }}
+                    onDelete={() => void remove(th)}
+                    onNewHere={() => start(th.projectDir ?? null)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       )}
 
@@ -703,7 +742,10 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
       {menu && (
         <RowMenu at={menu} onClose={closeMenu}>
           <MenuItem onClick={() => setEditing(true)}>{t('common.rename')}</MenuItem>
-          <MenuItem onClick={() => togglePin(th.id)}>{th.pinned ? t('nav.unpin') : t('nav.pin')}</MenuItem>
+          {!th.archived && <MenuItem onClick={() => togglePin(th.id)}>{th.pinned ? t('nav.unpin') : t('nav.pin')}</MenuItem>}
+          <MenuItem onClick={() => (th.archived ? unarchiveThread(th.id) : archiveThread(th.id))}>
+            {th.archived ? t('nav.unarchive') : t('nav.archive')}
+          </MenuItem>
           {th.unread && <MenuItem onClick={() => clearUnread(th.id)}>{t('nav.markRead')}</MenuItem>}
           <MenuItem
             onClick={() => {

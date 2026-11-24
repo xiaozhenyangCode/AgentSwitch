@@ -89,7 +89,7 @@ import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
-import { onUsageChange, refreshUsage, snapshot as usageSnapshot, startUsage } from './usage'
+import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { gitChanges } from './gitChanges'
 import { gitLog, gitMutate, gitStatus, gitWorktree } from './gitOps'
@@ -390,7 +390,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       handoffTo: hasProfile(req.handoffTo) ? req.handoffTo : undefined,
       handoffDoc: typeof req.handoffDoc === 'string' && isAbsolute(req.handoffDoc) ? req.handoffDoc : null,
       allowMissingProject: req.allowMissingProject === true,
-      wantTitle: req.wantTitle === true
+      wantTitle: req.wantTitle === true,
+      quote:
+        req.quote &&
+        typeof req.quote === 'object' &&
+        (req.quote.role === 'user' || req.quote.role === 'assistant') &&
+        typeof req.quote.author === 'string' &&
+        typeof req.quote.excerpt === 'string' &&
+        req.quote.excerpt.trim()
+          ? {
+              role: req.quote.role,
+              author: req.quote.author.trim().slice(0, 80),
+              excerpt: req.quote.excerpt.trim().slice(0, 1200)
+            }
+          : null
     })
   })
   ipcMain.handle(IPC.chatExportHandoff, (_e, threadId: unknown, turnId: unknown, projectDir: unknown, markdown: unknown) => {
@@ -412,6 +425,27 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
       token, choice === 'skip' || choice === 'overwrite' ? choice : undefined
     )
   })
+  ipcMain.handle(IPC.chatRewindPlan, (_e, threadId: unknown, turnIds: unknown) => {
+    if (typeof threadId !== 'string' || !Array.isArray(turnIds)) return { kind: 'invalid' as const }
+    if (orchestrator.hasActiveTurn(threadId)) return { kind: 'busy' as const }
+    const ids = turnIds.filter((id): id is string => typeof id === 'string')
+    return orchestrator.checkpoints.planRewind(threadId, ids, (root) => orchestrator.isWorkspaceBusy(threadId, root))
+  })
+  ipcMain.handle(IPC.chatRewind, async (_e, threadId: unknown, turnIds: unknown, restoreFiles: unknown, choice: unknown) => {
+    if (typeof threadId !== 'string' || !Array.isArray(turnIds)) return { kind: 'invalid' as const }
+    if (orchestrator.hasActiveTurn(threadId)) return { kind: 'busy' as const }
+    const ids = turnIds.filter((id): id is string => typeof id === 'string')
+    const res = await orchestrator.checkpoints.rewind(
+      threadId,
+      ids,
+      restoreFiles === true,
+      (root) => orchestrator.isWorkspaceBusy(threadId, root),
+      choice === 'skip' ? 'skip' : 'overwrite'
+    )
+    if (res.kind !== 'ok') return res
+    const clearedSessions = orchestrator.clearThreadSessions(threadId)
+    return { ...res, clearedSessions }
+  })
   ipcMain.handle(IPC.chatDeleteThread, async (_e, req: unknown) => {
     const r = req as Record<string, unknown> | null
     if (!r || typeof r.threadId !== 'string') throw new Error('bad request')
@@ -429,6 +463,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   startUsage()
   ipcMain.handle(IPC.usageGet, () => usageSnapshot())
   ipcMain.handle(IPC.usageRefresh, (_e, probe?: boolean) => refreshUsage(probe === true))
+  ipcMain.handle(IPC.usageSetPrice, (_e, model: unknown, rate: unknown) => {
+    if (typeof model !== 'string' || !model.trim()) throw new Error('bad model')
+    if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) throw new Error('bad rate')
+    return setCustomPrice(model, rate as Parameters<typeof setCustomPrice>[1])
+  })
 
   // ---- local CLI history (read-only) ------------------------------------------------------
   ipcMain.handle(IPC.historyList, (_e, force?: boolean) => listHistory(force === true))

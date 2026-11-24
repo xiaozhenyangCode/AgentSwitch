@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { AccountUsage, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
+import type { AccountUsage, PriceRate, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
 import { getSettings } from './settings'
@@ -29,6 +29,42 @@ export function useUsage(): UsageSnapshot | null {
 /** Refresh now; probes Claude quota only when enabled in 设置 › 用量与刷新. */
 export async function refreshUsage(): Promise<void> {
   emit(await window.agentswitch.usage.refresh(getSettings().probeClaude))
+}
+
+/** Saves or clears (`rate === null`) a custom per-model price override (USD / 1M tokens). */
+export async function setModelPrice(model: string, rate: PriceRate | null): Promise<UsageSnapshot> {
+  const next = await window.agentswitch.usage.setPrice(model, rate)
+  emit(next)
+  return next
+}
+
+/**
+ * Estimates a single message's USD cost from its token counts and the current usage price table
+ * (custom overrides take precedence; falls back to the CLI-reported `usage.costUsd`).
+ */
+export function estimateMessageCost(usage: Usage | null | undefined, model: string | null | undefined, s: UsageSnapshot | null = snap): number | null {
+  if (!usage) return null
+  const m = (model ?? '').trim()
+  const key = m.toLowerCase()
+  const custom = key ? s?.customPrices?.[key] : undefined
+  const tableRate = custom ?? (m ? s?.models?.[m]?.rate : undefined) ?? (key ? s?.models?.[key]?.rate : undefined) ?? null
+  const input = usage.input ?? 0
+  const output = usage.output ?? 0
+  const cacheRead = usage.cacheRead ?? 0
+  const cacheWrite = usage.cacheWrite ?? 0
+  const hasTokens = input + output + cacheRead + cacheWrite > 0
+  if (tableRate && hasTokens) {
+    const prompt = usage.context ?? input + cacheRead + cacheWrite
+    const l = tableRate.long && prompt > tableRate.long.threshold ? tableRate.long : null
+    const rIn = l?.input ?? tableRate.input
+    const rOut = l?.output ?? tableRate.output
+    const rCR = l?.cacheRead ?? tableRate.cacheRead ?? rIn
+    const rCW = l?.cacheWrite ?? tableRate.cacheWrite ?? rIn
+    const rCW1h = l ? rCW * 1.6 : (tableRate.cacheWrite1h ?? (tableRate.cacheWrite !== undefined ? tableRate.cacheWrite * 1.6 : rIn))
+    const w1h = Math.min(usage.cacheWrite1h ?? 0, cacheWrite)
+    return (input * rIn + output * rOut + cacheRead * rCR + (cacheWrite - w1h) * rCW + w1h * rCW1h) / 1e6
+  }
+  return typeof usage.costUsd === 'number' ? usage.costUsd : null
 }
 
 // ---- interpretation ------------------------------------------------------------------------

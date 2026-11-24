@@ -41,7 +41,7 @@ export function candidates(model: string): string[] {
   return out
 }
 
-export type PriceSource = 'litellm' | 'ccswitch'
+export type PriceSource = 'custom' | 'litellm' | 'ccswitch'
 
 export interface Match {
   key: string
@@ -50,12 +50,18 @@ export interface Match {
 }
 
 export interface PriceTables {
+  custom?: PriceTable
   litellm: PriceTable
   ccswitch: PriceTable
 }
 
-/** The rate a model is billed at: LiteLLM's table first (t3code's source), then CC Switch's. */
+/** The rate a model is billed at: user custom overrides first, then LiteLLM, then CC Switch. */
 export function findRate(model: string, t: PriceTables): Match | null {
+  if (t.custom) {
+    const exact = model.trim().toLowerCase()
+    if (exact && t.custom[exact]) return { key: exact, rate: t.custom[exact], source: 'custom' }
+    for (const c of candidates(model)) if (t.custom[c]) return { key: c, rate: t.custom[c], source: 'custom' }
+  }
   if (FREE.has(model)) return { key: model, rate: { input: 0, output: 0 }, source: 'litellm' }
   const names = candidates(model)
   for (const c of names) if (t.litellm[c]) return { key: c, rate: t.litellm[c], source: 'litellm' }

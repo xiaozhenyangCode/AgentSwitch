@@ -24,6 +24,15 @@ export interface AgentRef {
   model: string | null
 }
 
+export interface MessageQuote {
+  messageId: string
+  role: 'user' | 'assistant'
+  /** Display name of the quoted author (e.g. user label or model account name). */
+  author: string
+  /** Cleaned snippet shown in composer preview, sent bubble and prompt context. */
+  excerpt: string
+}
+
 export interface MessageInput {
   text: string
   attachments: Attachment[]
@@ -31,6 +40,7 @@ export interface MessageInput {
   mentions: AgentRef[]
   participants: ProfileId[]
   projectDir: string | null
+  quote?: MessageQuote | null
 }
 
 export interface QueuedMessage extends MessageInput {
@@ -52,6 +62,8 @@ export interface UserMessage {
   kind?: 'handoff'
   /** Small system line under the bubble (e.g. handoff synced). */
   note?: string
+  /** Optional quoted earlier message attached when sending. */
+  quote?: MessageQuote | null
 }
 
 export interface Activity {
@@ -158,6 +170,10 @@ export interface Thread {
   unread?: 'done' | 'error' | 'paused' | null
   /** Kept at the top of its project group in the sidebar. */
   pinned?: boolean
+  /** Archived / finished chat: hidden from the active sidebar list until expanded or resumed. */
+  archived?: boolean
+  /** Timestamp (ms) when the thread was archived. */
+  archivedAt?: number
 }
 
 export interface ChatState {

@@ -430,7 +430,7 @@ export function ActivityBar({ items, others, permissions, live, openSeq = 0 }: {
 
 // ---- usage footer ---------------------------------------------------------------------------
 
-export function UsageLine({ usage, ms, reasonix }: { usage: Usage | null | undefined; ms: number | null; reasonix?: boolean }) {
+export function UsageLine({ usage, ms, reasonix, costUsd }: { usage: Usage | null | undefined; ms: number | null; reasonix?: boolean; costUsd?: number | null }) {
   const u = usage ?? {}
   const parts: string[] = []
   if (ms) parts.push(fmtSec(ms))
@@ -444,7 +444,8 @@ export function UsageLine({ usage, ms, reasonix }: { usage: Usage | null | undef
     if (pct !== null) parts.push(t('proc.usageCacheRate', { pct }))
   }
   if (reasonix && typeof u.costCny === 'number') parts.push(`CN¥${u.costCny.toFixed(u.costCny < 0.01 ? 6 : 3)}`)
-  if (typeof u.costUsd === 'number') parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(reasonix ? 6 : 4) : u.costUsd.toFixed(3)}`)
+  const cost = typeof costUsd === 'number' ? costUsd : typeof u.costUsd === 'number' ? u.costUsd : null
+  if (cost !== null) parts.push(`$${cost < 0.01 ? cost.toFixed(reasonix ? 6 : 4) : cost.toFixed(3)}`)
   if (!parts.length) return null
   return (
     <span className="text-[11px] text-ink-3/70 tabular-nums" title={t('proc.usageTip')}>

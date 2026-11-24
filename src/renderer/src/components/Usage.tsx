@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { AccountUsage, ModelPrice, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
-import { KIND_META, isReady } from '../lib/ui'
+import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import { KIND_META, btnPrimary, btnSecondary, inputCls, isReady } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import { getSettings, useSettings } from '../state/settings'
@@ -15,11 +15,12 @@ import {
   quotaLevel,
   recommendSwitch,
   refreshUsage,
+  setModelPrice,
   tokenSum,
   useUsage
 } from '../state/usage'
-import { KindAvatar, ProfileAvatar } from './common'
-import { IconChevronDown, IconRefresh, Spinner } from './icons'
+import { KindAvatar, Modal, ProfileAvatar } from './common'
+import { IconChevronDown, IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
 
 const STALE = 6 * 3600_000
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
@@ -315,6 +316,8 @@ const modelLabel = (m: string): string =>
 function SourceBadge({ price }: { price: ModelPrice | undefined }) {
   const cls = 'shrink-0 whitespace-nowrap rounded px-1.5 py-px text-[10.5px]'
   if (!price?.source) return <span className={`${cls} bg-[var(--orange)]/15 font-medium text-[var(--orange)]`}>{t('usage.priceNone')}</span>
+  if (price.source === 'custom')
+    return <span className={`${cls} bg-accent/15 font-medium text-accent`}>{t('usage.priceCustom')}</span>
   if (price.source === 'estimate')
     return (
       <span className={`${cls} bg-fill text-ink-3`} title={t('usage.priceEstimateTip')}>
@@ -324,13 +327,239 @@ function SourceBadge({ price }: { price: ModelPrice | undefined }) {
   return <span className={`${cls} bg-fill text-ink-3`}>{price.source === 'litellm' ? 'LiteLLM' : 'CC Switch'}</span>
 }
 
+interface PriceEditTarget {
+  model: string
+  editableModel: boolean
+  current: PriceRate | null
+  defaultRate: PriceRate | null
+  isCustom: boolean
+}
+
+function CustomPriceModal({ target, onClose }: { target: PriceEditTarget; onClose: () => void }) {
+  const { toast } = useApp()
+  const base = target.current ?? target.defaultRate
+  const [modelName, setModelName] = useState(target.model)
+  const [inputVal, setInputVal] = useState(base ? String(base.input) : '')
+  const [outputVal, setOutputVal] = useState(base ? String(base.output) : '')
+  const [cacheReadVal, setCacheReadVal] = useState(base?.cacheRead !== undefined ? String(base.cacheRead) : '')
+  const [cacheWriteVal, setCacheWriteVal] = useState(base?.cacheWrite !== undefined ? String(base.cacheWrite) : '')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const parseNum = (raw: string, optional: boolean): number | undefined | null => {
+    const s = raw.trim()
+    if (!s) return optional ? undefined : null
+    const v = Number(s)
+    return Number.isFinite(v) && v >= 0 ? v : null
+  }
+
+  const save = async () => {
+    const key = modelName.trim()
+    if (!key) return setErr(t('usage.priceErrModel'))
+    const input = parseNum(inputVal, false)
+    const output = parseNum(outputVal, false)
+    const cacheRead = parseNum(cacheReadVal, true)
+    const cacheWrite = parseNum(cacheWriteVal, true)
+    if (input === null || input === undefined || output === null || output === undefined || cacheRead === null || cacheWrite === null) {
+      return setErr(t('usage.priceErrNumber'))
+    }
+    setErr(null)
+    setSaving(true)
+    try {
+      const rate: PriceRate = {
+        input,
+        output,
+        ...(cacheRead !== undefined ? { cacheRead } : {}),
+        ...(cacheWrite !== undefined ? { cacheWrite } : {})
+      }
+      await setModelPrice(key, rate)
+      toast({ kind: 'success', title: t('usage.priceSaved') })
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const reset = async () => {
+    const key = (target.model || modelName).trim()
+    if (!key) return
+    setSaving(true)
+    try {
+      await setModelPrice(key, null)
+      toast({ kind: 'success', title: t('usage.priceResetDone') })
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const def = target.defaultRate
+  return (
+    <Modal onClose={onClose} width={460}>
+      <div className="p-6" role="dialog" aria-modal="true">
+        <div className="text-[17px] font-semibold text-ink">{t('usage.priceEditTitle')}</div>
+        <div className="mt-1 text-[12.5px] text-ink-3">{t('usage.priceUnitHint')}</div>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="mb-1 block text-[12px] font-medium text-ink-2">{t('usage.priceModel')}</label>
+            {target.editableModel ? (
+              <input
+                autoFocus
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="e.g. claude-opus-5-5"
+                className={inputCls + ' w-full font-mono text-[13px]'}
+              />
+            ) : (
+              <div className="rounded-lg bg-fill px-3 py-2 font-mono text-[13px] text-ink">{target.model}</div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">{t('usage.priceInput')}</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={inputVal}
+                onChange={(e) => setInputVal(e.target.value)}
+                placeholder={def ? String(def.input) : '0'}
+                className={inputCls + ' w-full font-mono text-[13px] tabular-nums'}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">{t('usage.priceOutput')}</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={outputVal}
+                onChange={(e) => setOutputVal(e.target.value)}
+                placeholder={def ? String(def.output) : '0'}
+                className={inputCls + ' w-full font-mono text-[13px] tabular-nums'}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">{t('usage.priceCacheRead')}</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={cacheReadVal}
+                onChange={(e) => setCacheReadVal(e.target.value)}
+                placeholder={def ? fmtRate(def.cacheRead ?? def.input) : t('usage.priceFollowInput')}
+                className={inputCls + ' w-full font-mono text-[13px] tabular-nums'}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[12px] font-medium text-ink-2">{t('usage.priceCacheWrite')}</label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={cacheWriteVal}
+                onChange={(e) => setCacheWriteVal(e.target.value)}
+                placeholder={def ? fmtRate(def.cacheWrite ?? def.input) : t('usage.priceFollowInput')}
+                className={inputCls + ' w-full font-mono text-[13px] tabular-nums'}
+              />
+            </div>
+          </div>
+
+          {def && (
+            <div className="rounded-lg bg-fill/70 px-3 py-2 text-[11.5px] text-ink-3 tabular-nums">
+              {t('usage.priceDefaultRef', {
+                input: fmtRate(def.input),
+                output: fmtRate(def.output),
+                cacheRead: fmtRate(def.cacheRead ?? def.input),
+                cacheWrite: fmtRate(def.cacheWrite ?? def.input)
+              })}
+            </div>
+          )}
+
+          {err && <div className="rounded-lg bg-danger-soft px-3 py-2 text-[12px] text-danger">{err}</div>}
+        </div>
+
+        <div className="mt-5 flex items-center gap-2">
+          {target.isCustom && (
+            <button type="button" disabled={saving} onClick={() => void reset()} className={btnSecondary + ' mr-auto text-danger hover:text-danger'}>
+              {t('usage.priceReset')}
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button type="button" disabled={saving} onClick={onClose} className={btnSecondary}>
+              {t('common.cancel')}
+            </button>
+            <button type="button" disabled={saving} onClick={() => void save()} className={btnPrimary}>
+              {saving ? <Spinner size={13} /> : t('common.save')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 /** Per-model breakdown of the period, at the price each model is billed at (USD / 1M tokens). */
-function ModelTable({ rows, models, footnote }: { rows: [string, UsageTotals][]; models: Record<string, ModelPrice>; footnote: string }) {
+function ModelTable({
+  rows,
+  models,
+  customPrices,
+  footnote
+}: {
+  rows: [string, UsageTotals][]
+  models: Record<string, ModelPrice>
+  customPrices: Record<string, PriceRate>
+  footnote: string
+}) {
+  const { toast } = useApp()
+  const [editing, setEditing] = useState<PriceEditTarget | null>(null)
   const th = 'px-3 py-2 text-right font-medium whitespace-nowrap'
   const td = 'px-3 py-2.5 text-right tabular-nums'
+
+  // Include any custom-priced model not present in the current period so users can always edit/reset it.
+  const seen = new Set(rows.map(([m]) => m.toLowerCase()))
+  const extraCustom = Object.entries(customPrices)
+    .filter(([k]) => !seen.has(k.toLowerCase()))
+    .map(([k]): [string, UsageTotals] => [k, emptyTotals()])
+  const allRows = [...rows, ...extraCustom]
+
+  const openEdit = (model: string, p: ModelPrice | undefined) => {
+    const key = model.toLowerCase()
+    const customKey = p?.source === 'custom' && p.key ? p.key : customPrices[key] ? key : model
+    const isCustom = p?.source === 'custom' || !!customPrices[key]
+    setEditing({
+      model: isCustom ? customKey : model,
+      editableModel: false,
+      current: p?.rate ?? customPrices[key] ?? null,
+      defaultRate: isCustom ? (p?.defaultRate ?? null) : (p?.rate ?? null),
+      isCustom
+    })
+  }
+
+  const quickReset = async (model: string, p: ModelPrice | undefined) => {
+    const key = p?.source === 'custom' && p.key ? p.key : model.toLowerCase()
+    await setModelPrice(key, null)
+    toast({ kind: 'success', title: t('usage.priceResetDone') })
+  }
+
   return (
     <>
-      <SectionTitle>{t('usage.modelSection')}</SectionTitle>
+      <div className="mt-6 mb-2.5 flex items-center justify-between gap-2">
+        <div className="text-[12px] font-medium text-ink-3">{t('usage.modelSection')}</div>
+        <button
+          type="button"
+          onClick={() => setEditing({ model: '', editableModel: true, current: null, defaultRate: null, isCustom: false })}
+          className="flex h-7 items-center gap-1 rounded-lg bg-black/[0.045] px-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-ink dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+        >
+          <IconPlus size={12} /> {t('usage.priceAddCustom')}
+        </button>
+      </div>
       <div className={`overflow-hidden ${CARD}`}>
         <table className="w-full text-[13px]">
           <thead>
@@ -342,14 +571,19 @@ function ModelTable({ rows, models, footnote }: { rows: [string, UsageTotals][];
               <th className={th}>{t('usage.priceCacheWrite')}</th>
               <th className={th}>{t('usage.colTokens')}</th>
               <th className={th}>{t('usage.colCacheHit')}</th>
-              <th className={th + ' pr-4'}>{t('usage.colCost')}</th>
+              <th className={th}>{t('usage.colCost')}</th>
+              <th className={th + ' pr-4'}>{t('usage.priceActions')}</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map(([model, u]) => {
-                const p = models[model]
+            {allRows.length ? (
+              allRows.map(([model, u]) => {
+                const key = model.toLowerCase()
+                const p: ModelPrice | undefined =
+                  models[model] ?? (customPrices[key] ? { key, source: 'custom', rate: customPrices[key] } : undefined)
                 const r = p?.rate
+                const isCustom = p?.source === 'custom' || !!customPrices[key]
+                const canEdit = !!model && !model.startsWith('?')
                 return (
                   <tr key={model} className="border-b border-black/[0.05] last:border-0">
                     <td className="px-4 py-2.5">
@@ -357,23 +591,47 @@ function ModelTable({ rows, models, footnote }: { rows: [string, UsageTotals][];
                         <span className={`truncate text-[12px] text-ink ${model.startsWith('?') || !model ? '' : 'font-mono'}`}>{modelLabel(model)}</span>
                         <SourceBadge price={p} />
                       </div>
-                      {p?.key && (p.source === 'estimate' || p.key !== model.toLowerCase()) && (
+                      {p?.key && (p.source === 'estimate' || p.key !== key) && (
                         <div className="mt-0.5 font-mono text-[10.5px] text-ink-3">{t('usage.priceMatched', { key: p.key })}</div>
                       )}
                     </td>
-                    <td className={`${td} text-ink-2`}>{fmtRate(r?.input)}</td>
-                    <td className={`${td} text-ink-2`}>{fmtRate(r?.output)}</td>
-                    <td className={`${td} text-ink-2`}>{fmtRate(r ? (r.cacheRead ?? r.input) : undefined)}</td>
-                    <td className={`${td} text-ink-2`}>{fmtRate(r ? (r.cacheWrite ?? r.input) : undefined)}</td>
-                    <td className={`${td} text-ink`}>{fmtTokens(tokenSum(u))}</td>
+                    <td className={`${td} ${isCustom ? 'font-medium text-accent' : 'text-ink-2'}`}>{fmtRate(r?.input)}</td>
+                    <td className={`${td} ${isCustom ? 'font-medium text-accent' : 'text-ink-2'}`}>{fmtRate(r?.output)}</td>
+                    <td className={`${td} ${isCustom ? 'font-medium text-accent' : 'text-ink-2'}`}>{fmtRate(r ? (r.cacheRead ?? r.input) : undefined)}</td>
+                    <td className={`${td} ${isCustom ? 'font-medium text-accent' : 'text-ink-2'}`}>{fmtRate(r ? (r.cacheWrite ?? r.input) : undefined)}</td>
+                    <td className={`${td} text-ink`}>{tokenSum(u) > 0 ? fmtTokens(tokenSum(u)) : '—'}</td>
                     <td className={`${td} text-ink-2`}>{fmtPct(cacheHit(u))}</td>
-                    <td className={`${td} pr-4 font-medium text-ink`}>{r ? fmtCost(u.costUsd) : '—'}</td>
+                    <td className={`${td} font-medium text-ink`}>{r && tokenSum(u) > 0 ? fmtCost(u.costUsd) : '—'}</td>
+                    <td className="px-3 py-2.5 pr-4 text-right whitespace-nowrap">
+                      {canEdit && (
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openEdit(model, p)}
+                            className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                            title={t('usage.priceEdit')}
+                          >
+                            <IconEdit size={12} /> {t('usage.priceEdit')}
+                          </button>
+                          {isCustom && (
+                            <button
+                              type="button"
+                              onClick={() => void quickReset(model, p)}
+                              className="inline-flex h-6 items-center rounded-md px-1.5 text-[11.5px] text-ink-3 transition-colors hover:bg-danger-soft hover:text-danger"
+                              title={t('usage.priceReset')}
+                            >
+                              {t('usage.priceResetShort')}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 )
               })
             ) : (
               <tr>
-                <td colSpan={8} className="px-4 py-5 text-[13px] text-ink-3">
+                <td colSpan={9} className="px-4 py-5 text-[13px] text-ink-3">
                   {t('usage.periodEmpty')}
                 </td>
               </tr>
@@ -382,6 +640,7 @@ function ModelTable({ rows, models, footnote }: { rows: [string, UsageTotals][];
         </table>
       </div>
       <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">{footnote}</p>
+      {editing && <CustomPriceModal target={editing} onClose={() => setEditing(null)} />}
     </>
   )
 }
@@ -496,6 +755,7 @@ export function UsageView() {
       <ModelTable
         rows={modelRows}
         models={snap?.models ?? {}}
+        customPrices={snap?.customPrices ?? {}}
         footnote={
           t('usage.footnote', { days: snap?.claudeDays ?? 30, date: snap?.pricesAt ?? '' }) +
           (snap?.pricesLive ? '' : t('usage.footnoteOffline')) +

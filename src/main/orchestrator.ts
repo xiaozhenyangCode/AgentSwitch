@@ -14,7 +14,7 @@ import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript } from '@shared/transcript'
 import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
-import { bindNativeSession, canResume, recordUnconfirmedSession, type NativeSessions } from './historyResume'
+import { bindNativeSession, canResume, clearActiveSessions, recordUnconfirmedSession, type NativeSessions } from './historyResume'
 import { createThreadHistory, supportsThreadHistory } from './threadHistoryConfig'
 import { Checkpoints } from './checkpoints'
 import { SKIP_DIRS, SNAPSHOT_MAX_FILES } from './checkpointFiles'
@@ -303,6 +303,23 @@ export class Orchestrator {
   ) {}
 
   isRunning = (id: ProfileId): boolean => (this.busy.get(id) ?? 0) > 0
+  hasActiveTurn = (threadId: string): boolean => this.turns.has(threadId)
+
+  /**
+   * Unbinds all active native CLI sessions for `threadId` after a conversation rewind so the next
+   * turn starts fresh CLI sessions with P0-3 budgeted handoff instead of resuming truncated history.
+   */
+  clearThreadSessions(threadId: string): boolean {
+    const f = sessionsFile(threadId)
+    const previous = loadSessions(threadId)
+    const activeIds = Object.values(previous.sessions ?? {}).filter(Boolean)
+    if (!activeIds.length && !Object.keys(previous.models ?? {}).length) return false
+    for (const sid of activeIds) this.sentSystem.delete(sid)
+    const next = clearActiveSessions(previous)
+    mkdirSync(join(f, '..'), { recursive: true })
+    writeFileSync(f, JSON.stringify(next, null, 2))
+    return true
+  }
 
   start(req: RunRequest): void {
     if (this.turns.has(req.threadId)) throw new Error(t('main.busy'))
@@ -598,6 +615,13 @@ export class Orchestrator {
         if (s.outputs.length) parts.push('产出文件：', ...s.outputs.map((p) => `- ${rel(p)}`))
         parts.push('')
       }
+    }
+    if (turn.req.quote?.excerpt) {
+      const quoted = turn.req.quote.excerpt
+        .split(/\r?\n/)
+        .map((line) => `> ${line}`)
+        .join('\n')
+      parts.push(`## 引用的消息（来自 ${turn.req.quote.author}）`, quoted, '')
     }
     if (step.kind === 'own') {
       parts.push('## 用户消息', turn.req.text)

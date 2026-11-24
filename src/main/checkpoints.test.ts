@@ -319,3 +319,83 @@ describe('turn checkpoints', () => {
     expect(await store.list('thread')).not.toContainEqual(expect.objectContaining({ turnId: 'broken' }))
   })
 })
+
+describe('conversation rewind checkpoints', () => {
+  it('restores multiple turns newest-to-oldest and discards truncated checkpoints', async () => {
+    await init()
+    await store.begin('thread', 't1', repo)
+    await put('tracked.txt', 'after-t1\n')
+    await store.finish('thread', 't1')
+
+    await store.begin('thread', 't2', repo)
+    await put('tracked.txt', 'after-t2\n')
+    await put('from-t2.txt', 'hello')
+    await store.finish('thread', 't2')
+
+    await store.begin('thread', 't3', repo)
+    await put('tracked.txt', 'after-t3\n')
+    await put('from-t3.txt', 'world')
+    await store.finish('thread', 't3')
+
+    const p = await store.planRewind('thread', ['t2', 't3'], idle)
+    expect(p.kind).toBe('ready')
+    if (p.kind !== 'ready') throw new Error(JSON.stringify(p))
+    expect(p.checkpointTurnIds).toEqual(['t3', 't2'])
+    expect(p.unavailableTurnIds).toEqual([])
+    expect(new Set(p.files)).toEqual(new Set(['tracked.txt', 'from-t2.txt', 'from-t3.txt']))
+
+    const res = await store.rewind('thread', ['t2', 't3'], true, idle, 'overwrite')
+    expect(res.kind).toBe('ok')
+    expect(await content('tracked.txt')).toBe('after-t1\n')
+    await missing('from-t2.txt')
+    await missing('from-t3.txt')
+
+    // Truncated turns removed, earlier turn preserved
+    expect(await store.list('thread')).toEqual([{ turnId: 't1', status: 'ready' }])
+    expect(await refs(repo)).toContain('/t1/before')
+    expect(await refs(repo)).not.toContain('/t2/')
+    expect(await refs(repo)).not.toContain('/t3/')
+  })
+
+  it('aborts before touching any file if any checkpoint in rewind range is unavailable or corrupted', async () => {
+    await init()
+    await store.begin('thread', 't1', repo)
+    await put('tracked.txt', 'after-t1\n')
+    await store.finish('thread', 't1')
+
+    await store.begin('thread', 't2', repo)
+    await put('tracked.txt', 'after-t2\n')
+    await put('t2.txt', 'created-in-t2')
+    await store.finish('thread', 't2')
+
+    // Delete t1's checkpoint refs and prune unreachable objects so pre-check fails before t2 is rolled back
+    await git(repo, 'update-ref', '-d', 'refs/agentswitch/checkpoints/t1/before')
+    await git(repo, 'update-ref', '-d', 'refs/agentswitch/checkpoints/t1/after')
+    await git(repo, 'gc', '--prune=now')
+
+    const res = await store.rewind('thread', ['t1', 't2'], true, idle, 'overwrite')
+    expect(res.kind).toBe('unavailable')
+    // Workspace and checkpoint state must remain completely untouched
+    expect(await content('tracked.txt')).toBe('after-t2\n')
+    expect(await content('t2.txt')).toBe('created-in-t2')
+    expect(await store.list('thread')).toEqual([
+      { turnId: 't1', status: 'ready' },
+      { turnId: 't2', status: 'ready' }
+    ])
+  })
+
+  it('discards checkpoints without altering files when restoreFiles is false, and rejects when busy', async () => {
+    await init()
+    await store.begin('thread', 't1', repo)
+    await put('tracked.txt', 'after-t1\n')
+    await store.finish('thread', 't1')
+
+    expect(await store.rewind('thread', ['t1'], true, () => true)).toEqual({ kind: 'busy' })
+    expect(await content('tracked.txt')).toBe('after-t1\n')
+
+    const res = await store.rewind('thread', ['t1'], false, idle)
+    expect(res).toEqual({ kind: 'ok', restored: 0, skipped: 0, clearedSessions: false })
+    expect(await content('tracked.txt')).toBe('after-t1\n')
+    expect(await store.list('thread')).toEqual([])
+  })
+})

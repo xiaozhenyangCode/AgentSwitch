@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, posix } from 'node:path'
-import type { CheckpointChoice, CheckpointPlan, CheckpointResult, CheckpointStatus, TurnCheckpoint } from '@shared/checkpoints'
+import type { CheckpointChoice, CheckpointPlan, CheckpointResult, CheckpointStatus, RewindCheckResult, RewindExecuteResult, TurnCheckpoint } from '@shared/checkpoints'
 import { captureCheckpoint, checkpointChanges, checkpointGit, openCheckpointRepo, pruneHiddenObjects, publishCheckpoint, removeCheckpointRefs, type CheckpointRepo, type FileChange } from './checkpointGit'
 import { CheckpointLimit, currentVersion, directoryHasOtherFiles, parentEntry, restoreFile, sameVersion, type FileVersion } from './checkpointFiles'
 import { git, isInside } from './gitOps'
@@ -327,6 +327,187 @@ export class Checkpoints {
       } finally {
         this.restoring = null
       }
+    })
+  }
+
+  /**
+   * Read-only pre-flight inspection for rewinding a conversation from `turnIds` onward.
+   * Verifies every checkpoint in range before any files or chat state are touched.
+   */
+  planRewind(threadId: string, turnIds: string[], busy: (root: string) => boolean): Promise<RewindCheckResult> {
+    return this.enqueue(async () => {
+      const validIds = [...new Set(turnIds.filter(allowedId))]
+      if (!validIds.length) return { kind: 'invalid', reason: 'No target turns' }
+      const turnSet = new Set(validIds)
+      if ([...this.running.values()].some((c) => c.record?.threadId === threadId)) return { kind: 'busy' }
+
+      const all = (await this.records())
+        .filter((r) => r.threadId === threadId && turnSet.has(r.turnId))
+        .sort((a, b) => b.order - a.order)
+
+      if (!all.length) return { kind: 'ready', checkpointTurnIds: [], files: [], conflicts: [], unavailableTurnIds: [] }
+      if (!await this.available()) {
+        return { kind: 'ready', checkpointTurnIds: [], files: [], conflicts: [], unavailableTurnIds: all.map((r) => r.turnId) }
+      }
+
+      const checkedRoots = new Set<string>()
+      for (const r of all) {
+        if (!checkedRoots.has(r.repo.root)) {
+          checkedRoots.add(r.repo.root)
+          if (busy(r.repo.root)) return { kind: 'busy' }
+        }
+      }
+
+      const checkpointTurnIds: string[] = []
+      const unavailableTurnIds: string[] = []
+      const fileSet = new Set<string>()
+      const conflictSet = new Set<string>()
+      for (const record of all) {
+        if (record.status === 'unchanged' || record.status === 'undone') continue
+        if (record.status !== 'ready') {
+          unavailableTurnIds.push(record.turnId)
+          continue
+        }
+        try {
+          const { plan } = await this.inspect(record)
+          checkpointTurnIds.push(record.turnId)
+          for (const f of plan.files) fileSet.add(f)
+          for (const c of plan.conflicts) conflictSet.add(c)
+        } catch {
+          unavailableTurnIds.push(record.turnId)
+        }
+      }
+      return {
+        kind: 'ready',
+        checkpointTurnIds,
+        files: [...fileSet],
+        conflicts: [...conflictSet],
+        unavailableTurnIds
+      }
+    })
+  }
+
+  /**
+   * Atomically validates and (when `restoreFiles` is true) restores workspace files across all
+   * checkpoints in `turnIds` from newest -> oldest, then discards the truncated checkpoint records.
+   * If any pre-check fails, refuses BEFORE modifying any file or discarding any checkpoint.
+   */
+  rewind(
+    threadId: string,
+    turnIds: string[],
+    restoreFiles: boolean,
+    busy: (root: string) => boolean,
+    choice: CheckpointChoice = 'overwrite'
+  ): Promise<RewindExecuteResult> {
+    return this.enqueue(async () => {
+      const validIds = [...new Set(turnIds.filter(allowedId))]
+      if (!validIds.length) return { kind: 'invalid', reason: 'No target turns' }
+      if ([...this.running.values()].some((c) => c.record?.threadId === threadId)) return { kind: 'busy' }
+
+      const turnSet = new Set(validIds)
+      const all = (await this.records())
+        .filter((r) => r.threadId === threadId && turnSet.has(r.turnId))
+        .sort((a, b) => b.order - a.order)
+
+      const checkedRoots = new Set<string>()
+      for (const r of all) {
+        if (!checkedRoots.has(r.repo.root)) {
+          checkedRoots.add(r.repo.root)
+          if (busy(r.repo.root)) return { kind: 'busy' }
+        }
+      }
+
+      let totalRestored = 0
+      let totalSkipped = 0
+
+      if (restoreFiles && all.length) {
+        if (!await this.available()) return { kind: 'unavailable', reason: 'Git is not available to restore checkpoints' }
+
+        const readyRecords: RecordOnDisk[] = []
+        for (const record of all) {
+          if (record.status === 'unchanged' || record.status === 'undone') continue
+          if (record.status !== 'ready') {
+            return { kind: 'unavailable', reason: `Checkpoint for turn ${record.turnId} is ${record.status}` }
+          }
+          readyRecords.push(record)
+        }
+
+        // Phase 1: Validate every checkpoint & every readable blob BEFORE touching any file on disk.
+        type PreparedStep = {
+          record: RecordOnDisk
+          selected: (InspectedChange & { bytes?: Buffer })[]
+          skipped: number
+          permissions: Map<string, number>
+          algorithm: 'sha1' | 'sha256'
+        }
+        const prepared: PreparedStep[] = []
+        for (const record of readyRecords) {
+          let inspected: Awaited<ReturnType<Checkpoints['inspect']>>
+          try {
+            inspected = await this.inspect(record)
+          } catch {
+            return { kind: 'unavailable', reason: `Checkpoint snapshot for turn ${record.turnId} is missing or unreadable` }
+          }
+          const conflicts = new Set(inspected.plan.conflicts)
+          const selected = inspected.entries.filter((entry) => choice === 'overwrite' || !conflicts.has(entry.path))
+          if (selected.some((entry) => entry.blocked)) {
+            return { kind: 'unavailable', reason: `Cannot restore blocked path in turn ${record.turnId}` }
+          }
+          const loaded: (InspectedChange & { bytes?: Buffer })[] = []
+          for (const entry of selected) {
+            try {
+              const bytes = entry.before
+                ? await checkpointGit(record.repo, ['cat-file', 'blob', entry.before.oid], { maxBuffer: 21 * 1024 * 1024 })
+                : undefined
+              loaded.push({ ...entry, bytes })
+            } catch {
+              return { kind: 'unavailable', reason: `Snapshot blob unreadable for ${entry.path}` }
+            }
+          }
+          loaded.sort((a, b) => Number(!!a.before) - Number(!!b.before))
+          prepared.push({
+            record,
+            selected: loaded,
+            skipped: inspected.entries.length - selected.length,
+            permissions: new Map(record.permissions),
+            algorithm: inspected.algorithm
+          })
+        }
+
+        // Phase 2: Restore turns strictly from newest -> oldest so each file returns to pre-target state.
+        let totalFailed = 0
+        try {
+          for (const step of prepared) {
+            this.restoring = step.record.repo.root
+            for (const entry of step.selected) {
+              try {
+                if (entry.before || entry.parent === 'directory' || entry.current) {
+                  await restoreFile(step.record.repo.root, entry.path, entry.before, entry.bytes, step.permissions.get(entry.path))
+                }
+                totalRestored++
+              } catch {
+                totalFailed++
+              }
+            }
+            totalSkipped += step.skipped
+            if (totalFailed > 0) {
+              return { kind: 'partial', restored: totalRestored, failed: totalFailed, reason: 'Some files could not be restored' }
+            }
+          }
+        } finally {
+          this.restoring = null
+        }
+      }
+
+      // Phase 3: Discard truncated checkpoint records & refs (only after restore succeeded or wasn't requested).
+      const hiddenRepos = new Map<string, CheckpointRepo>()
+      for (const record of all) {
+        if (record.repo.hidden) hiddenRepos.set(record.repo.gitDir, record.repo)
+        await this.discard(record).catch(() => {})
+      }
+      for (const repo of hiddenRepos.values()) await pruneHiddenObjects(repo).catch(() => {})
+
+      return { kind: 'ok', restored: totalRestored, skipped: totalSkipped, clearedSessions: false }
     })
   }
 }

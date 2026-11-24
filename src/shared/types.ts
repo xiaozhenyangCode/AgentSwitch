@@ -166,6 +166,8 @@ export interface RunRequest {
   allowMissingProject?: boolean
   /** First turn of a chat the user hasn't renamed: ask the driver for a title marker. */
   wantTitle?: boolean
+  /** Optional quoted message snippet attached to this user turn. */
+  quote?: { author: string; role: 'user' | 'assistant'; excerpt: string } | null
 }
 
 export type ActivityType = 'read' | 'write' | 'run' | 'search' | 'tool'
@@ -256,11 +258,14 @@ export interface ModelPrice {
   /** Price-table key it matched (null: no price). */
   key: string | null
   /**
-   * litellm: LiteLLM's public table (t3code's source) · ccswitch: CC Switch's built-in table ·
-   * estimate: recorded without a model, priced as the engine's most used model (`key`).
+   * custom: user's manual override · litellm: LiteLLM's public table (t3code's source) ·
+   * ccswitch: CC Switch's built-in table · estimate: recorded without a model, priced as the
+   * engine's most used model (`key`).
    */
-  source: 'litellm' | 'ccswitch' | 'estimate' | null
+  source: 'custom' | 'litellm' | 'ccswitch' | 'estimate' | null
   rate: PriceRate | null
+  /** Official built-in/live rate when overridden by a custom price (for reference / reset preview). */
+  defaultRate?: PriceRate | null
 }
 
 /** One account's usage of one model on one day (priced). */
@@ -290,6 +295,8 @@ export interface UsageSnapshot {
   /** Per day, account and model (for the period views). */
   daily: DailyUsage[]
   models: Record<string, ModelPrice>
+  /** User's custom per-model price overrides (lowercased model key -> USD / 1M tokens). */
+  customPrices: Record<string, PriceRate>
   /** Date of the LiteLLM table in use (YYYY-MM-DD); live: fetched (daily), otherwise the built-in snapshot. */
   pricesAt: string
   pricesLive: boolean
@@ -594,9 +601,12 @@ export const IPC = {
   chatDeleteThread: 'chat:deleteThread',
   chatCheckpoints: 'chat:checkpoints',
   chatCheckpointAction: 'chat:checkpointAction',
+  chatRewindPlan: 'chat:rewindPlan',
+  chatRewind: 'chat:rewind',
   historyList: 'history:list',
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',
+  usageSetPrice: 'usage:setPrice',
   usageChanged: 'usage:changed',
   historyOpen: 'history:open',
   historyImport: 'history:import',

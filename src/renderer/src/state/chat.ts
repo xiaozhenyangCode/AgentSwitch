@@ -2,7 +2,8 @@ import { useSyncExternalStore } from 'react'
 import { KINDS } from '@shared/types'
 import type { ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
 import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
-import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, QueuedMessage, Thinking, Thread, UserMessage } from '@shared/chat'
+import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, MessageQuote, QueuedMessage, Thinking, Thread, UserMessage } from '@shared/chat'
+import type { CheckpointChoice, RewindExecuteResult } from '@shared/checkpoints'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { cleanTitle, readMarks, stripMarks } from '@shared/markers'
@@ -16,7 +17,7 @@ import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQ
  * (src/main/orchestrator.ts) as ChatEvents.
  */
 
-export type { Activity, AgentRef, AssistantMessage, Attachment, Message, Thinking, Thread, UserMessage } from '@shared/chat'
+export type { Activity, AgentRef, AssistantMessage, Attachment, Message, MessageQuote, Thinking, Thread, UserMessage } from '@shared/chat'
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 const now = () => Date.now()
@@ -237,7 +238,26 @@ const notifyTurnDone = (info: TurnFinishedInfo) => {
 export const clearUnread = (id: string) => {
   if (state.threads.some((t) => t.id === id && t.unread)) patchThread(id, (t) => ({ ...t, unread: null }))
 }
-export const togglePin = (id: string) => patchThread(id, (t) => ({ ...t, pinned: !t.pinned }))
+export const togglePin = (id: string) => patchThread(id, (t) => (t.archived ? t : { ...t, pinned: !t.pinned }))
+
+export function archiveThread(id: string): void {
+  const target = state.threads.find((t) => t.id === id)
+  if (!target || target.archived) return
+  const threads = state.threads.map((t) =>
+    t.id === id ? { ...t, archived: true, archivedAt: now(), pinned: false, unread: null } : t
+  )
+  const nextActive =
+    state.activeId === id
+      ? (threads.find((t) => !t.archived && !t.preview)?.id ?? null)
+      : state.activeId
+  set({ threads, activeId: nextActive })
+}
+
+export function unarchiveThread(id: string): void {
+  const target = state.threads.find((t) => t.id === id)
+  if (!target?.archived) return
+  patchThread(id, (t) => ({ ...t, archived: false, archivedAt: undefined }))
+}
 
 /** The visible conversation as Markdown (hidden markers stripped, handoff notes skipped). */
 export function chatMarkdown(t: Thread): string {
@@ -245,8 +265,11 @@ export function chatMarkdown(t: Thread): string {
   for (const m of threadMessages(t)) {
     if (m.role === 'user') {
       if (m.kind === 'handoff') continue
+      const quoteLines = m.quote?.excerpt
+        ? [`> ${m.quote.author}:`, ...m.quote.excerpt.split(/\r?\n/).map((l) => `> ${l}`), '']
+        : []
       const files = m.attachments.map((a) => `- ${a.path ?? a.name}`)
-      out.push('', `## ${tr('chat.mdYou')}`, '', m.text, ...(files.length ? ['', ...files] : []))
+      out.push('', `## ${tr('chat.mdYou')}`, '', ...quoteLines, m.text, ...(files.length ? ['', ...files] : []))
     } else {
       const body = stripMarks(m.content).trim()
       if (!body) continue
@@ -272,16 +295,63 @@ export const updateThread = (id: string, patch: Partial<Pick<Thread, 'projectDir
 /** Draft key of the not-yet-created conversation (no thread selected). */
 export const NEW_DRAFT = '__new__'
 /** Unsent input per conversation (in memory only): switching chats never carries text over. */
-const drafts = new Map<string, { text: string; atts: Attachment[] }>()
+const drafts = new Map<string, { text: string; atts: Attachment[]; quote: MessageQuote | null }>()
 const deletedDrafts = new Set<string>()
 
 export const composerDraft = (key: string) => drafts.get(key) ?? null
-export function saveComposerDraft(key: string, text: string, atts: Attachment[]) {
+export function saveComposerDraft(key: string, text: string, atts: Attachment[], quote: MessageQuote | null = null) {
   if (deletedDrafts.has(key)) return
-  if (text || atts.length) drafts.set(key, { text, atts })
+  if (text || atts.length || quote) drafts.set(key, { text, atts, quote })
   else drafts.delete(key)
 }
 export const clearComposerDraft = (key: string) => void drafts.delete(key)
+
+/**
+ * Rewinds a thread back to before `messageId` (an editable user message):
+ * 1. Validates thread is idle, has no queued messages, and `messageId` is in `t.messages`.
+ * 2. Calls main process `chat.rewind` (validates & optionally restores checkpoints + unbinds CLI sessions).
+ * 3. Only after main process returns `kind === 'ok'`, truncates the thread and persists cleanly.
+ */
+export async function rewindThread(
+  threadId: string,
+  messageId: string,
+  restoreFiles: boolean,
+  choice: CheckpointChoice = 'overwrite'
+): Promise<RewindExecuteResult & { message?: UserMessage }> {
+  const thread = state.threads.find((t) => t.id === threadId)
+  if (!thread) return { kind: 'invalid', reason: 'Thread not found' }
+  if (thread.activeTurn || thread.pause || thread.queuedMessages?.length || gating.has(threadId)) {
+    return { kind: 'busy', reason: 'Thread is busy' }
+  }
+  const idx = thread.messages.findIndex((m) => m.id === messageId)
+  const target = idx >= 0 ? thread.messages[idx] : null
+  if (!target || target.role !== 'user' || target.kind === 'handoff') {
+    return { kind: 'invalid', reason: 'Target message is not rewindable' }
+  }
+  const turnIds = [...new Set(thread.messages.slice(idx).map((m) => m.turnId).filter(Boolean))]
+  const res = await window.agentswitch.chat.rewind(threadId, turnIds, restoreFiles, choice)
+  if (res.kind !== 'ok') return res
+
+  // Re-check thread state after async IPC so no concurrent turn raced in.
+  const latest = state.threads.find((t) => t.id === threadId)
+  if (!latest || latest.activeTurn) return { kind: 'busy', reason: 'Thread became busy' }
+  const nextMessages = latest.messages.slice(0, idx)
+  const resetTitle = nextMessages.length === 0 && !(latest.history?.length) && !latest.titleLocked && !latest.imported
+  patchThread(threadId, (t) => ({
+    ...t,
+    messages: nextMessages,
+    ...(resetTitle ? { title: tr('chat.newThread'), titleTurn: null } : {}),
+    suggestedInput: null,
+    handoff: null,
+    handoffFailed: null,
+    pause: null,
+    unread: null,
+    contextWarnDismissedAt: undefined,
+    updatedAt: now()
+  }))
+  persist()
+  return { ...res, message: target }
+}
 
 export async function deleteThread(id: string, purgeCli = false) {
   const t = state.threads.find((x) => x.id === id)
@@ -419,6 +489,7 @@ function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]
     mentions: input.mentions,
     createdAt: now(),
     ...(mode === 'handoff' ? { kind: 'handoff' as const } : {}),
+    ...(input.quote ? { quote: input.quote } : {}),
     ...(doc ? { note: tr('chat.handoffSynced', { name: [input.driver, ...input.mentions].find((a) => a.profileId === doc.to)?.name ?? '' }) } : {})
   }
   const firstTurn = !threadMessages(thread).some((m) => m.role === 'user')
@@ -429,6 +500,7 @@ function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]
   const ready = promote ? window.agentswitch.history.import(threadId, thread.imported!.profileId, thread.imported!.nativeId) : Promise.resolve()
   patchThread(threadId, (t) => ({
     ...t,
+    ...(t.archived ? { archived: false, archivedAt: undefined } : {}),
     ...(promote ? { preview: false, imported: { ...t.imported!, importedAt: now() } } : {}),
     title: firstTurn && !t.titleLocked ? titleFrom(input.text) : t.title,
     titleTurn: wantTitle ? turnId : null,
@@ -461,7 +533,8 @@ function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]
         handoffTo: input.handoffTo?.profileId,
         handoffDoc: doc?.path ?? null,
         allowMissingProject: !!thread.imported,
-        wantTitle
+        wantTitle,
+        quote: input.quote ? { role: input.quote.role, author: input.quote.author, excerpt: input.quote.excerpt } : null
       })
     )
     .catch((e: unknown) => {

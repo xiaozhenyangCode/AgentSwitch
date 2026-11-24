@@ -76,3 +76,18 @@ export function bindNativeSession(
   }
   return { scope, sessions, models, priorSessions, imported: [...imported], importedAt }
 }
+
+/**
+ * Unbinds all active native CLI sessions (e.g. after rewinding a conversation) while keeping
+ * them in `priorSessions` so history filtering, usage accounting and thread deletion still work.
+ * The next turn cannot `--resume` stale truncated context and falls back to budgeted handoff.
+ */
+export function clearActiveSessions(state: NativeSessions): NativeSessions {
+  const priorSessions = nativeSessionEntries(state)
+  return {
+    ...state,
+    sessions: {},
+    models: {},
+    priorSessions
+  }
+}

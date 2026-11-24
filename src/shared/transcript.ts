@@ -20,10 +20,13 @@ export interface TranscriptEntry {
 export function transcriptEntry(message: Message): TranscriptEntry {
   const { id, turnId } = message
   if (message.role === 'user') {
+    const quoteLine = message.quote?.excerpt ? `引用（${message.quote.author}）：${message.quote.excerpt}` : ''
+    const attLine = message.attachments.length ? `附件：${message.attachments.map((a) => a.name).join('、')}` : ''
+    const details = [quoteLine, attLine].filter(Boolean).join('\n')
     return {
       id, turnId, profileId: null, speaker: '用户', time: message.createdAt, text: message.text,
       driverId: message.kind === 'handoff' ? undefined : message.driver.profileId,
-      details: message.attachments.length ? `附件：${message.attachments.map((a) => a.name).join('、')}` : undefined
+      details: details || undefined
     }
   }
   const details = [

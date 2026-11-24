@@ -24,7 +24,10 @@ const api = {
   pendingPermissions: vi.fn(),
   resume: vi.fn(),
   stop: vi.fn(),
-  deleteThread: vi.fn()
+  deleteThread: vi.fn(),
+  save: vi.fn(),
+  rewindPlan: vi.fn(),
+  rewind: vi.fn()
 }
 const stat = vi.fn()
 let chat: typeof import('./chat')
@@ -49,6 +52,7 @@ beforeEach(() => {
   api.send.mockResolvedValue(undefined)
   api.active.mockResolvedValue([])
   api.pendingPermissions.mockResolvedValue([])
+  api.save.mockResolvedValue({ ok: true, revision: 1 })
   vi.stubGlobal('window', { addEventListener: vi.fn(), agentswitch: { chat: api, history: { stat } } })
   vi.stubGlobal('localStorage', { getItem: () => null })
 })
@@ -220,5 +224,81 @@ describe('chat native title updates', () => {
     chat.renameThread(second, '我手动改的标题')
     emit({ kind: 'agent', threadId: req2.threadId, turnId: req2.turnId, stepId: 'step-2', event: { t: 'title', title: '不该覆盖手动标题' } })
     expect(chat.getThread(second)?.title).toBe('我手动改的标题')
+  })
+})
+
+describe('chat rewind, archive, and quote', () => {
+  it('validates before rewinding, preserves thread on backend failure, and truncates + returns original message on success', async () => {
+    await open()
+    const quote = { messageId: 'q1', role: 'assistant' as const, author: 'Claude', excerpt: 'quoted answer' }
+    await chat.send(fixture.id, { ...input, text: 'turn one', quote })
+    expect(api.send.mock.lastCall![0].quote).toEqual({ role: 'assistant', author: 'Claude', excerpt: 'quoted answer' })
+    expect(api.send.mock.lastCall![0].text).toBe('turn one')
+    const turn1 = api.send.mock.lastCall![0].turnId
+    finish()
+
+    await send('turn two')
+    const turn2 = api.send.mock.lastCall![0].turnId
+    const userMsgs = chat.getThread(fixture.id)!.messages.filter((m) => m.role === 'user')
+    const msg1 = userMsgs[0]
+    const msg2 = userMsgs[1]
+
+    // Refuses while busy without calling api.rewind
+    const busyRes = await chat.rewindThread(fixture.id, msg1.id, true)
+    expect(busyRes.kind).toBe('busy')
+    expect(api.rewind).not.toHaveBeenCalled()
+    finish()
+
+    // Backend failure does not truncate messages
+    api.rewind.mockResolvedValueOnce({ kind: 'unavailable', reason: 'missing snapshot' })
+    const failed = await chat.rewindThread(fixture.id, msg1.id, true)
+    expect(failed.kind).toBe('unavailable')
+    expect(chat.getThread(fixture.id)?.messages.filter((m) => m.role === 'user')).toHaveLength(2)
+
+    // Backend success truncates from target message onward and returns original user message
+    api.rewind.mockResolvedValueOnce({ kind: 'ok', restored: 2, skipped: 0, clearedSessions: true })
+    const ok = await chat.rewindThread(fixture.id, msg2.id, true)
+    expect(ok.kind).toBe('ok')
+    expect(ok.message?.text).toBe('turn two')
+    expect(chat.getThread(fixture.id)?.messages.filter((m) => m.role === 'user')).toHaveLength(1)
+    expect(api.rewind).toHaveBeenLastCalledWith(fixture.id, [turn2], true, 'overwrite')
+    expect(api.save).toHaveBeenCalled()
+
+    // Rewinding first turn returns its quote
+    api.rewind.mockResolvedValueOnce({ kind: 'ok', restored: 0, skipped: 0, clearedSessions: true })
+    const okFirst = await chat.rewindThread(fixture.id, msg1.id, false)
+    expect(okFirst.kind).toBe('ok')
+    expect(okFirst.message?.quote).toEqual(quote)
+    expect(chat.getThread(fixture.id)?.messages).toEqual([])
+    expect(api.rewind).toHaveBeenLastCalledWith(fixture.id, [turn1], false, 'overwrite')
+  })
+
+  it('handles archive, unarchive, unpinning on archive, and auto-unarchive on send', async () => {
+    await open({ ...fixture, pinned: true, unread: 'done' })
+    chat.newThread({ projectDir: null, participants: ['test'], driver: fixture.driver })
+    chat.selectThread(fixture.id)
+
+    chat.archiveThread(fixture.id)
+    const archived = chat.getThread(fixture.id)!
+    expect(archived.archived).toBe(true)
+    expect(typeof archived.archivedAt).toBe('number')
+    expect(archived.pinned).toBe(false)
+    expect(archived.unread).toBeNull()
+
+    // Pinning an archived thread is a no-op
+    chat.togglePin(fixture.id)
+    expect(chat.getThread(fixture.id)?.pinned).toBe(false)
+
+    // Sending in an archived thread automatically unarchives it
+    await send('revive thread', fixture.id)
+    finish()
+    expect(chat.getThread(fixture.id)?.archived).toBe(false)
+    expect(chat.getThread(fixture.id)?.archivedAt).toBeUndefined()
+
+    // Explicit archive + unarchive roundtrip
+    chat.archiveThread(fixture.id)
+    expect(chat.getThread(fixture.id)?.archived).toBe(true)
+    chat.unarchiveThread(fixture.id)
+    expect(chat.getThread(fixture.id)?.archived).toBe(false)
   })
 })

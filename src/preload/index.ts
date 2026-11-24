@@ -1,4 +1,4 @@
-import type { CheckpointChoice, CheckpointResult, TurnCheckpoint } from '@shared/checkpoints'
+import type { CheckpointChoice, CheckpointResult, RewindCheckResult, RewindExecuteResult, TurnCheckpoint } from '@shared/checkpoints'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { ChatChanges, OpenChats } from '@shared/chat'
 import type { I18nState, LanguagePref } from '@shared/i18n'
@@ -31,6 +31,7 @@ import {
   type EnvPreview,
   type HistoryEntry,
   type UsageSnapshot,
+  type PriceRate,
   type HistoryStat,
   type HistoryThread,
   type KindConfig,
@@ -118,12 +119,17 @@ const api = {
     checkpoints: (threadId: string): Promise<TurnCheckpoint[]> => ipcRenderer.invoke(IPC.chatCheckpoints, threadId),
     checkpointAction: (threadId: string, turnId: string, token?: string, choice?: CheckpointChoice): Promise<CheckpointResult> =>
       ipcRenderer.invoke(IPC.chatCheckpointAction, threadId, turnId, token, choice),
+    rewindPlan: (threadId: string, turnIds: string[]): Promise<RewindCheckResult> =>
+      ipcRenderer.invoke(IPC.chatRewindPlan, threadId, turnIds),
+    rewind: (threadId: string, turnIds: string[], restoreFiles: boolean, choice?: CheckpointChoice): Promise<RewindExecuteResult> =>
+      ipcRenderer.invoke(IPC.chatRewind, threadId, turnIds, restoreFiles, choice),
     deleteThread: (req: DeleteThreadRequest): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.chatDeleteThread, req)
   },
   usage: {
     get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),
     /** probe=true sends one tiny haiku message per claude account to pull fresh quota (uses quota). */
     refresh: (probe = false): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageRefresh, probe),
+    setPrice: (model: string, rate: PriceRate | null): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSetPrice, model, rate),
     onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb)
   },
   history: {

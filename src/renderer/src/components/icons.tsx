@@ -277,3 +277,21 @@ export const IconSidebar = (p: P) => (
     <path d="M9 4.5v15M5.75 8.5h1M5.75 11.5h1" />
   </svg>
 )
+export const IconArchive = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4.5" width="18" height="4" rx="1.2" />
+    <path d="M4.5 8.5V18a1.8 1.8 0 0 0 1.8 1.8h11.4a1.8 1.8 0 0 0 1.8-1.8V8.5M10 13h4" />
+  </svg>
+)
+export const IconQuote = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M9.5 8.5H6a1.5 1.5 0 0 0-1.5 1.5v2.5A1.5 1.5 0 0 0 6 14h2.5v1.5A2.5 2.5 0 0 1 6 18" />
+    <path d="M18.5 8.5H15a1.5 1.5 0 0 0-1.5 1.5v2.5A1.5 1.5 0 0 0 15 14h2.5v1.5A2.5 2.5 0 0 1 15 18" />
+  </svg>
+)
+export const IconEdit = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4.5 19.5h4l10.2-10.2a2.1 2.1 0 0 0-3-3L5.5 16.5l-1 3Z" />
+    <path d="m13.5 8.5 3 3" />
+  </svg>
+)

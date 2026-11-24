@@ -1,11 +1,11 @@
 import { app, net } from 'electron'
 import { createHash } from 'node:crypto'
-import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileId, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
@@ -64,6 +64,7 @@ interface Stats {
 const statsFile = (): string => join(app.getPath('userData'), 'usage-stats.json')
 const quotaFile = (): string => join(app.getPath('userData'), 'quota-cache.json')
 const pricesFile = (): string => join(app.getPath('userData'), 'prices-litellm.json')
+const customPricesFile = (): string => join(app.getPath('userData'), 'prices-custom.json')
 
 const zero = (): Bucket => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, runs: 0 })
 const n = (v: unknown): number => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0)
@@ -95,8 +96,52 @@ for (const [k, v] of Object.entries(builtinPrices.ccswitch)) {
 }
 /** LiteLLM's table as last fetched (null: never; the built-in snapshot applies). */
 let live: { fetchedAt: number; models: PriceTable } | null = loadLive()
-let tables: PriceTables = { litellm: { ...parseLiteLLM(builtinPrices.litellm), ...(live?.models ?? {}) }, ccswitch }
+let customPrices: PriceTable = loadCustomPrices()
+let tables: PriceTables = { custom: customPrices, litellm: { ...parseLiteLLM(builtinPrices.litellm), ...(live?.models ?? {}) }, ccswitch }
 const matches = new Map<string, Match | null>()
+
+function loadCustomPrices(): PriceTable {
+  try {
+    const j = JSON.parse(readFileSync(customPricesFile(), 'utf8'))
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return {}
+    const out: PriceTable = {}
+    for (const [k, v] of Object.entries(j as Record<string, unknown>)) {
+      const key = k.trim().toLowerCase()
+      const r = cleanRate(v)
+      if (key && r) out[key] = r
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function saveCustomPrices(): void {
+  const f = customPricesFile()
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  const tmp = `${f}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(customPrices, null, 2), 'utf8')
+  renameSync(tmp, f)
+}
+
+/** Sets or clears (rate === null) a user custom price override and returns the refreshed snapshot. */
+export function setCustomPrice(model: string, rate: PriceRate | null): UsageSnapshot {
+  const key = model.trim().toLowerCase()
+  if (!key) return snapshot()
+  if (rate === null) {
+    delete customPrices[key]
+  } else {
+    const cleaned = cleanRate(rate)
+    if (!cleaned) throw new Error('Invalid price rate')
+    customPrices[key] = cleaned
+  }
+  tables = { ...tables, custom: customPrices }
+  matches.clear()
+  saveCustomPrices()
+  const snap = snapshot()
+  listener?.(snap)
+  return snap
+}
 
 function loadLive(): { fetchedAt: number; models: PriceTable } | null {
   try {
@@ -125,7 +170,7 @@ function refreshPrices(): Promise<void> {
       const models = parseLiteLLM(await res.json())
       if (Object.keys(models).length < 50) return // not the table we expect
       live = { fetchedAt: Date.now(), models }
-      tables = { litellm: { ...parseLiteLLM(builtinPrices.litellm), ...models }, ccswitch }
+      tables = { custom: customPrices, litellm: { ...parseLiteLLM(builtinPrices.litellm), ...models }, ccswitch }
       matches.clear()
       mkdirSync(app.getPath('userData'), { recursive: true })
       writeFileSync(pricesFile(), JSON.stringify(live))
@@ -308,7 +353,15 @@ export function snapshot(): UsageSnapshot {
   const priced = (key: string, b: Bucket): Bucket => {
     const model = modelOf(key)
     const m = rateOf(model)
-    models[model] ??= { key: m?.key ?? null, source: m?.estimate ? 'estimate' : (m?.source ?? null), rate: m?.rate ?? null }
+    if (!models[model]) {
+      const def = m?.source === 'custom' ? findRate(model, { litellm: tables.litellm, ccswitch: tables.ccswitch }) : null
+      models[model] = {
+        key: m?.key ?? null,
+        source: m?.estimate ? 'estimate' : (m?.source ?? null),
+        rate: m?.rate ?? null,
+        ...(def ? { defaultRate: def.rate } : {})
+      }
+    }
     return { ...b, costUsd: m ? costOf(b, m.rate, model !== key) : b.costUsd, unpriced: m ? 0 : tokensOf(b) }
   }
   const daily = new Map<string, DailyUsage>()
@@ -341,6 +394,7 @@ export function snapshot(): UsageSnapshot {
     claudeDays: CLAUDE_DAYS,
     daily: [...daily.values()].filter((d) => tokensOf(d) > 0 || d.runs > 0),
     models,
+    customPrices: { ...customPrices },
     pricesAt: live ? dayKey(live.fetchedAt) : builtinPrices.fetchedAt,
     pricesLive: !!live,
     updatedAt: Date.now()

@@ -76,3 +76,38 @@ describe('cost', () => {
     expect(cleanRate({ input: NaN, output: 2 })).toBeNull()
   })
 })
+
+describe('custom pricing overrides', () => {
+  it('prefers custom rates over official tables and falls back when removed', () => {
+    const withCustom = {
+      ...tables,
+      custom: {
+        'claude-opus-5-5': { input: 9, output: 30, cacheRead: 1, cacheWrite: 12 },
+        'my-local-model': { input: 0.5, output: 1.5 }
+      }
+    }
+
+    // Matches variant via candidate normalization
+    expect(findRate('claude-opus-5-5[1m]:max', withCustom)).toEqual({
+      key: 'claude-opus-5-5',
+      source: 'custom',
+      rate: { input: 9, output: 30, cacheRead: 1, cacheWrite: 12 }
+    })
+    // Matches unknown custom model
+    expect(findRate('my-local-model', withCustom)).toEqual({
+      key: 'my-local-model',
+      source: 'custom',
+      rate: { input: 0.5, output: 1.5 }
+    })
+    // Cost calculation uses custom override and falls back omitted cache rates to input
+    expect(costOf({ input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 0 }, findRate('my-local-model', withCustom)!.rate)).toBeCloseTo(2.5, 9)
+
+    // Removing custom override falls back to LiteLLM official rate
+    const withoutOpus = { ...tables, custom: { 'my-local-model': { input: 0.5, output: 1.5 } } }
+    expect(findRate('claude-opus-5-5[1m]', withoutOpus)).toMatchObject({
+      key: 'claude-opus-5-5',
+      source: 'litellm',
+      rate: { input: 4, output: 20 }
+    })
+  })
+})

@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { CheckpointStatus } from '@shared/checkpoints'
+import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
 import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
-import { KIND_META, accountBadge, isReady } from '../lib/ui'
+import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
-import { KindAvatar, ProfileAvatar } from '../components/common'
+import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
-import { fmtTokens } from '../state/usage'
+import { estimateMessageCost, fmtTokens, useUsage } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { ProjectBar } from '../components/ProjectBar'
@@ -22,9 +22,10 @@ import { useProjectGit } from '../state/useProjectGit'
 import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
+import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
-import { IconAlert, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCopy, IconFile, IconFolder, IconPlus, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCopy, IconEdit, IconFile, IconFolder, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
@@ -41,6 +42,7 @@ import {
   loadHistory,
   newThread,
   removeQueuedMessage,
+  rewindThread,
   skipHandoff,
   threadMessages,
   onExternalSync,
@@ -48,12 +50,14 @@ import {
   send,
   stop,
   toAttachment,
+  unarchiveThread,
   updateThread,
   useChat,
   type Activity,
   type AgentRef,
   type AssistantMessage,
   type Attachment,
+  type MessageQuote,
   type Thread,
   type UserMessage,
   NEW_DRAFT,
@@ -89,26 +93,16 @@ const fullTime = (ts: number) => {
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-const INPUT_HIST_KEY = 'agentswitch.inputHistory.v1'
-const INPUT_HIST_MAX = 100
-function loadInputHistory(): string[] {
-  try {
-    const arr = JSON.parse(localStorage.getItem(INPUT_HIST_KEY) ?? '[]')
-    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
-  } catch {
-    return []
-  }
-}
-function pushInputHistory(entry: string): void {
-  const s = entry.trim()
-  if (!s) return
-  const arr = loadInputHistory()
-  if (arr[arr.length - 1] === s) return
-  arr.push(s)
-  try {
-    localStorage.setItem(INPUT_HIST_KEY, JSON.stringify(arr.slice(-INPUT_HIST_MAX)))
-  } catch {
-    /* ignore storage quota */
+function makeQuote(msg: UserMessage | AssistantMessage): MessageQuote | null {
+  const raw = msg.role === 'user' ? msg.text : stripMarks(msg.content)
+  const excerpt = raw.replace(/\r\n/g, '\n').trim()
+  if (!excerpt) return null
+  const capped = excerpt.length > 360 ? excerpt.slice(0, 360).trimEnd() + '…' : excerpt
+  return {
+    messageId: msg.id,
+    role: msg.role,
+    author: msg.role === 'user' ? t('chat.mdYou') : msg.agent.name,
+    excerpt: capped
   }
 }
 
@@ -187,7 +181,7 @@ function contextWindow(kind: ProfileState['kind'], model: string | null): number
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, info, confirm, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
+  const { byId, profiles, info, confirm, toast, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
   const { showDebugTerminal, showGitTools } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
@@ -386,10 +380,21 @@ export function WorkbenchPage() {
   }, [thread?.id])
 
   const [composerH, setComposerH] = useState(150)
+  const [composerSeed, setComposerSeed] = useState<{ seq: number; text: string; atts: Attachment[]; quote: MessageQuote | null } | null>(null)
+  const [quoteSeed, setQuoteSeed] = useState<{ seq: number; quote: MessageQuote } | null>(null)
+  const [rewindModal, setRewindModal] = useState<{
+    threadId: string
+    message: UserMessage
+    turnsCount: number
+    plan: RewindPlan | null
+    loading: boolean
+    error: string | null
+  } | null>(null)
+
   const ref = (p: ProfileState, model: string | null): AgentRef => ({ profileId: p.id, name: p.name, kind: p.kind, model: effectiveModel(model, p) })
   const confirmExternalBusy = () => confirm({ title: t('wb.extBusyTitle'), message: t('wb.extBusyDesc'), confirmLabel: t('wb.extBusySend') })
 
-  const onSend = (text: string, attachments: Attachment[]) => {
+  const onSend = (text: string, attachments: Attachment[], quote: MessageQuote | null) => {
     if (!driverP) return
     const found = parseMentions(text, profiles)
     const seen = new Set<string>()
@@ -399,8 +404,14 @@ export function WorkbenchPage() {
     if (!id) id = newThread({ ...ctx, participants: joined, driver: { profileId: driverP.id, model: driverModel } })
     else if (joined.length !== participants.length) updateThread(id, { participants: joined })
     stick.current = true
-    return send(id, { text, attachments, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir }, confirmExternalBusy)
+    return send(id, { text, attachments, quote, driver: ref(driverP, driverModel), mentions, participants: joined, projectDir: ctx.projectDir }, confirmExternalBusy)
   }
+
+  const onQuote = useCallback((msg: UserMessage | AssistantMessage) => {
+    const q = makeQuote(msg)
+    if (!q) return
+    setQuoteSeed((prev) => ({ seq: (prev?.seq ?? 0) + 1, quote: q }))
+  }, [])
 
   // turns continued elsewhere (terminal, another app) merged into the open chat: a short notice
   const [synced, setSynced] = useState<{ n: number; seq: number } | null>(null)
@@ -432,6 +443,70 @@ export function WorkbenchPage() {
   const fc = useFileChanges(thread, ctx.projectDir, gitBusy, showGitTools && changesOpen)
   const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, gitBusy, fc.refresh)
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
+
+  const openRewind = useCallback(
+    async (msg: UserMessage) => {
+      if (!thread) return
+      if (isThreadBusy(thread) || thread.pause || (thread.queuedMessages?.length ?? 0) > 0) {
+        toast({ kind: 'warn', title: t('rewind.busy') })
+        return
+      }
+      const idx = thread.messages.findIndex((m) => m.id === msg.id)
+      if (idx < 0) return
+      const affected = thread.messages.slice(idx)
+      const turnIds = [...new Set(affected.map((m) => m.turnId).filter(Boolean))]
+      const turnsCount = Math.max(1, affected.filter((m) => m.role === 'user' && m.kind !== 'handoff').length)
+      setRewindModal({ threadId: thread.id, message: msg, turnsCount, plan: null, loading: true, error: null })
+      try {
+        const res = await window.agentswitch.chat.rewindPlan(thread.id, turnIds)
+        if (res.kind === 'ready') {
+          setRewindModal((cur) => (cur && cur.message.id === msg.id ? { ...cur, plan: res, loading: false } : cur))
+        } else {
+          const reason = res.kind === 'busy' ? t('rewind.busy') : res.reason || t('rewind.unavailable')
+          setRewindModal((cur) => (cur && cur.message.id === msg.id ? { ...cur, loading: false, error: reason } : cur))
+        }
+      } catch (e) {
+        setRewindModal((cur) => (cur && cur.message.id === msg.id ? { ...cur, loading: false, error: e instanceof Error ? e.message : String(e) } : cur))
+      }
+    },
+    [thread, toast]
+  )
+
+  const executeRewind = useCallback(
+    async (restoreFiles: boolean) => {
+      if (!rewindModal) return
+      const { threadId: tid, message } = rewindModal
+      setRewindModal((cur) => (cur ? { ...cur, loading: true, error: null } : null))
+      const res = await rewindThread(tid, message.id, restoreFiles)
+      if (res.kind !== 'ok') {
+        const errMsg =
+          res.kind === 'busy'
+            ? t('rewind.busy')
+            : res.kind === 'unavailable'
+              ? t('rewind.unavailable')
+              : res.kind === 'partial'
+                ? t('rewind.partial', { restored: res.restored, failed: res.failed })
+                : res.reason || t('rewind.failed')
+        setRewindModal((cur) => (cur ? { ...cur, loading: false, error: errMsg } : null))
+        return
+      }
+      setRewindModal(null)
+      checkpoints.refresh()
+      if (showGitTools) git.refreshAll()
+      else fc.refresh()
+      setComposerSeed((prev) => ({
+        seq: (prev?.seq ?? 0) + 1,
+        text: message.text,
+        atts: message.attachments ?? [],
+        quote: message.quote ?? null
+      }))
+      toast({
+        kind: 'success',
+        title: restoreFiles && res.restored > 0 ? t('rewind.doneWithFiles', { n: res.restored }) : t('rewind.done')
+      })
+    },
+    [rewindModal, checkpoints, showGitTools, git, fc, toast]
+  )
 
   return (
     <div className="flex h-full">
@@ -527,27 +602,54 @@ export function WorkbenchPage() {
                 </span>
               </div>
             )}
+            {thread?.archived && (
+              <div className="mb-4 flex items-center gap-2.5 rounded-xl bg-black/[0.04] px-3.5 py-2.5 text-[12.5px] text-ink-2 dark:bg-white/[0.05]">
+                <IconArchive size={14} className="shrink-0 text-ink-3" />
+                <span className="min-w-0 flex-1">{t('nav.archivedBanner')}</span>
+                <button
+                  onClick={() => unarchiveThread(thread.id)}
+                  className="shrink-0 rounded-full bg-surface px-3 py-1 text-[12px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2"
+                >
+                  {t('nav.unarchive')}
+                </button>
+              </div>
+            )}
             {messages.length === 0 ? (
               <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
             ) : (
               <div className="space-y-6">
                 <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
-                  {messages.map((m) => {
-                    if (m.role === 'user') return <UserBubble key={m.id} msg={m} />
-                    const checkpoint = checkpointReplies.get(m.id)
-                    return (
-                      <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId}>
-                        {checkpoint && thread && (
-                          <CheckpointUndo threadId={thread.id} turnId={m.turnId} status={checkpoint} busy={isThreadBusy(thread)}
-                            onChange={() => {
-                              checkpoints.refresh()
-                              if (showGitTools) git.refreshAll()
-                              else fc.refresh()
-                            }} />
-                        )}
-                      </AssistantBlock>
-                    )
-                  })}
+                  {(() => {
+                    const editableIds = new Set(thread?.messages.map((x) => x.id) ?? [])
+                    const rewindBlocked = !thread || isThreadBusy(thread) || !!thread.pause || (thread.queuedMessages?.length ?? 0) > 0
+                    return messages.map((m) => {
+                      if (m.role === 'user') {
+                        const canRewind = !!thread && editableIds.has(m.id) && m.kind !== 'handoff'
+                        return (
+                          <UserBubble
+                            key={m.id}
+                            msg={m}
+                            onQuote={m.kind !== 'handoff' && m.text.trim() ? () => onQuote(m) : undefined}
+                            onRewind={canRewind ? () => void openRewind(m) : undefined}
+                            rewindDisabled={rewindBlocked}
+                          />
+                        )
+                      }
+                      const checkpoint = checkpointReplies.get(m.id)
+                      return (
+                        <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId} onQuote={m.content.trim() ? () => onQuote(m) : undefined}>
+                          {checkpoint && thread && (
+                            <CheckpointUndo threadId={thread.id} turnId={m.turnId} status={checkpoint} busy={isThreadBusy(thread)}
+                              onChange={() => {
+                                checkpoints.refresh()
+                                if (showGitTools) git.refreshAll()
+                                else fc.refresh()
+                              }} />
+                          )}
+                        </AssistantBlock>
+                      )
+                    })
+                  })()}
                 </MarkdownBase.Provider>
               </div>
             )}
@@ -588,6 +690,8 @@ export function WorkbenchPage() {
           queue={thread?.queuedMessages?.length ? <QueuedMessages key={thread.id} thread={thread} confirmBusy={confirmExternalBusy} /> : null}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
           history={inputHistory}
+          seed={composerSeed}
+          quoteSeed={quoteSeed}
           footer={
             <ProjectBar
               dir={ctx.projectDir}
@@ -716,7 +820,98 @@ export function WorkbenchPage() {
             ? { status: git.status, disabled: git.disabled || fc.loading, busy: gitBusy, run: git.run }
             : null} />
       )}
+      {rewindModal && (
+        <RewindDialog
+          turnsCount={rewindModal.turnsCount}
+          plan={rewindModal.plan}
+          loading={rewindModal.loading}
+          error={rewindModal.error}
+          onClose={() => !rewindModal.loading && setRewindModal(null)}
+          onConfirm={(restoreFiles) => void executeRewind(restoreFiles)}
+        />
+      )}
     </div>
+  )
+}
+
+function RewindDialog({
+  turnsCount,
+  plan,
+  loading,
+  error,
+  onClose,
+  onConfirm
+}: {
+  turnsCount: number
+  plan: RewindPlan | null
+  loading: boolean
+  error: string | null
+  onClose: () => void
+  onConfirm: (restoreFiles: boolean) => void
+}) {
+  const hasRestorable = (plan?.checkpointTurnIds.length ?? 0) > 0
+  const hasUnavailable = (plan?.unavailableTurnIds.length ?? 0) > 0
+  const [restoreFiles, setRestoreFiles] = useState(true)
+  useEffect(() => {
+    if (!plan) return
+    setRestoreFiles(plan.checkpointTurnIds.length > 0 && plan.unavailableTurnIds.length === 0)
+  }, [plan])
+  const blockedRestore = restoreFiles && hasUnavailable
+
+  return (
+    <Modal onClose={onClose} width={460} escClose={!loading} closeOnCmdW={!loading}>
+      <div className="p-6" role="dialog" aria-modal="true">
+        <h2 className="text-[17px] font-semibold text-ink">{t('rewind.title')}</h2>
+        <p className="mt-2 text-[13.5px] leading-relaxed text-ink-2">{t('rewind.desc', { n: turnsCount })}</p>
+
+        {loading && !plan && !error && (
+          <div className="mt-4 flex items-center gap-2 text-[13px] text-ink-3">
+            <Spinner size={14} /> {t('rewind.checking')}
+          </div>
+        )}
+
+        {plan && (hasRestorable || hasUnavailable) && (
+          <div className="mt-4 rounded-xl border border-hairline bg-fill/60 p-3.5">
+            {hasRestorable && (
+              <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink">
+                <input
+                  type="checkbox"
+                  checked={restoreFiles}
+                  disabled={loading}
+                  onChange={(e) => setRestoreFiles(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{t('rewind.restoreFiles')}</span>
+                  <span className="mt-0.5 block text-[12px] text-ink-3">{t('rewind.fileCount', { n: plan.files.length })}</span>
+                </span>
+              </label>
+            )}
+            {hasUnavailable && (
+              <div className={`${hasRestorable ? 'mt-2.5' : ''} rounded-lg bg-warn-soft px-2.5 py-2 text-[12px] leading-relaxed text-warn`}>
+                {t('rewind.someUnavailable')}
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-[12.5px] text-danger">{error}</div>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className={btnSecondary} disabled={loading} onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+          <button
+            type="button"
+            className={btnPrimary}
+            disabled={loading || (!plan && !error) || blockedRestore}
+            onClick={() => onConfirm(hasRestorable && restoreFiles)}
+          >
+            {loading ? <Spinner size={13} /> : t('rewind.confirm')}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -855,6 +1050,12 @@ const FOLD_PX = 140
 function UserText({ msg }: { msg: UserMessage }) {
   return (
     <div className="max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
+      {msg.quote?.excerpt && (
+        <div className="mx-2.5 mt-2.5 rounded-xl border-l-2 border-white/60 bg-black/15 px-3 py-1.5 text-[12px] leading-[1.5] text-white/90">
+          <div className="font-medium text-white/80">{t('quote.from', { name: msg.quote.author })}</div>
+          <div className="mt-0.5 line-clamp-3 whitespace-pre-wrap">{msg.quote.excerpt}</div>
+        </div>
+      )}
       <CollapsibleBody threshold={FOLD_PX + 40} collapsedHeight={FOLD_PX} tone="bubble" className="overflow-clip rounded-[inherit]">
         <div className="px-4 py-2.5 whitespace-pre-wrap select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
       </CollapsibleBody>
@@ -880,7 +1081,17 @@ function CopyText({ text }: { text: string }) {
   )
 }
 
-function UserBubble({ msg }: { msg: UserMessage }) {
+function UserBubble({
+  msg,
+  onQuote,
+  onRewind,
+  rewindDisabled
+}: {
+  msg: UserMessage
+  onQuote?: () => void
+  onRewind?: () => void
+  rewindDisabled?: boolean
+}) {
   const images = msg.attachments.filter((a) => a.isImage && (a.thumb || a.path))
   const files = msg.attachments.filter((a) => !(a.isImage && (a.thumb || a.path)))
   const [viewing, setViewing] = useState<Attachment | null>(null)
@@ -909,14 +1120,14 @@ function UserBubble({ msg }: { msg: UserMessage }) {
           {msg.text}
         </div>
       ) : (
-        msg.text && <UserText msg={msg} />
+        (msg.text || msg.quote) && <UserText msg={msg} />
       )}
       {msg.note && (
         <div className="flex items-center gap-1 text-[11px] text-info">
           <IconCheck size={11} /> {msg.note}
         </div>
       )}
-      <div className="flex items-center gap-1 text-[11px] text-ink-3">
+      <div className="flex flex-wrap items-center justify-end gap-1 text-[11px] text-ink-3">
         {!msg.mentions.length && (
           <>
             {tNode('wb.sentTo', {
@@ -929,6 +1140,24 @@ function UserBubble({ msg }: { msg: UserMessage }) {
           </>
         )}
         {msg.text && <CopyText text={msg.text} />}
+        {onQuote && (
+          <button
+            onClick={onQuote}
+            className="-my-0.5 flex h-5 items-center gap-1 rounded-md px-1.5 text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]"
+          >
+            <IconQuote size={12} /> {t('quote.action')}
+          </button>
+        )}
+        {onRewind && (
+          <button
+            onClick={onRewind}
+            disabled={rewindDisabled}
+            title={rewindDisabled ? t('rewind.busy') : t('rewind.btnHint')}
+            className="-my-0.5 flex h-5 items-center gap-1 rounded-md px-1.5 text-ink-3 transition-colors enabled:hover:bg-black/[0.05] enabled:hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 dark:enabled:hover:bg-white/[0.07]"
+          >
+            <IconEdit size={11.5} /> {t('rewind.btn')}
+          </button>
+        )}
         <span title={fullTime(msg.createdAt)}>{msgTime(msg.createdAt)}</span>
       </div>
     </div>
@@ -1017,7 +1246,8 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
 const REPLY_FOLD_AT = 360
 const REPLY_FOLD_PX = 300
 
-function AssistantBlock({ msg, latest = false, children }: { msg: AssistantMessage; latest?: boolean; children?: ReactNode }) {
+function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: AssistantMessage; latest?: boolean; onQuote?: () => void; children?: ReactNode }) {
+  const usageSnap = useUsage()
   const streaming = msg.status === 'streaming'
   useTicker(streaming)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1101,14 +1331,25 @@ function AssistantBlock({ msg, latest = false, children }: { msg: AssistantMessa
           )}
         </div>
         {!streaming && (msg.content || msg.usage) && (
-          <div className="mt-1 -ml-2 flex items-center gap-2">
+          <div className="mt-1 -ml-2 flex flex-wrap items-center gap-2">
             {msg.content && (
-              <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink">
+              <button onClick={() => void copy()} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]">
                 {copied ? <IconCheck size={14} className="text-ok" /> : <IconCopy size={14} />}
                 {copied ? t('common.copied') : t('common.copy')}
               </button>
             )}
-            <UsageLine usage={msg.usage} reasonix={msg.agent.kind === 'reasonix'} ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null} />
+            {onQuote && msg.content && (
+              <button onClick={onQuote} className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]">
+                <IconQuote size={14} />
+                {t('quote.action')}
+              </button>
+            )}
+            <UsageLine
+              usage={msg.usage}
+              reasonix={msg.agent.kind === 'reasonix'}
+              costUsd={estimateMessageCost(msg.usage, msg.actualModel || msg.agent.model, usageSnap)}
+              ms={msg.startedAt && msg.endedAt ? msg.endedAt - msg.startedAt : null}
+            />
           </div>
         )}
         {children}
@@ -1402,6 +1643,8 @@ function Composer({
   queue,
   suggestion,
   history,
+  seed,
+  quoteSeed,
   footer
 }: {
   driver: ProfileState | null
@@ -1414,13 +1657,17 @@ function Composer({
   projectDir: string | null
   onHeight: (h: number) => void
   /** Resolves false when the user declined to send (the draft comes back). */
-  onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | void
+  onSend: (text: string, attachments: Attachment[], quote: MessageQuote | null) => Promise<boolean> | void
   onStop: () => void
   queue?: ReactNode
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
   /** Text-only sent history (oldest -> newest) for ↑/↓ recall. */
   history: string[]
+  /** Populates composer after a P1-1 rewind / re-edit. */
+  seed?: { seq: number; text: string; atts: Attachment[]; quote: MessageQuote | null } | null
+  /** Attaches a quoted message snippet to the composer. */
+  quoteSeed?: { seq: number; quote: MessageQuote } | null
   /** Context line under the input card (project folder). */
   footer?: ReactNode
 }) {
@@ -1431,6 +1678,7 @@ function Composer({
   const draftKey = threadId ?? NEW_DRAFT
   const [text, setText] = useState(() => composerDraft(draftKey)?.text ?? '')
   const [atts, setAtts] = useState<Attachment[]>(() => composerDraft(draftKey)?.atts ?? [])
+  const [quote, setQuote] = useState<MessageQuote | null>(() => composerDraft(draftKey)?.quote ?? null)
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
@@ -1457,24 +1705,46 @@ function Composer({
   const ta = useRef<HTMLTextAreaElement>(null)
   const mirror = useRef<HTMLDivElement>(null)
   /** Active ↑/↓ history cursor (`idx` into `history`, plus the unsent draft to restore on ↓). */
-  const histRef = useRef<{ idx: number; saved: string } | null>(null)
+  const histRef = useRef<HistoryCursor | null>(null)
   // per-conversation drafts: park the leaving chat's input, bring back the target's
-  const live = useRef({ key: draftKey, text, atts })
+  const live = useRef({ key: draftKey, text, atts, quote })
   live.current.text = text
   live.current.atts = atts
+  live.current.quote = quote
   useLayoutEffect(() => {
     const cur = live.current
     if (cur.key === draftKey) return
-    saveComposerDraft(cur.key, cur.text, cur.atts)
+    saveComposerDraft(cur.key, cur.text, cur.atts, cur.quote)
     const d = composerDraft(draftKey)
     cur.key = draftKey
     histRef.current = null
     setText(d?.text ?? '')
     setAtts(d?.atts ?? [])
+    setQuote(d?.quote ?? null)
     setMention(null)
     setSlash(null)
   }, [draftKey])
-  useEffect(() => () => saveComposerDraft(live.current.key, live.current.text, live.current.atts), [])
+  useEffect(() => () => saveComposerDraft(live.current.key, live.current.text, live.current.atts, live.current.quote), [])
+  useEffect(() => {
+    if (!seed) return
+    histRef.current = null
+    setText(seed.text)
+    setAtts(seed.atts)
+    setQuote(seed.quote)
+    setMention(null)
+    setSlash(null)
+    requestAnimationFrame(() => {
+      const el = ta.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(seed.text.length, seed.text.length)
+    })
+  }, [seed])
+  useEffect(() => {
+    if (!quoteSeed) return
+    setQuote(quoteSeed.quote)
+    requestAnimationFrame(() => ta.current?.focus())
+  }, [quoteSeed])
   // mention capsules drawn in a mirror under the (transparent-text) textarea
   const mentionSpans = useMemo(() => parseMentions(text, accounts), [text, accounts])
   const syncMirror = useCallback(() => {
@@ -1667,23 +1937,26 @@ function Composer({
       })
     const sentText = text
     const sentAtts = atts
+    const sentQuote = quote
     const trimmed = text.trim()
     if (trimmed) pushInputHistory(trimmed)
     histRef.current = null
-    const r = onSend(trimmed, atts)
+    const r = onSend(trimmed, atts, quote)
     clearComposerDraft(draftKey)
     setText('')
     setAtts([])
+    setQuote(null)
     // cancelled (e.g. the session is being written elsewhere): give the draft back if still empty
     void r?.then((ok) => {
       if (ok) return
       if (live.current.key !== draftKey) {
         const draft = composerDraft(draftKey)
-        saveComposerDraft(draftKey, draft?.text || sentText, draft?.atts.length ? draft.atts : sentAtts)
+        saveComposerDraft(draftKey, draft?.text || sentText, draft?.atts.length ? draft.atts : sentAtts, draft?.quote ?? sentQuote)
         return
       }
       setText((cur) => cur || sentText)
       setAtts((cur) => (cur.length ? cur : sentAtts))
+      setQuote((cur) => cur ?? sentQuote)
     })
   }
 
@@ -1754,13 +2027,22 @@ function Composer({
         return
       }
     }
-    // ↑/↓ input history recall (text only; preserves multiline caret movement when editing)
+    // ↑/↓ input history recall (text only; preserves multiline caret movement & never conflicts with @, / or IME)
     if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !composing && !mention && !slash && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && history.length > 0) {
       const el = e.currentTarget
-      if (el.selectionStart === el.selectionEnd) {
-        const cur = histRef.current
-        const browsingUnedited = cur !== null && cur.idx < history.length && text === history[cur.idx]
-        const setAndFocusEnd = (val: string) => {
+      const step = stepInputHistory({
+        key: e.key,
+        value: text,
+        selectionStart: el.selectionStart,
+        selectionEnd: el.selectionEnd,
+        history,
+        cursor: histRef.current
+      })
+      if (step.handled) {
+        e.preventDefault()
+        histRef.current = step.cursor
+        if (step.text !== undefined) {
+          const val = step.text
           setText(val)
           requestAnimationFrame(() => {
             const box = ta.current
@@ -1769,37 +2051,7 @@ function Composer({
             box.setSelectionRange(val.length, val.length)
           })
         }
-        if (e.key === 'ArrowUp') {
-          const onFirstLine = !el.value.slice(0, el.selectionStart).includes('\n')
-          if (browsingUnedited || onFirstLine) {
-            e.preventDefault()
-            if (cur === null) {
-              const idx = history.length - 1
-              histRef.current = { idx, saved: text }
-              setAndFocusEnd(history[idx])
-            } else if (cur.idx > 0) {
-              const idx = cur.idx - 1
-              histRef.current = { idx, saved: cur.saved }
-              setAndFocusEnd(history[idx])
-            }
-            return
-          }
-        } else if (cur !== null) {
-          const onLastLine = !el.value.slice(el.selectionEnd).includes('\n')
-          if (browsingUnedited || onLastLine) {
-            e.preventDefault()
-            if (cur.idx + 1 < history.length) {
-              const idx = cur.idx + 1
-              histRef.current = { idx, saved: cur.saved }
-              setAndFocusEnd(history[idx])
-            } else {
-              const saved = cur.saved
-              histRef.current = null
-              setAndFocusEnd(saved)
-            }
-            return
-          }
-        }
+        return
       }
     }
     if (e.key !== 'Enter' || composing) return
@@ -1914,6 +2166,24 @@ function Composer({
             void addFiles([...e.dataTransfer.files])
           }}
         >
+          {quote && (
+            <div className="mx-3.5 mt-3 flex items-start gap-2.5 rounded-xl border-l-2 border-accent bg-fill/75 px-3 py-2 text-[12px] text-ink-2">
+              <IconQuote size={13} className="mt-0.5 shrink-0 text-accent" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-ink">{t('quote.replyingTo', { name: quote.author })}</div>
+                <div className="mt-0.5 line-clamp-2 text-ink-3 whitespace-pre-wrap">{quote.excerpt}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuote(null)}
+                className="shrink-0 rounded-full p-1 text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                title={t('quote.remove')}
+                aria-label={t('quote.remove')}
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+          )}
           {atts.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-4">
               {atts.map((a) =>

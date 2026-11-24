@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/transcript'
-import { bindNativeSession, canResume, nativeSessionEntries, recordUnconfirmedSession, type NativeSessions } from './historyResume'
+import { bindNativeSession, canResume, clearActiveSessions, nativeSessionEntries, recordUnconfirmedSession, type NativeSessions } from './historyResume'
 
 const state: NativeSessions = { sessions: { a: 'session-a', b: 'session-b' }, models: { a: 'small' } }
 const reply: TranscriptEntry = {
@@ -48,5 +48,17 @@ it('records an unconfirmed session only for bookkeeping and invalidates existing
   expect(canResume(resumeFailure, 'peer', 'codex', 'small', [], false)).toBeNull()
   expect(nativeSessionEntries(resumeFailure)).toEqual([
     ['b', 'session-b'], ['a', 'session-a'], ['peer', 'session-a'], ['a', 'new-failed-session']
+  ])
+})
+
+it('unbinds all active sessions on rewind while retaining them in priorSessions for bookkeeping', () => {
+  const cleared = clearActiveSessions(state)
+  expect(cleared.sessions).toEqual({})
+  expect(cleared.models).toEqual({})
+  expect(canResume(cleared, 'a', 'codex', 'small', [], false)).toBeNull()
+  expect(canResume(cleared, 'b', 'codex', 'large', [reply], false)).toBeNull()
+  expect(nativeSessionEntries(cleared)).toEqual([
+    ['a', 'session-a'],
+    ['b', 'session-b']
   ])
 })
