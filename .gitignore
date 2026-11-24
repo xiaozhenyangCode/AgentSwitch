@@ -9,3 +9,6 @@ build/runtime/
 
 # AI agent instructions (local only)
 CLAUDE.md
+
+# Social-media launch materials (local only)
+docs/launch/
