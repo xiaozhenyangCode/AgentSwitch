@@ -1,7 +1,7 @@
 import { constants, openSync, readSync, closeSync, fstatSync, realpathSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
-import type { FileChange, FileChangePreview, FileChanges } from '@shared/types'
-import { git, gitWorktree, isInside, parseStatus } from './gitOps'
+import type { FileChange, FileChangePreview, FileChanges, GitCommitDetail, GitCommitFile, GitResult } from '@shared/types'
+import { git, gitFailure, gitWorktree, isInside, parseGitCommitFields, parseGitParents, parseStatus } from './gitOps'
 import { allowRoot } from './fileProtocol'
 
 /** Read-only `git status` + `git diff` of a project folder for the 文件修改 panel. */
@@ -47,10 +47,13 @@ function untrackedDiff(root: string, abs: string, rel: string): { diff: string; 
 
 type DiffStats = Pick<FileChangePreview, 'added' | 'removed' | 'binary' | 'diff' | 'truncated'>
 
-async function readDiff(root: string, scope: string, comparison: string[]): Promise<Map<string, DiffStats>> {
-  const args = ['diff', ...comparison, '--numstat', '-z', '-M', '--no-ext-diff', '--no-color']
-  const output = await git(root, [...args, '--patch', '--', scope])
-    .catch(() => git(root, [...args, '--', scope]).catch(() => ''))
+const diffOptions = ['-z', '-M', '--no-ext-diff', '--no-color']
+
+async function readDiff(root: string, scope: string, command: string[]): Promise<Map<string, DiffStats>> {
+  const args = [...command, '--numstat', ...diffOptions]
+  const { output, statsOnly } = await git(root, [...args, '--patch', '--', scope])
+    .then((output) => ({ output, statsOnly: false }))
+    .catch(async () => ({ output: await git(root, [...args, '--', scope]), statsOnly: true }))
   const tokens = output.split('\0')
   const stats = new Map<string, DiffStats>()
   const orderedPaths: string[] = []
@@ -68,7 +71,8 @@ async function readDiff(root: string, scope: string, comparison: string[]): Prom
       added: match[1] === '-' ? 0 : Number(match[1]),
       removed: match[2] === '-' ? 0 : Number(match[2]),
       binary: match[1] === '-',
-      diff: ''
+      diff: '',
+      ...(statsOnly && match[1] !== '-' && (match[1] !== '0' || match[2] !== '0') ? { truncated: true } : {})
     })
   }
 
@@ -110,11 +114,12 @@ export async function gitChanges(dir: unknown, split = false): Promise<FileChang
 
   // only what lies under the chosen folder (it may be a subfolder of the repo)
   const scope = relative(root, worktree.dir) || '.'
+  const readWorktreeDiff = (...comparison: string[]) => readDiff(root, scope, ['diff', ...comparison]).catch(() => new Map<string, DiffStats>())
   const [status, combined, index, workingTree] = await Promise.all([
     git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', scope]),
-    readDiff(root, scope, [base]),
-    split ? readDiff(root, scope, ['--cached']) : undefined,
-    split ? readDiff(root, scope, []) : undefined
+    readWorktreeDiff(base),
+    split ? readWorktreeDiff('--cached') : undefined,
+    split ? readWorktreeDiff() : undefined
   ])
 
   const files: FileChange[] = []
@@ -143,5 +148,54 @@ export async function gitChanges(dir: unknown, split = false): Promise<FileChang
     added: files.reduce((n, f) => n + f.added, 0),
     removed: files.reduce((n, f) => n + f.removed, 0),
     ...(total > files.length ? { more: total - files.length } : {})
+  }
+}
+
+export async function gitCommitDetail(dir: unknown, hash: unknown): Promise<GitResult<{ commit: GitCommitDetail }>> {
+  if (typeof hash !== 'string' || !/^[a-f0-9]{4,64}$/i.test(hash)) return gitFailure('Invalid Git commit hash.')
+  const worktree = await gitWorktree(dir)
+  if (!worktree) return gitFailure('This folder is not in a Git worktree.')
+  const { root } = worktree
+  try {
+    const verified = (await git(root, ['rev-parse', '--verify', '--end-of-options', `${hash}^{commit}`])).trim()
+    if (!verified.startsWith(hash.toLowerCase())) return gitFailure('Invalid Git commit hash.')
+    const output = await git(root, [
+      'show', '-s', '--no-show-signature', '--no-notes', '--no-color', '--encoding=UTF-8',
+      '--format=%H%x00%h%x00%P%x00%s%x00%an%x00%ae%x00%at%x00%b', verified, '--'
+    ])
+    const fields = output.split('\0')
+    if (fields.length !== 8) return gitFailure('Invalid Git commit metadata.')
+    const [commitHash, shortHash, parentField, subject, author, email, seconds, body] = fields
+    const commit = parseGitCommitFields(commitHash, shortHash, subject, author, seconds)
+    const parents = parseGitParents(parentField, commitHash)
+    if (!commit || commit.hash !== verified || !parents) return gitFailure('Invalid Git commit metadata.')
+
+    // For merge commits compare with the first parent. --root compares with an
+    // empty tree of the repository's object format (SHA-1 or SHA-256).
+    const comparison = parents.length ? [parents[0], verified] : ['--root', verified]
+    const command = ['diff-tree', '-r', '--no-commit-id', '--no-textconv', ...comparison]
+    const [names, stats] = await Promise.all([
+      git(root, [...command, '--name-status', ...diffOptions, '--', '.']),
+      readDiff(root, '.', command)
+    ])
+    const tokens = names.split('\0')
+    const files: GitCommitFile[] = []
+    let total = 0
+    for (let i = 0; i < tokens.length && tokens[i];) {
+      const code = tokens[i++][0]
+      const oldPath = code === 'R' || code === 'C' ? tokens[i++] : undefined
+      const path = tokens[i++]
+      if (!path) break
+      total++
+      if (files.length < MAX_FILES) {
+        files.push({ path, ...(oldPath ? { oldPath } : {}), ...preview(changeStatus(code), stats.get(path)) })
+      }
+    }
+    return {
+      ok: true,
+      commit: { ...commit, parents, body: body.replace(/\n$/, ''), email, files, ...(total > files.length ? { more: total - files.length } : {}) }
+    }
+  } catch (error) {
+    return gitFailure(error)
   }
 }

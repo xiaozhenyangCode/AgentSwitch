@@ -560,6 +560,8 @@ export const IPC = {
   gitChanges: 'git:changes',
   gitStatus: 'git:status',
   gitLog: 'git:log',
+  gitGraph: 'git:graph',
+  gitCommitDetail: 'git:commit-detail',
   gitMutate: 'git:mutate',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
@@ -899,6 +901,36 @@ export interface GitCommit {
   authoredAt: number
   /** Author time in milliseconds. */
   timestamp: number
+}
+
+export interface GitGraphRef {
+  kind: 'head' | 'branch' | 'remote' | 'tag' | 'other'
+  name: string
+}
+
+export interface GitGraphCommit extends GitCommit {
+  parents: string[]
+  refs: GitGraphRef[]
+}
+
+export interface GitGraphData {
+  commits: GitGraphCommit[]
+  headHash: string | null
+  branch: string | null
+  dirty: boolean
+  uncommittedCount: number
+  staged: number
+  unstaged: number
+}
+
+export type GitCommitFile = FileChangePreview & { path: string; oldPath?: string }
+
+export interface GitCommitDetail extends GitCommit {
+  parents: string[]
+  body: string
+  email: string
+  files: GitCommitFile[]
+  more?: number
 }
 
 export type GitMutation =

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { lstat, realpath, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { GitBranch, GitCommit, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
+import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
 import { classifyGitError } from '@shared/gitErrors'
 import { getBaseEnv } from './shellEnv'
 
@@ -127,7 +127,7 @@ async function listRemotes(root: string): Promise<string[]> {
 class InvalidBranch extends Error {}
 class AgentBusy extends Error {}
 
-function failure(error: unknown): Extract<GitResult, { ok: false }> {
+export function gitFailure(error: unknown): Extract<GitResult, { ok: false }> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 4_000)
   const code = error instanceof InvalidBranch ? 'invalidBranch'
     : error instanceof AgentBusy ? 'busy' : classifyGitError(message)
@@ -160,35 +160,55 @@ export async function gitStatus(dir: unknown): Promise<GitResult<GitStatus>> {
       unstaged: files.filter((file) => file.unstaged).length, atRoot: root === worktree.dir, branches
     }
   } catch (error) {
-    return failure(error)
+    return gitFailure(error)
   }
+}
+
+const fullHash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
+const logOptions = ['--no-show-signature', '--no-notes', '--no-color', '--encoding=UTF-8']
+
+function logRecords(output: string): string[] {
+  // Git terminates each formatted record with a newline. Splitting at the record
+  // boundary preserves line breaks and inline record separators in commit text.
+  return output.split(/(?:^|\r?\n)\x1e/).slice(1)
+}
+
+export function parseGitCommitFields(hash: string, shortHash: string, subject: string, author: string, seconds: string): GitCommit | null {
+  if (!fullHash.test(hash) ||
+    !/^[a-f0-9]{4,}$/.test(shortHash) || !hash.startsWith(shortHash) || !/^\d+$/.test(seconds)) return null
+  const timestamp = Number(seconds) * 1000
+  if (timestamp > 8.64e15) return null
+  return { sha: shortHash, shortHash, hash, subject, author, authoredAt: timestamp, timestamp }
+}
+
+export function parseGitParents(value: string, hash: string): string[] | null {
+  const parents = value ? value.split(' ') : []
+  return parents.every((parent) => parent.length === hash.length && fullHash.test(parent)) ? parents : null
 }
 
 export function parseGitLog(output: string): GitCommit[] {
   const commits: GitCommit[] = []
-  // Git terminates each formatted record with a newline. Splitting at the record
-  // boundary preserves line breaks and inline record separators in commit text.
-  for (const record of output.split(/(?:^|\r?\n)\x1e/).slice(1)) {
+  for (const record of logRecords(output)) {
     const fields = record.trimEnd().split('\x1f')
     if (fields.length !== 5 || record.includes('\0')) continue
     const [hash, shortHash, subject, author, seconds] = fields
-    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash) ||
-      !/^[a-f0-9]{4,}$/.test(shortHash) || !hash.startsWith(shortHash) || !/^\d+$/.test(seconds)) continue
-    const timestamp = Number(seconds) * 1000
-    if (timestamp > 8.64e15) continue
-    commits.push({ sha: shortHash, shortHash, hash, subject, author, authoredAt: timestamp, timestamp })
+    const commit = parseGitCommitFields(hash, shortHash, subject, author, seconds)
+    if (commit) commits.push(commit)
   }
   return commits
 }
 
+function readLimit(value: unknown, fallback: number, max: number): string {
+  return String(typeof value === 'number' && Number.isSafeInteger(value) ? Math.max(1, Math.min(max, value)) : fallback)
+}
+
 export async function gitLog(dir: unknown, limit?: unknown): Promise<GitResult<{ commits: GitCommit[] }>> {
   const worktree = await gitWorktree(dir)
-  if (!worktree) return failure('This folder is not in a Git worktree.')
+  if (!worktree) return gitFailure('This folder is not in a Git worktree.')
   const { root } = worktree
-  const count = typeof limit === 'number' && Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, limit)) : 20
   try {
     const output = await git(root, [
-      'log', '-n', String(count), '--no-show-signature', '--no-notes', '--no-color', '--encoding=UTF-8',
+      'log', '-n', readLimit(limit, 20, 100), ...logOptions,
       '--format=%x1e%H%x1f%h%x1f%s%x1f%an%x1f%at', '--'
     ])
     return { ok: true, commits: parseGitLog(output) }
@@ -197,7 +217,69 @@ export async function gitLog(dir: unknown, limit?: unknown): Promise<GitResult<{
     if (error instanceof Error && /^fatal: your current branch '.+' does not have any commits yet$/.test(error.message)) {
       return { ok: true, commits: [] }
     }
-    return failure(error)
+    return gitFailure(error)
+  }
+}
+
+function parseGraphRefs(value: string): GitGraphRef[] {
+  const refs: GitGraphRef[] = []
+  for (const decoration of value.split(', ')) {
+    let ref = decoration
+    if (ref === 'HEAD' || ref.startsWith('HEAD -> ')) {
+      refs.push({ kind: 'head', name: 'HEAD' })
+      if (ref === 'HEAD') continue
+      ref = ref.slice('HEAD -> '.length)
+    }
+    if (ref.startsWith('tag: refs/tags/')) refs.push({ kind: 'tag', name: ref.slice('tag: refs/tags/'.length) })
+    else if (ref.startsWith('refs/heads/')) refs.push({ kind: 'branch', name: ref.slice('refs/heads/'.length) })
+    else if (ref.startsWith('refs/remotes/')) refs.push({ kind: 'remote', name: ref.slice('refs/remotes/'.length) })
+    else if (ref.startsWith('refs/')) refs.push({ kind: 'other', name: ref.slice('refs/'.length) })
+  }
+  return refs
+}
+
+export function parseGitGraph(output: string): GitGraphCommit[] {
+  const commits: GitGraphCommit[] = []
+  for (const record of logRecords(output)) {
+    const fields = record.trimEnd().split('\x1f')
+    if (fields.length !== 7 || record.includes('\0')) continue
+    const [hash, shortHash, parentField, decorations, subject, author, seconds] = fields
+    const commit = parseGitCommitFields(hash, shortHash, subject, author, seconds)
+    const parents = parseGitParents(parentField, hash)
+    if (commit && parents) commits.push({ ...commit, parents, refs: parseGraphRefs(decorations) })
+  }
+  return commits
+}
+
+export async function gitGraph(dir: unknown, limit?: unknown): Promise<GitResult<GitGraphData>> {
+  const worktree = await gitWorktree(dir)
+  if (!worktree) return gitFailure('This folder is not in a Git worktree.')
+  const { root } = worktree
+  const count = readLimit(limit, 200, 500)
+  const format = [...logOptions, '--decorate=full', '--format=%x1e%H%x1f%h%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at']
+  try {
+    const [output, branch, head, status] = await Promise.all([
+      git(root, ['log', '--all', '--parents', '--topo-order', '-n', count, ...format, '--']),
+      currentBranch(root),
+      git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).then((hash) => hash.trim(), () => null),
+      git(root, porcelain)
+    ])
+    const commits = parseGitGraph(output)
+    // Keep the checked-out commit in the bounded graph even when it is older
+    // than the history window, so working changes can still connect to HEAD.
+    if (head && !commits.some((commit) => commit.hash === head)) {
+      const [tip] = parseGitGraph(await git(root, ['log', '-n', '1', ...format, head, '--']))
+      if (tip) commits.splice(Number(count) - 1, 1, tip)
+    }
+    const files = parseStatus(status)
+    return {
+      ok: true, commits, headHash: head, branch, dirty: files.length > 0,
+      uncommittedCount: files.length,
+      staged: files.filter((file) => file.staged).length,
+      unstaged: files.filter((file) => file.unstaged).length
+    }
+  } catch (error) {
+    return gitFailure(error)
   }
 }
 
@@ -328,9 +410,9 @@ function isMutation(value: unknown): value is GitMutation {
 const writes = new Map<string, Promise<GitMutationResult>>()
 
 export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: string) => Promise<boolean>, busyMessage?: string): Promise<GitMutationResult> {
-  if (!isMutation(op)) return failure('Invalid Git operation.')
+  if (!isMutation(op)) return gitFailure('Invalid Git operation.')
   const worktree = await gitWorktree(dir)
-  if (!worktree) return failure('This folder is not in a Git worktree.')
+  if (!worktree) return gitFailure('This folder is not in a Git worktree.')
   const { root } = worktree
   const next = (writes.get(root) ?? Promise.resolve()).then(async (): Promise<GitMutationResult> => {
     try {
@@ -387,7 +469,7 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
       }
       return { ok: true }
     } catch (error) {
-      return failure(error)
+      return gitFailure(error)
     }
   })
   writes.set(root, next)

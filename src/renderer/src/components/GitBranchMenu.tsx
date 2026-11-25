@@ -28,7 +28,7 @@ const syncActions = [
 type View = 'branches' | 'commits'
 type CommitLog = { kind: 'loading' } | { kind: 'ready'; commits: GitCommit[] } | { kind: 'error'; detail: string }
 
-export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onViewChanges }: {
+export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onViewChanges, onViewHistory }: {
   dir: string
   status: Extract<GitStatus, { repo: true }>
   disabled: boolean
@@ -36,6 +36,7 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
   pending: GitMutation['kind'] | null
   run: RunGit
   onViewChanges: () => void
+  onViewHistory: () => void
 }) {
   const { toast } = useApp()
   const [open, setOpen] = useState(false)
@@ -294,6 +295,7 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
           </div>
           {busy && <p className="px-2.5 py-1 text-[11px] text-ink-3">{t('git.agentBusy')}</p>}
           <button className={item} onClick={() => { close(); onViewChanges() }}>{t('git.viewChanges')}</button>
+          <button className={item} onClick={() => { close(); onViewHistory() }}>{t('git.viewHistory')}</button>
         </div>
       )}
     </div>

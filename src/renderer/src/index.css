@@ -4,6 +4,18 @@
 /* dark: variant follows the .dark class (manual switch), not only the OS media query */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* The library sizes its topology column by lane count. Keep the metadata column
+   flexible and allow a busy graph's lanes to scroll inside the panel. */
+.commit-graph > :first-child {
+  max-width: 38%;
+  overflow-x: auto;
+}
+
+.commit-graph > :last-child {
+  min-width: 0;
+  flex: 1;
+}
+
 /*
  * Design tokens. Every color lives in a CSS variable; `.dark` on <html> (set from the saved
  * appearance / macOS, see state/theme.ts) swaps them for the macOS dark palette.

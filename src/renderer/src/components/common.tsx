@@ -80,6 +80,7 @@ export function Segmented<T extends string>({
       {options.map((o) => (
         <button
           key={o.value}
+          aria-pressed={value === o.value}
           title={o.title}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => onChange(o.value)}

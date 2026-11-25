@@ -6,8 +6,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { classifyGitError } from '@shared/gitErrors'
-import { gitChanges } from './gitChanges'
-import { gitLog, gitMutate, gitStatus, parseGitLog } from './gitOps'
+import { gitChanges, gitCommitDetail } from './gitChanges'
+import { gitGraph, gitLog, gitMutate, gitStatus, parseGitGraph, parseGitLog } from './gitOps'
 
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 
@@ -72,6 +72,31 @@ describe('Git log parsing', () => {
     ].map(record).join('')
 
     expect(parseGitLog(valid + malformed + valid).map((commit) => commit.subject)).toEqual(['Valid', 'Valid'])
+  })
+})
+
+describe('Git graph parsing', () => {
+  it('preserves parents, all decoration kinds, and multiline commit text', () => {
+    const hashes = ['1', '2', '3'].map((digit) => digit.repeat(40))
+    const subject = '修复 “分支”\t[#42]\nMerge the second line'
+    const row = (hash: string, parents: string[], refs: string, summary: string) =>
+      '\x1e' + [hash, hash.slice(0, 7), parents.join(' '), refs, summary, 'José', '1700000000'].join('\x1f') + '\n'
+    const output = row(hashes[0], hashes.slice(1), 'HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1.0, refs/stash', subject) +
+      '\x1etruncated\n' + row(hashes[1], [hashes[2]], 'refs/heads/feature,topic', 'Feature') +
+      row(hashes[2], [], '', 'Root')
+    const commits = parseGitGraph(output)
+
+    expect(commits).toHaveLength(3)
+    expect(commits[0]).toMatchObject({
+      hash: hashes[0], shortHash: '1111111', parents: hashes.slice(1), subject, author: 'José', timestamp: 1700000000000,
+      refs: [
+        { kind: 'head', name: 'HEAD' }, { kind: 'branch', name: 'main' },
+        { kind: 'remote', name: 'origin/main' }, { kind: 'tag', name: 'v1.0' }, { kind: 'other', name: 'stash' }
+      ]
+    })
+    expect(commits[1]).toMatchObject({ parents: [hashes[2]], refs: [{ kind: 'branch', name: 'feature,topic' }] })
+    expect(commits[2]).toMatchObject({ parents: [], refs: [] })
+    expect(parseGitGraph('')).toEqual([])
   })
 })
 
@@ -212,6 +237,87 @@ describe('Git workbench operations', () => {
   it('reports Git log errors for a HEAD pointing to a missing object', async () => {
     await writeFile(join(repo, '.git', 'refs', 'heads', 'main'), '1'.repeat(40) + '\n')
     expect(await gitLog(repo)).toMatchObject({ ok: false, error: expect.any(String) })
+  })
+
+  it('loads the graph for a branch, an unreferenced detached HEAD, and an unborn branch', async () => {
+    await git(repo, 'tag', '-a', 'v1', '-m', 'Release')
+    await git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    const main = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitGraph(repo)).toMatchObject({
+      ok: true, headHash: main, branch: 'main', dirty: false, uncommittedCount: 0,
+      commits: [{ hash: main, parents: [], refs: expect.arrayContaining([
+        { kind: 'head', name: 'HEAD' }, { kind: 'branch', name: 'main' },
+        { kind: 'remote', name: 'origin/main' }, { kind: 'tag', name: 'v1' }
+      ]) }]
+    })
+    await git(repo, 'switch', '--detach', 'HEAD')
+    await addCommit(repo, 'detached.txt', 'Detached\n', 'Detached commit')
+    const detached = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitGraph(repo, 1)).toMatchObject({
+      ok: true, headHash: detached, branch: null, commits: [{ hash: detached, parents: [main], refs: [{ kind: 'head', name: 'HEAD' }] }]
+    })
+    await git(repo, 'branch', 'newer', detached)
+    await git(repo, 'switch', '--detach', main)
+    expect(await gitGraph(repo, 1)).toMatchObject({ ok: true, headHash: main, branch: null, commits: [{ hash: main }] })
+
+    const unborn = join(temp, 'unborn-graph')
+    await initRepository(unborn)
+    await writeFile(join(unborn, 'both.txt'), 'stage me\n')
+    await git(unborn, 'add', 'both.txt')
+    await writeFile(join(unborn, 'both.txt'), 'unstaged edit\n')
+    await writeFile(join(unborn, 'untracked.txt'), 'new\n')
+    expect(await gitGraph(unborn)).toEqual({
+      ok: true, commits: [], headHash: null, branch: 'main', dirty: true, uncommittedCount: 2, staged: 1, unstaged: 2
+    })
+    expect(await gitGraph(temp)).toMatchObject({ ok: false, error: expect.any(String) })
+  })
+
+  it('returns a root diff, a first-parent merge diff and normal rename/binary changes', async () => {
+    const root = await git(repo, 'rev-parse', 'HEAD')
+    const shortHash = await git(repo, 'rev-parse', '--short', root)
+    expect(await gitCommitDetail(repo, shortHash)).toMatchObject({
+      ok: true, commit: { hash: root, shortHash, parents: [], body: '', email: 'git-gui@example.invalid',
+        files: [{ path: 'tracked.txt', status: 'A', added: 1, removed: 0, diff: expect.stringContaining('+initial') }] }
+    })
+
+    await git(repo, 'switch', '-c', 'feature')
+    const renamed = 'new name\t有\n换行.txt'
+    await git(repo, 'mv', 'tracked.txt', renamed)
+    await writeFile(join(repo, 'binary.bin'), Buffer.from([0, 1, 2]))
+    await git(repo, 'add', 'binary.bin')
+    await git(repo, 'commit', '-m', 'Rename and add binary\n\nBody with 中文\nand a second line')
+    const feature = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitCommitDetail(repo, feature)).toMatchObject({
+      ok: true, commit: { hash: feature, parents: [root], subject: 'Rename and add binary', body: 'Body with 中文\nand a second line\n',
+        files: expect.arrayContaining([
+          expect.objectContaining({ path: renamed, oldPath: 'tracked.txt', status: 'R', added: 0, removed: 0 }),
+          expect.objectContaining({ path: 'binary.bin', status: 'A', binary: true })
+        ]) }
+    })
+
+    await git(repo, 'switch', 'main')
+    await addCommit(repo, 'main.txt', 'main\n', 'Main work')
+    const main = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'merge', '--no-ff', '-m', 'Merge feature', 'feature')
+    const merge = await git(repo, 'rev-parse', 'HEAD')
+    const detail = await gitCommitDetail(repo, merge)
+    if (!detail.ok) throw new Error(detail.error)
+    expect(detail.commit.parents).toEqual([main, feature])
+    expect(detail.commit.files.map((file) => file.path).sort()).toEqual(['binary.bin', renamed].sort())
+    expect(await gitGraph(repo)).toMatchObject({
+      ok: true, headHash: merge, commits: expect.arrayContaining([expect.objectContaining({ hash: merge, parents: [main, feature] })])
+    })
+  })
+
+  it('rejects invalid, missing and non-commit hashes in commit detail', async () => {
+    const blob = await git(repo, 'rev-parse', 'HEAD:tracked.txt')
+    const head = await git(repo, 'rev-parse', 'HEAD')
+    const hexRef = head.startsWith('fab0') ? 'fea0' : 'fab0'
+    await git(repo, 'branch', hexRef)
+    for (const hash of [null, 'HEAD', '--all', '123', 'a'.repeat(65), '1000', blob, hexRef]) {
+      expect(await gitCommitDetail(repo, hash)).toMatchObject({ ok: false })
+    }
+    expect(await gitCommitDetail(temp, 'abcd')).toMatchObject({ ok: false })
   })
 
   it('keeps the legacy diff and separates staged, working tree and untracked previews', async () => {

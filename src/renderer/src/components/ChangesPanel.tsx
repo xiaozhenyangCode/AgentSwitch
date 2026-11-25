@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { FileChange, FileChanges, GitCommit, GitStatus } from '@shared/types'
+import type { FileChange, FileChanges, GitCommit, GitCommitFile, GitStatus } from '@shared/types'
 import type { Thread } from '../state/chat'
 import { fmtAgo, t } from '../state/i18n'
 import { useApp } from '../state/AppContext'
 import type { RunGit } from '../state/useProjectGit'
 import { gitBranchLabel, gitInput } from './GitBranchMenu'
+import { GitGraphView } from './GitGraphView'
+import { Segmented } from './common'
 import { DiffView } from './Process'
 import { IconChevronDown, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
 
@@ -122,12 +124,16 @@ const WIDTH_KEY = 'agentswitch.changesWidth'
 const MIN_W = 300
 const MAX_W = 760
 
+export type ChangesTab = 'changes' | 'history'
+
 export function ChangesPanel({
   changes,
   loading,
   dir,
   onRefresh,
   onClose,
+  tab,
+  onTabChange,
   gitTools
 }: {
   changes: FileChanges | null
@@ -135,6 +141,8 @@ export function ChangesPanel({
   dir: string | null
   onRefresh: () => void
   onClose: () => void
+  tab: ChangesTab
+  onTabChange: (tab: ChangesTab) => void
   gitTools: {
     status: Extract<GitStatus, { repo: true }>
     disabled: boolean
@@ -177,6 +185,8 @@ export function ChangesPanel({
   }
 
   const files = changes?.files ?? []
+  const canShowHistory = !!dir && (!!gitTools || !!changes?.repo)
+  const historyDir = tab === 'history' && canShowHistory ? dir : null
   return (
     <aside className="relative flex h-full shrink-0 flex-col border-l border-hairline bg-surface/60" style={{ width }}>
       <div
@@ -190,50 +200,64 @@ export function ChangesPanel({
       />
       <div className="drag flex h-14 shrink-0 items-center gap-2 border-b border-hairline px-4">
         <span className="text-[14px] font-semibold text-ink">{t('chg.title')}</span>
-        {files.length > 0 && (
+        {!historyDir && files.length > 0 && (
           <span className="text-[12px] text-ink-3">
             {t('chg.nFiles', { n: files.length + (changes?.more ?? 0) })} · <Counts added={changes!.added} removed={changes!.removed} />
           </span>
         )}
         <div className="flex-1" />
-        {changes && !changes.repo && files.length > 0 && <span className="text-[11px] text-ink-3">{t('chg.fromChat')}</span>}
-        <button
+        {!historyDir && changes && !changes.repo && files.length > 0 && <span className="text-[11px] text-ink-3">{t('chg.fromChat')}</span>}
+        {!historyDir && <button
           className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink"
           onClick={onRefresh}
           disabled={!dir}
           title={t('common.refresh')}
         >
           {loading ? <Spinner size={13} /> : <IconRefresh size={14} />}
-        </button>
+        </button>}
         <button className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink" onClick={onClose} title={t('common.close')}>
           <IconX size={14} />
         </button>
       </div>
 
-      {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        {!dir ? (
-          <Empty text={t('chg.noProject')} />
-        ) : changes === null ? (
-          <div className="flex justify-center py-10 text-ink-3">
-            <Spinner size={16} />
-          </div>
-        ) : tools?.status.dirty ? (
-          <>
-            {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
-            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
-              count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
-            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
-              count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
-          </>
-        ) : files.length === 0 ? (
-          <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
-        ) : (
-          files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} />)
-        )}
-        {!!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
+      {canShowHistory && (
+        <div className="shrink-0 border-b border-hairline px-3 py-1.5">
+          <Segmented size="sm" value={historyDir ? 'history' : 'changes'} onChange={onTabChange} options={[
+            { value: 'changes', label: t('git.changesTab') },
+            { value: 'history', label: t('git.historyTab') }
+          ]} />
+        </div>
+      )}
+      {historyDir && (
+        <GitGraphView key={historyDir} dir={historyDir} renderFile={(file) => <FileRow key={file.path} f={file} />}
+          onViewChanges={() => { onTabChange('changes'); onRefresh() }} />
+      )}
+      <div className={historyDir ? 'hidden' : 'contents'}>
+        {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {!dir ? (
+            <Empty text={t('chg.noProject')} />
+          ) : changes === null ? (
+            <div className="flex justify-center py-10 text-ink-3">
+              <Spinner size={16} />
+            </div>
+          ) : tools?.status.dirty ? (
+            <>
+              {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
+              <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
+                count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
+              <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
+                count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
+            </>
+          ) : files.length === 0 ? (
+            <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
+          ) : (
+            files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} />)
+          )}
+          {!!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
+        </div>
+        {!historyDir && tools && dir && <CommitHistory key={dir + ':history'} dir={dir} git={tools.status} />}
       </div>
-      {tools && dir && <CommitHistory key={dir + ':history'} dir={dir} git={tools.status} />}
     </aside>
   )
 }
@@ -296,16 +320,18 @@ function ChangeGroup({ name, files, count, disabled, busy, run, onDiscard }: {
   )
 }
 
-function FileRow({ f, children }: { f: FileChange; children?: ReactNode }) {
+function FileRow({ f, children }: { f: FileChange | GitCommitFile; children?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const slash = f.path.lastIndexOf('/')
   const name = f.path.slice(slash + 1)
   const parent = slash >= 0 ? f.path.slice(0, slash) : ''
-  const exists = f.status !== 'D'
+  const openablePath = 'abs' in f && f.status !== 'D' ? f.abs : null
+  const showActions = !!children || !!openablePath
+  const pathTitle = 'oldPath' in f && f.oldPath ? `${f.oldPath} → ${f.path}` : f.path
   return (
     <div className="min-w-0 rounded-lg">
       <div className="group flex h-8 min-w-0 items-center gap-1 rounded-lg px-2 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]">
-        <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => setOpen(!open)} aria-expanded={open} title={f.path}>
+        <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => setOpen(!open)} aria-expanded={open} title={pathTitle}>
           <IconChevronDown size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? '' : '-rotate-90'}`} />
           <span className={`grid h-[18px] w-[18px] shrink-0 place-items-center rounded font-mono text-[10.5px] font-semibold ${STATUS_CLS[f.status]}`}
             title={t(`chg.st.${f.status}`)}>{f.status}</span>
@@ -315,18 +341,18 @@ function FileRow({ f, children }: { f: FileChange; children?: ReactNode }) {
           </span>
         </button>
         <div className="relative flex shrink-0 items-center">
-          <span className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 group-hover:pointer-events-auto group-hover:static group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:static group-focus-within:opacity-100">
+          {showActions && <span className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 group-hover:pointer-events-auto group-hover:static group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:static group-focus-within:opacity-100">
             {children}
-            {exists && (
+            {openablePath && (
               <>
-                <button className={rowAction} onClick={() => void window.agentswitch.sys.showInFolder(f.abs)}
+                <button className={rowAction} onClick={() => void window.agentswitch.sys.showInFolder(openablePath)}
                   title={t('common.showInFinder')} aria-label={t('common.showInFinder')}><IconFolder size={13} /></button>
-                <button className={rowAction} onClick={() => void window.agentswitch.sys.openPath(f.abs).catch(() => {})}
+                <button className={rowAction} onClick={() => void window.agentswitch.sys.openPath(openablePath).catch(() => {})}
                   title={t('att.open')} aria-label={t('att.open')}><IconExternal size={13} /></button>
               </>
             )}
-          </span>
-          <Counts added={f.added} removed={f.removed} className="text-[11.5px] group-hover:hidden group-focus-within:hidden" />
+          </span>}
+          <Counts added={f.added} removed={f.removed} className={`text-[11.5px] ${showActions ? 'group-hover:hidden group-focus-within:hidden' : ''}`} />
         </div>
       </div>
       {open && (
@@ -336,7 +362,7 @@ function FileRow({ f, children }: { f: FileChange; children?: ReactNode }) {
           ) : f.diff ? (
             <DiffView diff={f.diff} />
           ) : (
-            <div className="px-2 py-1.5 text-[12px] text-ink-3">{t('chg.noDiff')}</div>
+            <div className="px-2 py-1.5 text-[12px] text-ink-3">{t(f.truncated ? 'git.diffTooLarge' : 'chg.noDiff')}</div>
           )}
         </div>
       )}
