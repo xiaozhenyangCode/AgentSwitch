@@ -363,6 +363,8 @@ export const zhTW: Dict = {
   'wb.placeholder': '給 {name} 發訊息，輸入 @ 協同模型，/ 呼叫技能',
   'wb.placeholderNone': '先在「模型引擎」新增一個帳號',
   'wb.attachHint': '新增圖片或檔案（也可以拖入或貼上）',
+  'wb.expandComposer': '展開編輯器',
+  'wb.collapseComposer': '收合編輯器',
   'wb.sendHint': '傳送（{key}）',
 
   // ---- models / effort

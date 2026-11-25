@@ -365,6 +365,8 @@ export const zhCN = {
   'wb.placeholder': '给 {name} 发消息，输入 @ 协同模型，/ 调用技能',
   'wb.placeholderNone': '先在「模型引擎」添加一个账号',
   'wb.attachHint': '添加图片或文件（也可以拖入或粘贴）',
+  'wb.expandComposer': '展开编辑器',
+  'wb.collapseComposer': '收起编辑器',
   'wb.sendHint': '发送（{key}）',
 
   // ---- models / effort

@@ -353,6 +353,8 @@ export const ja: Dict = {
   'wb.placeholder': '{name} にメッセージ。@ でモデルを招待、/ でスキルを呼び出し',
   'wb.placeholderNone': '先に「モデルエンジン」でアカウントを追加してください',
   'wb.attachHint': '画像やファイルを追加（ドラッグやペーストも可）',
+  'wb.expandComposer': 'エディターを拡大',
+  'wb.collapseComposer': 'エディターを縮小',
   'wb.sendHint': '送信（{key}）',
 
   'model.followClaude': 'Claude Code のデフォルトに従う',

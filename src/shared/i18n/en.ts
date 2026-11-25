@@ -353,6 +353,8 @@ export const en: Dict = {
   'wb.placeholder': 'Message {name}. Type @ to bring in models, / for skills',
   'wb.placeholderNone': 'Add an account in Model Engines first',
   'wb.attachHint': 'Add images or files (you can also drag or paste them)',
+  'wb.expandComposer': 'Expand editor',
+  'wb.collapseComposer': 'Collapse editor',
   'wb.sendHint': 'Send ({key})',
 
   'model.followClaude': 'Follows Claude Code’s default',

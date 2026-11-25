@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
@@ -23,6 +23,8 @@ import { GitBranchMenu } from '../components/GitBranchMenu'
 import { useProjectGit } from '../state/useProjectGit'
 import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
+import { escLayers, useEscape } from '../lib/escStack'
+import { COMPOSER_MAX_HEIGHT, composerEscapeAction, nextComposerExpanded, showComposerExpand } from '../lib/composerExpand'
 import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
@@ -37,7 +39,7 @@ import {
 } from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
-import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconMaximize, IconMinimize, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
@@ -1521,6 +1523,7 @@ function DriverPicker({ driver, onPick }: { driver: ProfileState | null; onPick:
   const accounts = useSortedAccounts()
   const [open, setOpen] = useState(false)
   const ref = useOutside<HTMLDivElement>(open, () => setOpen(false))
+  useEscape(() => setOpen(false), open)
   return (
     <div ref={ref} className="relative">
       <button
@@ -1582,6 +1585,7 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
   const [custom, setCustom] = useState('')
   const [more, setMore] = useState(false)
   const ref = useOutside<HTMLDivElement>(open, () => setOpen(false))
+  useEscape(() => setOpen(false), open)
   const { list, loading, refresh } = useModels(account.id)
   const eff = effectiveModel(model, account)
   const cur = resolveSpec(eff, account.id)
@@ -1862,6 +1866,8 @@ function Composer({
   const [text, setText] = useState(() => composerDraft(draftKey)?.text ?? '')
   const [atts, setAtts] = useState<Attachment[]>(() => composerDraft(draftKey)?.atts ?? [])
   const [quote, setQuote] = useState<MessageQuote | null>(() => composerDraft(draftKey)?.quote ?? null)
+  const [expanded, changeExpansion] = useReducer(nextComposerExpanded, false)
+  const [compactMetrics, setCompactMetrics] = useState({ scrollHeight: 46, padding: 24, lineHeight: 22 })
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
@@ -1889,6 +1895,9 @@ function Composer({
   }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
   const mirror = useRef<HTMLDivElement>(null)
+  const editor = useRef<HTMLDivElement>(null)
+  const composingRef = useRef(false)
+  const dismissed = useRef<{ value: string; caret: number } | null>(null)
   /** Active ↑/↓ history cursor (`idx` into `history`, plus the unsent draft to restore on ↓). */
   const histRef = useRef<HistoryCursor | null>(null)
   // per-conversation drafts: park the leaving chat's input, bring back the target's
@@ -1908,6 +1917,9 @@ function Composer({
     setQuote(d?.quote ?? null)
     setMention(null)
     setSlash(null)
+    setExtOpen(false)
+    dismissed.current = null
+    changeExpansion('thread')
   }, [draftKey])
   useEffect(() => () => saveComposerDraft(live.current.key, live.current.text, live.current.atts, live.current.quote), [])
   useEffect(() => {
@@ -1940,6 +1952,10 @@ function Composer({
     m.scrollTop = el.scrollTop
   }, [])
   const ghost = !!suggestion && !text && !atts.length && !mention && !slash
+  const compactHeight = Math.min(compactMetrics.scrollHeight, COMPOSER_MAX_HEIGHT)
+  const showExpand = showComposerExpand({ ...compactMetrics, expanded, hasText: !!text, clientHeight: compactHeight })
+  const editorPadding = ghost ? (showExpand ? 'pr-24' : 'pr-16') : showExpand ? 'pr-14' : 'pr-5'
+  const editorText = `pt-4 pb-3 pl-5 text-[15px] leading-[22px] break-words whitespace-pre-wrap ${editorPadding}`
   useEffect(() => {
     if (!ghost || extOpen) return
     const onWinKey = (e: KeyboardEvent) => {
@@ -1963,21 +1979,55 @@ function Composer({
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
 
+  const measureCompact = useCallback(() => {
+    const el = ta.current
+    if (!el || expanded) return
+    const scroll = el.scrollTop
+    // Read the natural height at the full text width before any scrollbar takes space.
+    el.style.height = '0px'
+    el.style.overflowY = 'hidden'
+    const scrollHeight = el.scrollHeight
+    const style = getComputedStyle(el)
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+    const lineHeight = parseFloat(style.lineHeight)
+    el.style.height = ''
+    el.style.overflowY = ''
+    el.scrollTop = scroll
+    setCompactMetrics({ scrollHeight, padding, lineHeight })
+    syncMirror()
+  }, [expanded, syncMirror])
+
+  useLayoutEffect(() => {
+    measureCompact()
+  }, [text, suggestion, editorPadding, measureCompact])
+
   useLayoutEffect(() => {
     const el = ta.current
     if (!el) return
-    el.style.height = '0px'
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    let width = el.offsetWidth
+    const ro = new ResizeObserver(() => {
+      if (el.offsetWidth !== width) {
+        width = el.offsetWidth
+        measureCompact()
+      }
+      syncMirror()
+    })
+    ro.observe(el)
     syncMirror()
-  }, [text, syncMirror])
+    return () => ro.disconnect()
+  }, [measureCompact, syncMirror])
 
   useEffect(() => {
     const el = wrap.current
-    if (!el) return
-    const ro = new ResizeObserver(() => onHeight(el.offsetHeight))
+    const area = editor.current
+    if (!el || !area || expanded) return
+    // Conversation spacing follows the compact slot, including while the overlay animates closed.
+    const report = () => onHeight(el.offsetHeight - area.offsetHeight + compactHeight)
+    report()
+    const ro = new ResizeObserver(report)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [onHeight])
+  }, [compactHeight, expanded, onHeight])
 
   useEffect(() => {
     ta.current?.focus()
@@ -2045,8 +2095,38 @@ function Composer({
     const start = caret - m[1].length - 1
     setMention((cur) => (cur && cur.start === start && cur.query === m[1] ? cur : { start, query: m[1], index: 0, sub: null, subIndex: 0 }))
   }
-  const composingRef = useRef(false)
-  const dismissed = useRef<{ value: string; caret: number } | null>(null)
+  useEffect(() => {
+    if (!expanded && !mention && !slash && !ghost) return
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const el = ta.current
+      if (!el || (!expanded && event.target !== el)) return
+      if (event.target instanceof Element && event.target.closest('.xterm')) return
+      const action = composerEscapeAction({
+        expanded, composing: composingRef.current || event.isComposing || event.keyCode === 229,
+        higherLayer: escLayers() > 0, extensionsOpen: extOpen, mention: !!mention, slash: !!slash, ghost
+      })
+      if (!action) return
+      event.preventDefault()
+      if (action === 'mention' || action === 'slash') {
+        dismissed.current = { value: el.value, caret: el.selectionStart }
+        if (action === 'mention') setMention(null)
+        else setSlash(null)
+      } else if (action === 'ghost') {
+        if (threadId) clearSuggestion(threadId)
+      } else {
+        changeExpansion('escape')
+        el.focus({ preventScroll: true })
+      }
+    }
+    window.addEventListener('keydown', onEscape)
+    return () => window.removeEventListener('keydown', onEscape)
+  }, [expanded, extOpen, ghost, mention, slash, threadId])
+
+  const runCompact = () => {
+    changeExpansion('send')
+    void onCompact()
+  }
 
   /** Replaces `@query` with `@Name` or `@Name(model)` followed by a space. */
   const insertMention = (p: ProfileState, picked: string | null) => {
@@ -2087,7 +2167,7 @@ function Composer({
       }
       setText('')
       if (!atts.length && !quote) clearComposerDraft(draftKey)
-      void onCompact()
+      runCompact()
       return
     }
     const token = `${it.insert} `
@@ -2133,7 +2213,7 @@ function Composer({
       setSlash(null)
       setText('')
       if (!atts.length && !quote) clearComposerDraft(draftKey)
-      void onCompact()
+      runCompact()
       return
     }
     if (!driver) return toast({ kind: 'warn', title: t('wb.noModel'), action: { label: t('wb.addAccount'), run: () => navigate('engines') } })
@@ -2156,9 +2236,13 @@ function Composer({
     setText('')
     setAtts([])
     setQuote(null)
+    if (!r) changeExpansion('send')
     // cancelled (e.g. the session is being written elsewhere): give the draft back if still empty
     void r?.then((ok) => {
-      if (ok) return
+      if (ok) {
+        if (live.current.key === draftKey) changeExpansion('send')
+        return
+      }
       if (live.current.key !== draftKey) {
         const draft = composerDraft(draftKey)
         saveComposerDraft(draftKey, draft?.text || sentText, draft?.atts.length ? draft.atts : sentAtts, draft?.quote ?? sentQuote)
@@ -2194,11 +2278,6 @@ function Composer({
         e.preventDefault()
         return insertMention(p, inSub ? opts[mention.subIndex] : null)
       }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        dismissed.current = { value: e.currentTarget.value, caret: e.currentTarget.selectionStart }
-        return setMention(null)
-      }
     }
     if (slash && !mention && !composing) {
       const n = slashMatches.length
@@ -2211,13 +2290,8 @@ function Composer({
         e.preventDefault()
         return insertSkill(slashMatches[Math.min(slash.index, n - 1)], e.key === 'Tab' ? 'tab' : 'enter')
       }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        dismissed.current = { value: e.currentTarget.value, caret: e.currentTarget.selectionStart }
-        return setSlash(null)
-      }
     }
-    // suggested next input: Tab takes it as editable text, Esc drops it
+    // suggested next input: Tab takes it as editable text
     if (ghost && !composing && !mention && !slash) {
       if (e.key === 'Tab' && !e.shiftKey) {
         e.preventDefault()
@@ -2229,11 +2303,6 @@ function Composer({
           el.focus()
           el.setSelectionRange(v.length, v.length)
         })
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        if (threadId) clearSuggestion(threadId)
         return
       }
     }
@@ -2274,17 +2343,19 @@ function Composer({
   }
 
   return (
-    <div ref={wrap} className="pointer-events-none absolute inset-x-0 bottom-0 bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)] px-8 pt-8 pb-6">
-      <div className="pointer-events-auto relative mx-auto max-w-[820px]">
+    <div ref={wrap} className={`absolute inset-x-0 bottom-0 flex flex-col px-8 pt-8 pb-6 [interpolate-size:allow-keywords] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+      expanded ? 'z-30 h-[calc(100%-3.5rem)] bg-canvas' : 'pointer-events-none h-auto bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)]'
+    }`}>
+      <div className="pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[820px] flex-1 flex-col">
         {notice}
         {queue}
         {extOpen && (
-          <div className="absolute bottom-full left-0 z-30 mb-2">
+          <div className={`absolute left-0 z-30 ${expanded ? 'pointer-events-none top-0 right-0 bottom-12 flex items-end [&>div]:pointer-events-auto [&>div]:max-h-full [&>div]:max-w-full' : 'bottom-full mb-2'}`}>
             <ExtensionsPanel account={driver} projectDir={projectDir} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
           </div>
         )}
         {!extOpen && !mention && slash && (
-          <div className="absolute bottom-full left-0 z-30 mb-2">
+          <div className={`absolute left-0 z-30 ${expanded ? 'top-12 right-0 [&>div]:max-w-full' : 'bottom-full mb-2'}`}>
             <SlashMenu
               account={driver}
               items={slashMatches}
@@ -2298,8 +2369,8 @@ function Composer({
           </div>
         )}
         {mention && (
-          <div className="absolute bottom-full left-0 z-30 mb-2 flex items-end gap-2">
-            <div className={popover + ' w-72'}>
+          <div className={`absolute left-0 z-30 flex gap-2 ${expanded ? 'top-12 right-0 items-start [&>div]:min-w-0' : 'bottom-full mb-2 items-end'}`}>
+            <div className={popover + ' max-h-[min(400px,calc(100dvh-12rem))] w-72 overflow-y-auto overscroll-contain'}>
               <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
                 <IconAt size={13} /> {t('wb.inviteModels')} <span className="ml-auto">{t('wb.pickSubHint')}</span>
               </div>
@@ -2363,7 +2434,7 @@ function Composer({
         )}
 
         <div
-          className={`relative rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
+          className={`relative flex min-h-0 flex-1 flex-col rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
             drag ? 'shadow-[0_0_0_2px_rgba(0,122,255,0.6),0_16px_40px_rgba(0,0,0,0.08)]' : ''
           }`}
           onDragOver={(e) => {
@@ -2378,7 +2449,7 @@ function Composer({
           }}
         >
           {quote && (
-            <div className="mx-3.5 mt-3 flex items-start gap-2.5 rounded-xl border-l-2 border-accent bg-fill/75 px-3 py-2 text-[12px] text-ink-2">
+            <div className="mx-3.5 mt-3 flex shrink-0 items-start gap-2.5 rounded-xl border-l-2 border-accent bg-fill/75 px-3 py-2 text-[12px] text-ink-2">
               <IconQuote size={13} className="mt-0.5 shrink-0 text-accent" />
               <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">{t('quote.replyingTo', { name: quote.author })}</div>
@@ -2396,7 +2467,7 @@ function Composer({
             </div>
           )}
           {atts.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-4 pt-4">
+            <div className={`flex shrink-0 flex-wrap gap-2 px-4 pt-4 ${expanded ? 'max-h-[144px] overflow-y-auto' : ''}`}>
               {atts.map((a) =>
                 a.isImage && a.thumb ? (
                   <span key={a.id} className="group relative" title={a.path ?? a.name}>
@@ -2421,16 +2492,29 @@ function Composer({
             </div>
           )}
 
-          {ghost && (
-            <span className="pointer-events-none absolute top-[17px] right-4 rounded-[5px] px-1.5 py-px font-mono text-[10.5px] leading-4 text-ink-3 shadow-[inset_0_0_0_1px_var(--ring),0_1px_0_var(--ring)]" title={t('wb.tabAccept')}>
-              Tab
-            </span>
-          )}
-          <div className="relative">
+          <div ref={editor} className="relative min-h-0 flex-auto" style={{ height: compactHeight }}>
+            {ghost && (
+              <span className={`pointer-events-none absolute top-[17px] z-10 rounded-[5px] px-1.5 py-px font-mono text-[10.5px] leading-4 text-ink-3 shadow-[inset_0_0_0_1px_var(--ring),0_1px_0_var(--ring)] ${showExpand ? 'right-14' : 'right-4'}`} title={t('wb.tabAccept')}>
+                Tab
+              </span>
+            )}
+            {showExpand && (
+              <button type="button" aria-expanded={expanded}
+                aria-label={t(expanded ? 'wb.collapseComposer' : 'wb.expandComposer')}
+                title={t(expanded ? 'wb.collapseComposer' : 'wb.expandComposer')}
+                className="absolute top-2.5 right-4 z-10 grid size-8 place-items-center rounded-lg text-ink-3 transition-colors hover:bg-fill hover:text-ink focus-visible:text-ink motion-safe:animate-[composer-control-in_140ms_ease-out]"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  changeExpansion('toggle')
+                  ta.current?.focus({ preventScroll: true })
+                }}>
+                {expanded ? <IconMinimize size={15} aria-hidden="true" /> : <IconMaximize size={15} aria-hidden="true" />}
+              </button>
+            )}
             <div
               ref={mirror}
               aria-hidden
-              className={`pointer-events-none absolute top-0 left-0 h-full overflow-hidden pt-4 pb-1 pl-5 text-[15px] leading-[22px] break-words whitespace-pre-wrap text-ink ${ghost ? 'pr-16' : 'pr-5'}`}
+              className={`pointer-events-none absolute inset-y-0 left-0 overflow-hidden text-ink ${editorText}`}
             >
               {mirrorSegments(text, mentionSpans)}
             </div>
@@ -2470,11 +2554,11 @@ function Composer({
                 }
               }}
               placeholder={ghost ? suggestion! : driver ? t('wb.placeholder', { name: driver.name }) : t('wb.placeholderNone')}
-              className={`relative block max-h-[200px] w-full resize-none bg-transparent pt-4 pb-1 pl-5 text-[15px] leading-[22px] text-transparent caret-ink outline-none selection:bg-accent/25 placeholder:text-ink-3 ${ghost ? 'pr-16 placeholder:text-ink-3/80' : 'pr-5'}`}
+              className={`absolute inset-0 block h-full w-full resize-none overflow-y-auto overscroll-contain bg-transparent scroll-py-3 text-transparent caret-ink outline-none selection:bg-accent/25 ${editorText} ${ghost ? 'placeholder:text-ink-3/80' : 'placeholder:text-ink-3'}`}
             />
           </div>
 
-          <div className="flex items-center gap-1 px-3 pt-1 pb-3">
+          <div className="flex shrink-0 items-center gap-1 px-3 pt-1 pb-3">
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
             <QuotaDot driver={driver} model={driverModel} onSwitch={(id) => onDriver(id, null)} />
             {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
@@ -2500,7 +2584,7 @@ function Composer({
             <div className="flex-1" />
             <button
               type="button"
-              onClick={() => void onCompact()}
+              onClick={runCompact}
               disabled={!canCompact || compacting}
               className="flex h-7 items-center gap-1 rounded-full bg-black/[0.045] px-2.5 text-[12px] font-medium text-ink-2 transition-colors enabled:hover:bg-black/[0.07] enabled:hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
               title={

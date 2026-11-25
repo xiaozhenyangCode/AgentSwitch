@@ -35,6 +35,16 @@ export const IconFocus = (p: P) => (
     <path d="M12 3v3m0 12v3M3 12h3m12 0h3" />
   </svg>
 )
+export const IconMaximize = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M14 5h5v5m0-5-5 5M10 19H5v-5m0 5 5-5" />
+  </svg>
+)
+export const IconMinimize = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M19 10h-5V5m0 5 5-5M5 14h5v5m0-5-5 5" />
+  </svg>
+)
 export const IconWorkflow = (p: P) => (
   <svg {...base(p)}>
     <rect x="3" y="3" width="6" height="6" rx="1.5" />
