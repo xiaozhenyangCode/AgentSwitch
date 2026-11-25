@@ -4,12 +4,13 @@ import type { HistoryEntry, HistoryThread, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { activeThread, archiveThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, unarchiveThread, useChat, type Thread } from '../state/chat'
 import { useEscape } from '../lib/escStack'
+import { formatFullLocalTime, formatListTime } from '../lib/listTime'
 import { getSidebarGroups, loadCollapsedProjects, saveCollapsedProjects } from '../lib/sidebarGroups'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { IconArchive, IconCheck, IconChevronDown, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
-import { currentLocale, fmtAgo, t } from '../state/i18n'
+import { t } from '../state/i18n'
 import { useSettings } from '../state/settings'
 import { useDraft, pickDriver } from '../state/draft'
 import { fmtTokens, quotaLevel, tokenSum, useUsage } from '../state/usage'
@@ -57,25 +58,13 @@ function useSidebarWidth(): [number, boolean, (e: React.PointerEvent<HTMLDivElem
 
 const baseName = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 
-function ago(ts: number): string {
-  if (Date.now() - ts < 86400_000 * 7) return fmtAgo(ts)
-  return new Date(ts).toLocaleDateString(currentLocale(), { month: 'numeric', day: 'numeric' })
-}
+const listTime = (ts: number) => formatListTime(ts, new Date(), (hm) => t('time.yesterday', { time: hm }))
 
-const pad = (n: number) => String(n).padStart(2, '0')
-/** today HH:mm · 昨天 HH:mm · MM-DD */
-function shortTime(ts: number): string {
-  const d = new Date(ts)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
-  if (ts >= today.getTime()) return hm
-  if (ts >= today.getTime() - 86400_000) return t('time.yesterday', { time: hm })
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-const fullTime = (ts: number) => {
-  const d = new Date(ts)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+function ListTime({ ts }: { ts: number }) {
+  const title = formatFullLocalTime(ts)
+  if (!title) return null
+
+  return <time className="tabular-nums" dateTime={new Date(ts).toISOString()} title={title}>{listTime(ts)}</time>
 }
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
@@ -595,7 +584,7 @@ function HistoryRow(props: {
         <button
           onClick={props.onOpen}
           onDoubleClick={() => setEditing(true)}
-          title={`${title}\n${p.name} · ${fullTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
+          title={`${title}\n${p.name} · ${formatFullLocalTime(e.updatedAt)}${e.cwd ? `\n${e.cwd}` : ''}`}
           className={`flex h-[50px] w-full items-center gap-2.5 rounded-lg pr-8 pl-2.5 text-left transition-colors ${active ? 'bg-black/[0.07]' : 'hover:bg-black/[0.035]'}`}
         >
           <KindAvatar kind={e.kind} size={18} />
@@ -606,7 +595,7 @@ function HistoryRow(props: {
             </span>
             <span className="flex items-center gap-1 truncate text-[12px] leading-[17px] text-ink-3">
               {(opening || busy) && <Spinner size={11} className="text-accent" />}
-              {shortTime(e.updatedAt)} · {p.name}
+              <span className="min-w-0 truncate"><ListTime ts={e.updatedAt} /> · {p.name}</span>
               {linked && !linked.preview && <span className="text-accent">{t('hist.continued')}</span>}
             </span>
           </span>
@@ -748,20 +737,20 @@ function ThreadRow({ t: th, active, onOpen, onDelete, onNewHere }: { t: Thread; 
                 <>
                   <IconCheck size={11} className="shrink-0 text-ok" />
                   <span className="font-medium text-ok">{t('nav.done')}</span>
-                  <span>· {ago(th.updatedAt)}</span>
+                  <span>· <ListTime ts={th.updatedAt} /></span>
                 </>
               ) : th.unread === 'error' ? (
                 <>
                   <span className="font-medium text-danger">{t('nav.failed')}</span>
-                  <span>· {ago(th.updatedAt)}</span>
+                  <span>· <ListTime ts={th.updatedAt} /></span>
                 </>
               ) : th.unread === 'paused' ? (
                 <>
                   <span className="font-medium text-warn">{t('nav.paused')}</span>
-                  <span>· {ago(th.updatedAt)}</span>
+                  <span>· <ListTime ts={th.updatedAt} /></span>
                 </>
               ) : (
-                ago(th.updatedAt)
+                <ListTime ts={th.updatedAt} />
               )}
             </span>
           </span>
