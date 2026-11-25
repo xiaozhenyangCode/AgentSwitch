@@ -297,6 +297,8 @@ export const zhCN = {
   'wb.compactSlashDesc': '压缩当前对话上下文（下一轮精简携带 16k 核心记忆）',
   'wb.ctxCompactDivider': '已压缩上下文 · 下一轮将精简携带核心记忆',
   'wb.needHuman': '需要人工介入',
+  'wb.taskSummaryTitle': '当前任务进度',
+  'wb.taskSummaryDismiss': '关闭任务进度',
   'wb.retryRound': '再试一轮',
   'wb.skipReview': '跳过验收继续',
   'wb.endTurn': '结束本轮',

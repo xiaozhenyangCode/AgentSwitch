@@ -23,6 +23,7 @@ import { useProjectGit } from '../state/useProjectGit'
 import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { scrollListTo } from '../lib/scrollList'
+import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
 import {
   COMPACT_COMMAND_INSERT,
@@ -223,6 +224,7 @@ export function WorkbenchPage() {
   const scrollingToBottom = useRef(false)
   const scrollTimer = useRef<number | null>(null)
   const [atBottom, setAtBottom] = useState(true)
+  const [composerH, setComposerH] = useState(150)
   const scrollToBottom = useCallback(() => {
     const el = scroller.current
     if (!el) return
@@ -414,7 +416,7 @@ export function WorkbenchPage() {
     } else {
       setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
     }
-  }, [messages])
+  }, [messages, composerH])
   useEffect(() => {
     stick.current = true
     scrollingToBottom.current = false
@@ -423,7 +425,6 @@ export function WorkbenchPage() {
     if (el) el.scrollTop = el.scrollHeight
   }, [thread?.id])
 
-  const [composerH, setComposerH] = useState(150)
   const [composerSeed, setComposerSeed] = useState<{ seq: number; text: string; atts: Attachment[]; quote: MessageQuote | null } | null>(null)
   const [quoteSeed, setQuoteSeed] = useState<{ seq: number; quote: MessageQuote } | null>(null)
   const [rewindModal, setRewindModal] = useState<{
@@ -737,6 +738,7 @@ export function WorkbenchPage() {
           contextTokens={contextStats.hasActiveSession ? contextStats.lastTokens : 0}
           contextWindow={contextStats.window}
           onCompact={startCompact}
+          notice={<TaskSummaryBar thread={thread} />}
           queue={thread?.queuedMessages?.length ? <QueuedMessages key={thread.id} thread={thread} confirmBusy={confirmExternalBusy} /> : null}
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
           history={inputHistory}
@@ -1719,6 +1721,73 @@ function QueuedMessages({ thread, confirmBusy }: { thread: Thread; confirmBusy: 
   )
 }
 
+function TaskSummaryBar({ thread }: { thread: Thread | null }) {
+  const threadId = thread?.id
+  const summary = thread?.taskSummary
+  const summaryText = typeof summary?.text === 'string' ? summary.text : ''
+  const idleSince = thread?.updatedAt ?? 0
+  const paused = !!thread?.pause
+  const busy = isThreadBusy(thread) || (!!summaryText && !!thread?.messages.some(
+    (m) => m.role === 'assistant' && (m.status === 'queued' || m.status === 'streaming')
+  ))
+  const previousThread = useRef(threadId)
+  const [dismissed, setDismissed] = useState<Map<string, number>>(() => new Map())
+  const [revealed, setRevealed] = useState<{ threadId: string; idleSince: number } | null>(null)
+  const dismissedThreadId = threadId && summary && dismissed.get(threadId) === summary.updatedAt ? threadId : null
+
+  useEffect(() => {
+    const switchedThread = previousThread.current !== threadId
+    previousThread.current = threadId
+    if (!threadId || !summaryText || busy || paused || dismissedThreadId) return
+
+    const reveal = (trigger: 'idle' | 'focus' | 'switch') => {
+      if (shouldShowTaskSummaryBar({
+        threadId, summary: summaryText, busy, paused, idleSince, now: Date.now(), dismissedThreadId,
+        refocused: trigger === 'focus', switchedThread: trigger === 'switch'
+      })) setRevealed({ threadId, idleSince })
+    }
+    const remaining = idleSince + TASK_SUMMARY_IDLE_MS - Date.now()
+    if (switchedThread || remaining <= 0) {
+      reveal(switchedThread ? 'switch' : 'idle')
+      return
+    }
+
+    let blurred = !document.hasFocus()
+    const onBlur = () => { blurred = true }
+    const onFocus = () => {
+      if (blurred) reveal('focus')
+      blurred = false
+    }
+    const timer = window.setTimeout(() => reveal('idle'), remaining)
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [threadId, summaryText, busy, paused, idleSince, dismissedThreadId])
+
+  if (!threadId || !summary || !summaryText || busy || paused || dismissedThreadId || revealed?.threadId !== threadId || revealed.idleSince !== idleSince) return null
+  return (
+    <div className="mb-2 flex items-center gap-2.5 rounded-2xl bg-surface px-4 py-2 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+      <div className="min-w-0 flex-1" role="status">
+        <span className="font-semibold">{t('wb.taskSummaryTitle')}</span>
+        <span className="block wrap-break-word text-ink-2">{summaryText}</span>
+      </div>
+      <button
+        type="button"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+        onClick={() => setDismissed((current) => new Map(current).set(threadId, summary.updatedAt))}
+        title={t('wb.taskSummaryDismiss')}
+        aria-label={t('wb.taskSummaryDismiss')}
+      >
+        <IconX size={14} />
+      </button>
+    </div>
+  )
+}
+
 function Composer({
   driver,
   driverModel,
@@ -1735,6 +1804,7 @@ function Composer({
   contextTokens,
   contextWindow,
   onCompact,
+  notice,
   queue,
   suggestion,
   history,
@@ -1759,6 +1829,7 @@ function Composer({
   contextTokens: number
   contextWindow: number
   onCompact: () => Promise<void> | void
+  notice?: ReactNode
   queue?: ReactNode
   /** Next input the model suggested (ghost text; Tab takes it). */
   suggestion?: string | null
@@ -2193,6 +2264,7 @@ function Composer({
   return (
     <div ref={wrap} className="pointer-events-none absolute inset-x-0 bottom-0 bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)] px-8 pt-8 pb-6">
       <div className="pointer-events-auto relative mx-auto max-w-[820px]">
+        {notice}
         {queue}
         {extOpen && (
           <div className="absolute bottom-full left-0 z-30 mb-2">

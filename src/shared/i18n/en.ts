@@ -285,6 +285,8 @@ export const en: Dict = {
   'wb.compactSlashDesc': 'Compact conversation context (next turn carries a 16k core handoff)',
   'wb.ctxCompactDivider': 'Context compacted · Next turn starts with a compact core handoff',
   'wb.needHuman': 'Needs your attention',
+  'wb.taskSummaryTitle': 'Task progress',
+  'wb.taskSummaryDismiss': 'Dismiss task progress',
   'wb.retryRound': 'Try Another Round',
   'wb.skipReview': 'Skip Review & Continue',
   'wb.endTurn': 'End This Turn',

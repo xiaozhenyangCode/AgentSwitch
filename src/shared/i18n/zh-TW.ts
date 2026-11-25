@@ -295,6 +295,8 @@ export const zhTW: Dict = {
   'wb.compactSlashDesc': '壓縮目前對話上下文（下一輪精簡攜帶 16k 核心記憶）',
   'wb.ctxCompactDivider': '已壓縮上下文 · 下一輪將精簡攜帶核心記憶',
   'wb.needHuman': '需要人工介入',
+  'wb.taskSummaryTitle': '目前任務進度',
+  'wb.taskSummaryDismiss': '關閉任務進度',
   'wb.retryRound': '再試一輪',
   'wb.skipReview': '跳過驗收繼續',
   'wb.endTurn': '結束本輪',

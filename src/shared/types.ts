@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from './transcript'
+import type { ReplyMarks } from './markers'
 
 /** Dynamic account id, e.g. `claude-a1b2c3`. */
 export type ProfileId = string
@@ -438,7 +439,7 @@ export type ChatEvent =
   | { kind: 'step-add'; threadId: string; turnId: string; stepId: string; profileId: ProfileId; name: string; profileKind: ProfileKind; model: string | null; dispatchedBy: { profileId: ProfileId; name: string; profileKind: ProfileKind } | null; retry: number; review: boolean; after: string | null }
   | { kind: 'step-start'; threadId: string; turnId: string; stepId: string }
   | { kind: 'agent'; threadId: string; turnId: string; stepId: string; event: AgentEvent }
-  | { kind: 'step-end'; threadId: string; turnId: string; stepId: string; status: StepStatus; verdict?: { status: 'PASS' | 'REJECT'; reason: string } }
+  | { kind: 'step-end'; threadId: string; turnId: string; stepId: string; status: StepStatus; marks?: ReplyMarks; verdict?: { status: 'PASS' | 'REJECT'; reason: string } }
   | { kind: 'paused'; threadId: string; turnId: string; reason: string }
   /** Handoff document written (mode 'handoff', or exported from the transcript). */
   | { kind: 'handoff'; threadId: string; turnId: string; path: string; to: ProfileId; ok: boolean; error?: string }

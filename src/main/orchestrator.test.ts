@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { estimateTokens } from '@shared/contextBudget'
 import type { TranscriptEntry } from '@shared/transcript'
-import type { RunRequest } from '@shared/types'
+import type { AgentEvent, ChatEvent, RunRequest } from '@shared/types'
 import type { RunSpec } from './agentRunner'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 import { cleanupAllPersistentThreadHistory, upsertPersistentThreadHistory } from './threadHistoryConfig'
@@ -44,9 +44,12 @@ function request(transcript: TranscriptEntry[], sessionScope?: string): RunReque
   }
 }
 
-function start(req: RunRequest) {
+function start(req: RunRequest, onEvent?: (event: ChatEvent) => void) {
   return new Promise<void>((resolve) => {
-    const orchestrator = new Orchestrator((event) => { if (event.kind === 'turn-end') resolve() }, vi.fn(), vi.fn())
+    const orchestrator = new Orchestrator((event) => {
+      onEvent?.(event)
+      if (event.kind === 'turn-end') resolve()
+    }, vi.fn(), vi.fn())
     orchestrator.start(req)
   })
 }
@@ -194,6 +197,8 @@ describe('orchestrator history handoff', () => {
     for (const s of specs) {
       expect(s.system).not.toMatch(/turn-one|turn-two|runs\/|outputs\//)
       expect(s.system).not.toContain('回复使用 Markdown')
+      expect(s.system).not.toContain('agentswitch:task')
+      expect(s.prompt).toContain('<!-- agentswitch:task:当前任务进度总结 -->')
     }
     const env = (p: string) => p.slice(p.lastIndexOf('## 本轮环境'))
     expect(env(one.prompt)).toContain('runs/turn-one/')
@@ -201,6 +206,20 @@ describe('orchestrator history handoff', () => {
     expect(env(one.prompt)).toContain('用中文回复')
     expect(env(two.prompt)).toContain('runs/turn-two/')
     expect(two.prompt.trimEnd().endsWith('Language: the user writes in English. Reply in English.')).toBe(true)
+  })
+
+  it('streams only the display text and delivers hidden progress with the completed reply', async () => {
+    const events: ChatEvent[] = []
+    runAgent.mockImplementation((_spec: RunSpec, emit: (event: AgentEvent) => void) => {
+      for (const delta of ['已完成。\n<', '!-- agentswitch:ta', 'sk:下一步验证 --', '>']) emit({ t: 'text', delta })
+      return { done: Promise.resolve({ ok: true, sessionId: 'new-session' }), kill: vi.fn() }
+    })
+
+    await start({ ...request([]), text: '核对缓存' }, (event) => events.push(event))
+
+    expect(runAgent).toHaveBeenCalledOnce()
+    expect(events.flatMap((e) => e.kind === 'agent' && e.event.t === 'text' ? [e.event.delta] : [])).toEqual(['已完成。\n'])
+    expect(events.find((e) => e.kind === 'step-end')).toMatchObject({ status: 'done', marks: { task: '下一步验证' } })
   })
 
   it.each(['stopped', 'error'] as const)('records a new %s session on disk without offering it for resume', async (status) => {

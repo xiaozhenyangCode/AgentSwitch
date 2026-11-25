@@ -174,6 +174,8 @@ export interface Thread {
   titleTurn?: string | null
   /** Next input the model suggested at the end of its last reply (ghost text in the composer). */
   suggestedInput?: string | null
+  /** Progress captured from the latest completed replies, with a timestamp in milliseconds. */
+  taskSummary?: { text: string; updatedAt: number } | null
   /** User turn count when the user dismissed the long-context warning. */
   contextWarnDismissedAt?: number
   /**

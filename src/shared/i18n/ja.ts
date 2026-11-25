@@ -285,6 +285,8 @@ export const ja: Dict = {
   'wb.compactSlashDesc': '会話コンテキストを圧縮（次のターンは約 16k の要点引き継ぎで開始）',
   'wb.ctxCompactDivider': 'コンテキストを圧縮しました · 次のターンは要点引き継ぎで開始します',
   'wb.needHuman': '確認が必要です',
+  'wb.taskSummaryTitle': 'タスクの進捗',
+  'wb.taskSummaryDismiss': 'タスクの進捗を閉じる',
   'wb.retryRound': 'もう一度試す',
   'wb.skipReview': 'レビューをスキップして続行',
   'wb.endTurn': 'このターンを終了',

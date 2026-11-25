@@ -6,7 +6,7 @@ import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Messa
 import type { CheckpointChoice, RewindExecuteResult } from '@shared/checkpoints'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
-import { cleanTitle, readMarks, stripMarks } from '@shared/markers'
+import { cleanTitle, fallbackTaskSummary, readMarks, stripMarks } from '@shared/markers'
 import { toTranscript } from '@shared/transcript'
 import { addPermission, isPendingPermission, reconcilePermissions, resolvePermission } from './permissionState'
 import { dequeueMessage, enqueueMessage, shouldAutoSendQueued } from './messageQueue'
@@ -343,6 +343,7 @@ export async function rewindThread(
     messages: nextMessages,
     ...(resetTitle ? { title: tr('chat.newThread'), titleTurn: null } : {}),
     suggestedInput: null,
+    taskSummary: null,
     handoff: null,
     handoffFailed: null,
     pause: null,
@@ -684,18 +685,24 @@ function onEvent(e: ChatEvent) {
       return
     }
     case 'step-end': {
-      // hidden title / next-step markers: strip them, then apply to the thread
-      const raw = state.threads.find((t) => t.id === e.threadId)?.messages.find((m) => m.id === e.stepId)
-      const marks = raw?.role === 'assistant' ? readMarks(raw.content) : { title: null, next: null }
-      patchMsg(e.threadId, e.stepId, (m) => ({ ...m, content: stripMarks(m.content), phase: null, status: e.status, endedAt: now(), verdict: e.verdict ?? null, thinking: endThinking(m.thinking) }))
-      const markTitle = marks.title && !nativeTitleTurns.has(`${e.threadId}:${e.turnId}`) ? marks.title : null
-      if (markTitle || marks.next)
-        patchThread(e.threadId, (t) => ({
+      const endedAt = now()
+      return patchThread(e.threadId, (t) => {
+        const raw = t.messages.find((m) => m.id === e.stepId)
+        if (raw?.role !== 'assistant') return t
+        const marks = e.marks ?? readMarks(raw.content)
+        const body = stripMarks(raw.content)
+        const content = marks.title || marks.next || marks.task ? body.trimEnd() : body
+        const summary = e.status === 'done' ? marks.task ?? fallbackTaskSummary(content) : null
+        const markTitle = marks.title && !nativeTitleTurns.has(`${e.threadId}:${e.turnId}`) ? marks.title : null
+        const reply = { ...raw, content, phase: null, status: e.status, endedAt, verdict: e.verdict ?? null, thinking: endThinking(raw.thinking) }
+        return {
           ...t,
+          messages: t.messages.map((m) => m === raw ? reply : m),
           ...(markTitle && !t.titleLocked && t.titleTurn === e.turnId ? { title: markTitle, titleTurn: null } : {}),
-          ...(marks.next ? { suggestedInput: marks.next } : {})
-        }))
-      return
+          ...(marks.next ? { suggestedInput: marks.next } : {}),
+          ...(summary ? { taskSummary: { text: summary, updatedAt: endedAt } } : {})
+        }
+      })
     }
     case 'handoff': {
       const toNew = handoffToNewThread.delete(e.threadId)
@@ -1000,6 +1007,7 @@ export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; k
       ...(th.titleLocked ? { titleLocked: true } : {}),
       ...(th.carriedMessageCount ? { carriedMessageCount: th.carriedMessageCount } : {}),
       ...(th.suggestedInput ? { suggestedInput: th.suggestedInput } : {}),
+      ...(th.taskSummary ? { taskSummary: th.taskSummary } : {}),
       ...(th.pinned ? { pinned: true } : {})
     }
     threads.push({

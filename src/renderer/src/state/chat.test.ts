@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { MessageInput, OpenChats, Thread } from '@shared/chat'
+import type { ChatChanges, MessageInput, OpenChats, Thread } from '@shared/chat'
 import type { ChatEvent, RunRequest } from '@shared/types'
 
 vi.mock('./i18n', () => ({ t: (key: string) => key }))
@@ -25,7 +25,7 @@ const api = {
   resume: vi.fn(),
   stop: vi.fn(),
   deleteThread: vi.fn(),
-  save: vi.fn(),
+  save: vi.fn<(session: number, revision: number, changes: ChatChanges) => Promise<{ ok: boolean; revision: number }>>(),
   compactSessions: vi.fn(),
   rewindPlan: vi.fn(),
   rewind: vi.fn()
@@ -225,6 +225,46 @@ describe('chat native title updates', () => {
     chat.renameThread(second, '我手动改的标题')
     emit({ kind: 'agent', threadId: req2.threadId, turnId: req2.turnId, stepId: 'step-2', event: { t: 'title', title: '不该覆盖手动标题' } })
     expect(chat.getThread(second)?.title).toBe('我手动改的标题')
+  })
+})
+
+describe('chat task summary', () => {
+  const addReply = async (text: string) => {
+    await send('继续检查')
+    const { threadId, turnId } = api.send.mock.lastCall![0]
+    const ids = { threadId, turnId, stepId: `step-${turnId}` }
+    emit({ kind: 'step-add', ...ids, profileId: 'test', name: 'Test', profileKind: 'claude', model: null, dispatchedBy: null, review: false, retry: 0, after: null })
+    emit({ kind: 'agent', ...ids, event: { t: 'text', delta: text } })
+    return ids
+  }
+
+  it('stores and persists progress separately from the completed reply', async () => {
+    await open()
+    const ids = await addReply('已找到原因。\n')
+    const updatedAt = Date.now()
+    emit({ kind: 'step-end', ...ids, status: 'done', marks: { title: null, next: null, task: '已定位原因，接下来修复' } })
+    finish()
+    const expected = { text: '已定位原因，接下来修复', updatedAt }
+    expect(chat.getThread(ids.threadId)?.taskSummary).toEqual(expected)
+    expect(chat.getThread(ids.threadId)?.messages.at(-1)).toMatchObject({ content: '已找到原因。' })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(api.save.mock.lastCall?.[2].upserts).toEqual([expect.objectContaining({ id: ids.threadId, taskSummary: expected })])
+    expect(sent()).toEqual(['继续检查'])
+  })
+
+  it('falls back to the first substantive sentence and preserves it after an incomplete step', async () => {
+    await open()
+    const ids = await addReply('## 总结\n- 已补回归测试。下一步全量验证。')
+    emit({ kind: 'step-end', ...ids, status: 'done' })
+    finish()
+    const summary = chat.getThread(ids.threadId)?.taskSummary
+    expect(summary?.text).toBe('已补回归测试。')
+
+    const incomplete = await addReply('验证中。\n<!-- agentswitch:task:尚未完成 -->')
+    emit({ kind: 'step-end', ...incomplete, status: 'stopped' })
+    finish('stopped')
+    expect(chat.getThread(ids.threadId)?.taskSummary).toEqual(summary)
+    expect(chat.getThread(ids.threadId)?.messages.at(-1)).toMatchObject({ content: '验证中。' })
   })
 })
 

@@ -11,7 +11,7 @@ import { recordLimited, recordQuota, recordRun, refreshPostRunQuota } from './us
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
-import { stripMarks } from '@shared/markers'
+import { readMarks, splitReplyText, stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript } from '@shared/transcript'
 import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
@@ -674,14 +674,15 @@ export class Orchestrator {
       )
     else parts.push('## 用户原始消息', turn.req.text, '', '## 你的任务', step.task)
     if (step.feedback) parts.push('', `## 验收打回意见（第 ${step.retry} 次重做）`, step.feedback, '请据此修改你的产出。')
-    // replies the user reads as the answer: hidden title / next-step markers (the UI strips them)
+    // Replies the user reads as the answer can also carry hidden title, suggestion and progress.
     if (step.kind === 'own' || step.kind === 'summary')
       parts.push(
         '',
         '## 回复末尾的隐藏标记（界面会自动隐藏，正文中不要提及）',
-        '在回复的最后另起一行输出（如果本条回复输出了 agentswitch:dispatch 调度代码块，则不要输出这些标记）：',
+        '在回复末尾分别另起一行输出（如果本条回复输出了 agentswitch:dispatch 调度代码块，则省略这些标记）：',
         ...(turn.req.wantTitle ? [`<!-- agentswitch:title:对话标题 -->（概括本次对话主题，不加引号；${titleLanguage(turn.req.text)}）`] : []),
-        '<!-- agentswitch:next:建议用户下一步发送的一句话 -->（可选：站在用户角度，结合任务完成情况给出自然、简洁、可直接发送的下一步指令或追问；没有合适建议就省略这一行）'
+        '<!-- agentswitch:next:建议用户下一步发送的一句话 -->（可选：站在用户角度，结合任务完成情况给出自然、简洁、可直接发送的下一步指令或追问；没有合适建议就省略这一行）',
+        '<!-- agentswitch:task:当前任务进度总结 -->（用用户的语言简要概括已完成事项和下一步，约 20–40 字）'
       )
     if (step.review)
       parts.push(
@@ -758,12 +759,19 @@ export class Orchestrator {
     const compact = !!sent && sent.fixed === fixed && sent.turns < SYSTEM_RESEND_TURNS
     const system = compact ? null : fixed
     let stepUsage: Usage | null = null
+    let pendingText = ''
     const allowNativeTitle = turn.req.wantTitle === true && (step.kind === 'own' || step.kind === 'summary')
     const emit = (event: AgentEvent): void => {
       if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
       if (event.t === 'title' && !allowNativeTitle) return
       if (event.t === 'usage') stepUsage = { ...(stepUsage ?? {}), ...event.usage }
-      if (event.t === 'text') step.text += event.delta
+      if (event.t === 'text') {
+        step.text += event.delta
+        const { body, pending } = splitReplyText(pendingText + event.delta)
+        pendingText = pending
+        if (body) this.emit({ kind: 'agent', ...ids, event: { t: 'text', delta: body } })
+        return
+      }
       if (event.t === 'output' || (event.t === 'activity' && event.type === 'write')) {
         const p = event.t === 'output' ? event.path : event.target
         const abs = isAbsolute(p) ? p : join(turn.cwd, p)
@@ -854,8 +862,11 @@ export class Orchestrator {
       emit({ t: 'output', path: p })
     }
 
+    if (pendingText === '<') this.emit({ kind: 'agent', ...ids, event: { t: 'text', delta: pendingText } })
+    const marks = readMarks(step.text)
+    const reply = stripMarks(step.text)
     try {
-      writeFileSync(join(turn.runDir, `step-${step.n}.md`), stripMarks(step.text))
+      writeFileSync(join(turn.runDir, `step-${step.n}.md`), reply)
       writeFileSync(join(turn.runDir, `step-${step.n}.files.json`), JSON.stringify(step.outputs, null, 2))
     } catch {
       /* ignore */
@@ -863,13 +874,13 @@ export class Orchestrator {
 
     if (r.stopped || turn.stopped) {
       step.status = 'stopped'
-      this.emit({ kind: 'step-end', ...ids, status: 'stopped' })
+      this.emit({ kind: 'step-end', ...ids, status: 'stopped', marks })
       return this.end(turn, 'stopped')
     }
     if (!r.ok) {
       step.status = 'error'
       if (r.error) this.emit({ kind: 'agent', ...ids, event: { t: 'error', message: r.error } })
-      this.emit({ kind: 'step-end', ...ids, status: 'error' })
+      this.emit({ kind: 'step-end', ...ids, status: 'error', marks })
       if (turn.req.mode === 'handoff')
         this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to: turn.req.handoffTo ?? step.profileId, ok: false, error: r.rateLimited ? 'rate_limited' : (r.error ?? t('chat.genFailed')) })
       return this.end(turn, 'error')
@@ -882,15 +893,15 @@ export class Orchestrator {
         const dir = join(turn.cwd, '.agentswitch', 'handoffs')
         mkdirSync(dir, { recursive: true })
         const file = join(dir, `${turn.req.turnId.replace(/[^\w-]/g, '')}.md`)
-        writeFileSync(file, stripMarks(step.text).trim() + '\n')
+        writeFileSync(file, reply.trim() + '\n')
         this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: file, to, ok: true })
       } catch (e) {
         this.emit({ kind: 'handoff', threadId: turn.req.threadId, turnId: turn.req.turnId, path: '', to, ok: false, error: String(e) })
       }
     }
-    const verdict = step.review ? verdictOf(step.text) : null
+    const verdict = step.review ? verdictOf(reply) : null
     if (step.review && !verdict) this.emit({ kind: 'agent', ...ids, event: { t: 'notice', message: t('main.noVerdict') } })
-    this.emit({ kind: 'step-end', ...ids, status: 'done', verdict: verdict ?? undefined })
+    this.emit({ kind: 'step-end', ...ids, status: 'done', marks, verdict: verdict ?? undefined })
 
     if (verdict?.status === 'REJECT') {
       step.feedback = verdict.reason
@@ -906,7 +917,7 @@ export class Orchestrator {
     }
 
     if (step.allowDispatch) {
-      const items = dispatchOf(step.text)
+      const items = dispatchOf(reply)
         .map((d) => {
           const id = this.dispatchable(turn, step.profileId).find((p) => p === d.account || getConfig(p).name === d.account)
           // the sub-model the user asked for (@B(model)) unless the driver chose one
