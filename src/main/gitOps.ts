@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { lstat, realpath, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
+import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphOptions, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
 import { classifyGitError } from '@shared/gitErrors'
 import { getBaseEnv } from './shellEnv'
 
@@ -230,6 +230,7 @@ function parseGraphRefs(value: string): GitGraphRef[] {
       if (ref === 'HEAD') continue
       ref = ref.slice('HEAD -> '.length)
     }
+    if (/^(?:tag: )?refs\/agentswitch\//.test(ref)) continue
     if (ref.startsWith('tag: refs/tags/')) refs.push({ kind: 'tag', name: ref.slice('tag: refs/tags/'.length) })
     else if (ref.startsWith('refs/heads/')) refs.push({ kind: 'branch', name: ref.slice('refs/heads/'.length) })
     else if (ref.startsWith('refs/remotes/')) refs.push({ kind: 'remote', name: ref.slice('refs/remotes/'.length) })
@@ -238,42 +239,71 @@ function parseGraphRefs(value: string): GitGraphRef[] {
   return refs
 }
 
-export function parseGitGraph(output: string): GitGraphCommit[] {
-  const commits: GitGraphCommit[] = []
-  for (const record of logRecords(output)) {
-    const fields = record.trimEnd().split('\x1f')
-    if (fields.length !== 7 || record.includes('\0')) continue
-    const [hash, shortHash, parentField, decorations, subject, author, seconds] = fields
-    const commit = parseGitCommitFields(hash, shortHash, subject, author, seconds)
-    const parents = parseGitParents(parentField, hash)
-    if (commit && parents) commits.push({ ...commit, parents, refs: parseGraphRefs(decorations) })
-  }
-  return commits
+function parseGraphRecord(record: string): GitGraphCommit[] {
+  const fields = record.trimEnd().split('\x1f')
+  if (fields.length !== 7 || record.includes('\0')) return []
+  const [hash, shortHash, parentField, decorations, subject, author, seconds] = fields
+  const commit = parseGitCommitFields(hash, shortHash, subject, author, seconds)
+  const parents = parseGitParents(parentField, hash)
+  return commit && parents ? [{ ...commit, parents, refs: parseGraphRefs(decorations) }] : []
 }
 
-export async function gitGraph(dir: unknown, limit?: unknown): Promise<GitResult<GitGraphData>> {
+export function parseGitGraph(output: string): GitGraphCommit[] {
+  return logRecords(output).flatMap(parseGraphRecord)
+}
+
+async function resolveGraphBranch(root: string, branch: unknown, branches: GitBranch[]): Promise<string> {
+  if (typeof branch !== 'string' || !branch || branch.startsWith('-') || branch.includes('\0')) {
+    throw new InvalidBranch('Invalid Git history branch.')
+  }
+  const candidates = branches.map(({ name, remote }) => ({ name, ref: `refs/${remote === null ? 'heads' : 'remotes'}/${name}` }))
+  const named = candidates.filter((candidate) => candidate.name === branch)
+  const ref = candidates.find((candidate) => candidate.ref === branch)?.ref ?? (named.length === 1 ? named[0].ref : undefined)
+  if (!ref) throw new InvalidBranch('Unknown or ambiguous Git history branch.')
+  return (await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).trim()
+}
+
+export async function gitGraph(dir: unknown, options?: unknown): Promise<GitResult<GitGraphData>> {
   const worktree = await gitWorktree(dir)
   if (!worktree) return gitFailure('This folder is not in a Git worktree.')
   const { root } = worktree
-  const count = readLimit(limit, 200, 500)
-  const format = [...logOptions, '--decorate=full', '--format=%x1e%H%x1f%h%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at']
+  const params: GitGraphOptions = options && typeof options === 'object' ? options : { limit: typeof options === 'number' ? options : undefined }
+  const count = Number(readLimit(params.limit, 200, 500))
+  const skip = typeof params.skip === 'number' && Number.isSafeInteger(params.skip)
+    ? Math.min(2_147_483_647, Math.max(0, params.skip))
+    : 0
+  const chosenBranch = params.branch
+  const allBranches = chosenBranch == null || chosenBranch === '__ALL__'
+  const format = [...logOptions, '--decorate=full', '--decorate-refs-exclude=refs/agentswitch/*',
+    '--format=%x1e%H%x1f%h%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at']
   try {
-    const [output, branch, head, status] = await Promise.all([
-      git(root, ['log', '--all', '--parents', '--topo-order', '-n', count, ...format, '--']),
+    const [branch, head, status, branches] = await Promise.all([
       currentBranch(root),
       git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).then((hash) => hash.trim(), () => null),
-      git(root, porcelain)
+      git(root, porcelain),
+      listBranches(root)
     ])
-    const commits = parseGitGraph(output)
-    // Keep the checked-out commit in the bounded graph even when it is older
-    // than the history window, so working changes can still connect to HEAD.
-    if (head && !commits.some((commit) => commit.hash === head)) {
-      const [tip] = parseGitGraph(await git(root, ['log', '-n', '1', ...format, head, '--']))
-      if (tip) commits.splice(Number(count) - 1, 1, tip)
+    const tip = allBranches ? null : chosenBranch === 'HEAD' ? head : await resolveGraphBranch(root, chosenBranch, branches)
+    const revisions = allBranches
+      ? ['--exclude=refs/agentswitch/*', '--branches', '--tags', '--remotes', ...(head ? [head] : [])]
+      : tip ? [tip] : []
+    const output = revisions.length
+      ? await git(root, ['log', '--parents', '--topo-order', '-n', String(count + 1), '--skip', String(skip), ...format, ...revisions, '--'])
+      : ''
+    const records = logRecords(output)
+    const commits = records.slice(0, count).flatMap(parseGraphRecord)
+    let headCommit: GitGraphCommit | undefined
+    if (!skip && head && !commits.some((commit) => commit.hash === head)) {
+      const headInScope = allBranches || tip === head || (tip && await git(root, ['merge-base', '--is-ancestor', head, tip]).then(() => true, () => false))
+      if (headInScope) {
+        [headCommit] = parseGitGraph(await git(root, ['log', '-n', '1', ...format, head, '--']))
+      }
     }
     const files = parseStatus(status)
     return {
       ok: true, commits, headHash: head, branch, dirty: files.length > 0,
+      ...(headCommit ? { headCommit } : {}),
+      hasMore: records.length > count, nextSkip: skip + Math.min(records.length, count), branches,
       uncommittedCount: files.length,
       staged: files.filter((file) => file.staged).length,
       unstaged: files.filter((file) => file.unstaged).length

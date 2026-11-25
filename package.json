@@ -26,7 +26,6 @@
     "dist:app": "node scripts/prepare-runtime.mjs --arch arm64 && electron-vite build && electron-builder --mac dir --arm64"
   },
   "dependencies": {
-    "@tomplum/react-git-log": "^3.5.1",
     "diff": "^9.0.0",
     "node-pty": "^1.1.0",
     "smol-toml": "^1.9.1"

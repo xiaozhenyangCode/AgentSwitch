@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { FileChange, FileChanges, GitCommit, GitCommitFile, GitStatus } from '@shared/types'
+import type { FileChange, FileChanges, GitCommitFile, GitStatus } from '@shared/types'
 import type { Thread } from '../state/chat'
-import { fmtAgo, t } from '../state/i18n'
+import { t } from '../state/i18n'
 import { useApp } from '../state/AppContext'
 import type { RunGit } from '../state/useProjectGit'
 import { gitBranchLabel, gitInput } from './GitBranchMenu'
-import { GitGraphView } from './GitGraphView'
-import { Segmented } from './common'
 import { DiffView } from './Process'
-import { IconChevronDown, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
+import { IconBranch, IconChevronDown, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
 
 /**
  * 文件修改 panel (right of the chat): the project's working-tree changes from git, or — when
@@ -124,16 +122,13 @@ const WIDTH_KEY = 'agentswitch.changesWidth'
 const MIN_W = 300
 const MAX_W = 760
 
-export type ChangesTab = 'changes' | 'history'
-
 export function ChangesPanel({
   changes,
   loading,
   dir,
   onRefresh,
   onClose,
-  tab,
-  onTabChange,
+  onViewHistory,
   gitTools
 }: {
   changes: FileChanges | null
@@ -141,8 +136,7 @@ export function ChangesPanel({
   dir: string | null
   onRefresh: () => void
   onClose: () => void
-  tab: ChangesTab
-  onTabChange: (tab: ChangesTab) => void
+  onViewHistory: () => void
   gitTools: {
     status: Extract<GitStatus, { repo: true }>
     disabled: boolean
@@ -186,7 +180,6 @@ export function ChangesPanel({
 
   const files = changes?.files ?? []
   const canShowHistory = !!dir && (!!gitTools || !!changes?.repo)
-  const historyDir = tab === 'history' && canShowHistory ? dir : null
   return (
     <aside className="relative flex h-full shrink-0 flex-col border-l border-hairline bg-surface/60" style={{ width }}>
       <div
@@ -200,21 +193,21 @@ export function ChangesPanel({
       />
       <div className="drag flex h-14 shrink-0 items-center gap-2 border-b border-hairline px-4">
         <span className="text-[14px] font-semibold text-ink">{t('chg.title')}</span>
-        {!historyDir && files.length > 0 && (
+        {files.length > 0 && (
           <span className="text-[12px] text-ink-3">
             {t('chg.nFiles', { n: files.length + (changes?.more ?? 0) })} · <Counts added={changes!.added} removed={changes!.removed} />
           </span>
         )}
         <div className="flex-1" />
-        {!historyDir && changes && !changes.repo && files.length > 0 && <span className="text-[11px] text-ink-3">{t('chg.fromChat')}</span>}
-        {!historyDir && <button
+        {changes && !changes.repo && files.length > 0 && <span className="text-[11px] text-ink-3">{t('chg.fromChat')}</span>}
+        <button
           className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink"
           onClick={onRefresh}
           disabled={!dir}
           title={t('common.refresh')}
         >
           {loading ? <Spinner size={13} /> : <IconRefresh size={14} />}
-        </button>}
+        </button>
         <button className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink" onClick={onClose} title={t('common.close')}>
           <IconX size={14} />
         </button>
@@ -222,41 +215,35 @@ export function ChangesPanel({
 
       {canShowHistory && (
         <div className="shrink-0 border-b border-hairline px-3 py-1.5">
-          <Segmented size="sm" value={historyDir ? 'history' : 'changes'} onChange={onTabChange} options={[
-            { value: 'changes', label: t('git.changesTab') },
-            { value: 'history', label: t('git.historyTab') }
-          ]} />
+          <button type="button" onClick={onViewHistory}
+            className="flex h-7 items-center gap-2 rounded-lg px-2 text-[12px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
+            <IconBranch size={13} aria-hidden="true" />
+            {t('git.historyTab')}
+          </button>
         </div>
       )}
-      {historyDir && (
-        <GitGraphView key={historyDir} dir={historyDir} renderFile={(file) => <FileRow key={file.path} f={file} />}
-          onViewChanges={() => { onTabChange('changes'); onRefresh() }} />
-      )}
-      <div className={historyDir ? 'hidden' : 'contents'}>
-        {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-          {!dir ? (
-            <Empty text={t('chg.noProject')} />
-          ) : changes === null ? (
-            <div className="flex justify-center py-10 text-ink-3">
-              <Spinner size={16} />
-            </div>
-          ) : tools?.status.dirty ? (
-            <>
-              {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
-              <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
-                count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
-              <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
-                count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
-            </>
-          ) : files.length === 0 ? (
-            <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
-          ) : (
-            files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} />)
-          )}
-          {!!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
-        </div>
-        {!historyDir && tools && dir && <CommitHistory key={dir + ':history'} dir={dir} git={tools.status} />}
+      {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {!dir ? (
+          <Empty text={t('chg.noProject')} />
+        ) : changes === null ? (
+          <div className="flex justify-center py-10 text-ink-3">
+            <Spinner size={16} />
+          </div>
+        ) : tools?.status.dirty ? (
+          <>
+            {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
+            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
+              count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
+            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
+              count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
+          </>
+        ) : files.length === 0 ? (
+          <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
+        ) : (
+          files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} />)
+        )}
+        {!!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
       </div>
     </aside>
   )
@@ -320,7 +307,7 @@ function ChangeGroup({ name, files, count, disabled, busy, run, onDiscard }: {
   )
 }
 
-function FileRow({ f, children }: { f: FileChange | GitCommitFile; children?: ReactNode }) {
+export function FileRow({ f, children }: { f: FileChange | GitCommitFile; children?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const slash = f.path.lastIndexOf('/')
   const name = f.path.slice(slash + 1)
@@ -356,7 +343,7 @@ function FileRow({ f, children }: { f: FileChange | GitCommitFile; children?: Re
         </div>
       </div>
       {open && (
-        <div className="mt-0.5 mb-2 ml-6">
+        <div className={`mt-0.5 mb-2 ${'abs' in f ? 'ml-6' : 'git-diff-reveal'}`}>
           {f.binary ? (
             <div className="px-2 py-1.5 text-[12px] text-ink-3">{t('chg.binary')}</div>
           ) : f.diff ? (
@@ -408,54 +395,6 @@ function CommitSection({ git, disabled, busy, run }: {
           title={busy ? t('git.agentBusy') : !message.trim() ? t('git.enterMessage') : undefined}
           onClick={() => commit('stageAndCommit')}>{t('git.stageAndCommit')}</button>
       )}
-    </div>
-  )
-}
-
-function CommitHistory({ dir, git }: { dir: string; git: Extract<GitStatus, { repo: true }> }) {
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [history, setHistory] = useState<GitCommit[] | null>(null)
-  const [historyError, setHistoryError] = useState('')
-  const { toast } = useApp()
-  useEffect(() => {
-    if (!historyOpen) return
-    let active = true
-    setHistoryError('')
-    const fail = (desc: string) => {
-      if (active) {
-        setHistoryError(desc)
-        toast({ kind: 'error', title: t('git.failed'), desc })
-      }
-    }
-    void window.agentswitch.git.log(dir).then((result) => {
-      if (result.ok) {
-        if (active) setHistory(result.commits)
-      } else fail(result.error)
-    }).catch((error) => fail(String(error)))
-    return () => { active = false }
-  }, [dir, git, historyOpen, toast])
-
-  return (
-    <div className="shrink-0 space-y-2 border-t border-hairline p-3">
-      <button className="flex w-full items-center gap-1.5 text-left text-[12px] text-ink-2" aria-expanded={historyOpen}
-        onClick={() => setHistoryOpen(!historyOpen)}>
-        <IconChevronDown size={12} className={`shrink-0 transition-transform ${historyOpen ? '' : '-rotate-90'}`} />
-        {t('git.history')}
-      </button>
-      {historyOpen && <div className="mt-1 max-h-[min(180px,24vh)] overflow-y-auto">
-          {historyError ? <p className="truncate py-1 text-[11px] text-danger" title={historyError}>{historyError}</p>
-            : history === null ? <Spinner size={13} />
-            : history.length === 0 ? <p className="py-1 text-[11px] text-ink-3">{t('git.noCommits')}</p>
-            : history.map((entry) => (
-              <div key={entry.sha} className="border-b border-hairline py-1 last:border-0">
-                <div className="flex items-baseline gap-2">
-                  <code className="text-[11px] text-ink-3">{entry.sha}</code>
-                  <span className="min-w-0 truncate text-[12px] text-ink" title={entry.subject}>{entry.subject}</span>
-                </div>
-                <div className="truncate text-[11px] text-ink-3">{entry.author} · {fmtAgo(entry.authoredAt)}</div>
-              </div>
-            ))}
-        </div>}
     </div>
   )
 }

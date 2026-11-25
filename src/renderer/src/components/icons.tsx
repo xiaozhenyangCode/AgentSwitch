@@ -22,6 +22,19 @@ export const IconBranch = (p: P) => (
     <path d="M6 7v10m12-10a8 8 0 0 1-8 8H6" />
   </svg>
 )
+export const IconTag = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M20 14 14 20a2 2 0 0 1-2.8 0L4 12.8V4h8.8l7.2 7.2a2 2 0 0 1 0 2.8Z" />
+    <circle cx="8.5" cy="8.5" r="1" />
+  </svg>
+)
+export const IconFocus = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="6" />
+    <circle cx="12" cy="12" r="2" />
+    <path d="M12 3v3m0 12v3M3 12h3m12 0h3" />
+  </svg>
+)
 export const IconWorkflow = (p: P) => (
   <svg {...base(p)}>
     <rect x="3" y="3" width="6" height="6" rx="1.5" />

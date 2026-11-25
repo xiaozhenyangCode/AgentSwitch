@@ -913,8 +913,20 @@ export interface GitGraphCommit extends GitCommit {
   refs: GitGraphRef[]
 }
 
+export interface GitGraphOptions {
+  limit?: number
+  skip?: number
+  /** HEAD, an exact local/remote branch, or null for all public refs. */
+  branch?: string | null
+}
+
 export interface GitGraphData {
   commits: GitGraphCommit[]
+  /** The checked-out commit when it falls outside the first page's window. */
+  headCommit?: GitGraphCommit
+  hasMore: boolean
+  nextSkip: number
+  branches: GitBranch[]
   headHash: string | null
   branch: string | null
   dirty: boolean
@@ -930,6 +942,8 @@ export interface GitCommitDetail extends GitCommit {
   body: string
   email: string
   files: GitCommitFile[]
+  added: number
+  removed: number
   more?: number
 }
 

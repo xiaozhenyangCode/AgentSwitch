@@ -4,16 +4,27 @@
 /* dark: variant follows the .dark class (manual switch), not only the OS media query */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* The library sizes its topology column by lane count. Keep the metadata column
-   flexible and allow a busy graph's lanes to scroll inside the panel. */
-.commit-graph > :first-child {
-  max-width: 38%;
-  overflow-x: auto;
+.git-workspace {
+  --git-lane-0: #627b9c;
+  --git-lane-1: #8a729d;
+  --git-lane-2: #548680;
+  --git-lane-3: #a27a50;
+  --git-lane-4: #a56b7c;
+  --git-lane-5: #647f9a;
 }
 
-.commit-graph > :last-child {
-  min-width: 0;
-  flex: 1;
+.dark .git-workspace {
+  --git-lane-0: #82a2cb;
+  --git-lane-1: #aa8bbe;
+  --git-lane-2: #6eaaa0;
+  --git-lane-3: #cba878;
+  --git-lane-4: #bd8798;
+  --git-lane-5: #92a5b8;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .git-diff-reveal { animation: git-diff-reveal 120ms ease-out; }
+  @keyframes git-diff-reveal { from { opacity: 0; } to { opacity: 1; } }
 }
 
 /*

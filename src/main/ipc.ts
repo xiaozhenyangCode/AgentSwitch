@@ -343,7 +343,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
-  ipcMain.handle(IPC.gitGraph, (_e, dir: unknown, limit?: unknown) => gitGraph(dir, limit))
+  ipcMain.handle(IPC.gitGraph, (_e, dir: unknown, options?: unknown) => gitGraph(dir, options))
   ipcMain.handle(IPC.gitCommitDetail, (_e, dir: unknown, hash: unknown) => gitCommitDetail(dir, hash))
   ipcMain.handle(IPC.gitMutate, (_e, dir: unknown, op: unknown, threadId: unknown) =>
     gitMutate(dir, op, async (root) => {

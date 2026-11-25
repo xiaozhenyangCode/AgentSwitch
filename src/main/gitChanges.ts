@@ -181,19 +181,24 @@ export async function gitCommitDetail(dir: unknown, hash: unknown): Promise<GitR
     const tokens = names.split('\0')
     const files: GitCommitFile[] = []
     let total = 0
+    let added = 0
+    let removed = 0
     for (let i = 0; i < tokens.length && tokens[i];) {
       const code = tokens[i++][0]
       const oldPath = code === 'R' || code === 'C' ? tokens[i++] : undefined
       const path = tokens[i++]
       if (!path) break
       total++
+      const change = preview(changeStatus(code), stats.get(path))
+      added += change.added
+      removed += change.removed
       if (files.length < MAX_FILES) {
-        files.push({ path, ...(oldPath ? { oldPath } : {}), ...preview(changeStatus(code), stats.get(path)) })
+        files.push({ path, ...(oldPath ? { oldPath } : {}), ...change })
       }
     }
     return {
       ok: true,
-      commit: { ...commit, parents, body: body.replace(/\n$/, ''), email, files, ...(total > files.length ? { more: total - files.length } : {}) }
+      commit: { ...commit, parents, body: body.replace(/\n$/, ''), email, files, added, removed, ...(total > files.length ? { more: total - files.length } : {}) }
     }
   } catch (error) {
     return gitFailure(error)

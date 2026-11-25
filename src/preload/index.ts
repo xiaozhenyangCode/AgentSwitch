@@ -10,6 +10,7 @@ import {
   type GitCommit,
   type GitCommitDetail,
   type GitGraphData,
+  type GitGraphOptions,
   type GitMutation,
   type GitMutationResult,
   type GitResult,
@@ -193,7 +194,7 @@ const api = {
     changes: (dir: string, split = false): Promise<FileChanges> => ipcRenderer.invoke(IPC.gitChanges, dir, split),
     status: (dir: string): Promise<GitResult<GitStatus>> => ipcRenderer.invoke(IPC.gitStatus, dir),
     log: (dir: string, limit?: number): Promise<GitResult<{ commits: GitCommit[] }>> => ipcRenderer.invoke(IPC.gitLog, dir, limit),
-    graph: (dir: string, limit?: number): Promise<GitResult<GitGraphData>> => ipcRenderer.invoke(IPC.gitGraph, dir, limit),
+    graph: (dir: string, options?: number | GitGraphOptions): Promise<GitResult<GitGraphData>> => ipcRenderer.invoke(IPC.gitGraph, dir, options),
     commitDetail: (dir: string, hash: string): Promise<GitResult<{ commit: GitCommitDetail }>> => ipcRenderer.invoke(IPC.gitCommitDetail, dir, hash),
     mutate: (dir: string, op: GitMutation, threadId: string | null): Promise<GitMutationResult> => ipcRenderer.invoke(IPC.gitMutate, dir, op, threadId)
   },

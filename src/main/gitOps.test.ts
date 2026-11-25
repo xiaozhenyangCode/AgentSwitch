@@ -81,7 +81,7 @@ describe('Git graph parsing', () => {
     const subject = '修复 “分支”\t[#42]\nMerge the second line'
     const row = (hash: string, parents: string[], refs: string, summary: string) =>
       '\x1e' + [hash, hash.slice(0, 7), parents.join(' '), refs, summary, 'José', '1700000000'].join('\x1f') + '\n'
-    const output = row(hashes[0], hashes.slice(1), 'HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1.0, refs/stash', subject) +
+    const output = row(hashes[0], hashes.slice(1), 'HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1.0, refs/stash, refs/agentswitch/checkpoints/t1/after', subject) +
       '\x1etruncated\n' + row(hashes[1], [hashes[2]], 'refs/heads/feature,topic', 'Feature') +
       row(hashes[2], [], '', 'Root')
     const commits = parseGitGraph(output)
@@ -258,7 +258,12 @@ describe('Git workbench operations', () => {
     })
     await git(repo, 'branch', 'newer', detached)
     await git(repo, 'switch', '--detach', main)
-    expect(await gitGraph(repo, 1)).toMatchObject({ ok: true, headHash: main, branch: null, commits: [{ hash: main }] })
+    expect(await gitGraph(repo, 1)).toMatchObject({
+      ok: true, headHash: main, branch: null, commits: [{ hash: detached }], headCommit: { hash: main }, hasMore: true, nextSkip: 1
+    })
+    expect(await gitGraph(repo, { limit: 1, skip: 1 })).toMatchObject({
+      ok: true, commits: [{ hash: main }], hasMore: false, nextSkip: 2
+    })
 
     const unborn = join(temp, 'unborn-graph')
     await initRepository(unborn)
@@ -267,16 +272,68 @@ describe('Git workbench operations', () => {
     await writeFile(join(unborn, 'both.txt'), 'unstaged edit\n')
     await writeFile(join(unborn, 'untracked.txt'), 'new\n')
     expect(await gitGraph(unborn)).toEqual({
-      ok: true, commits: [], headHash: null, branch: 'main', dirty: true, uncommittedCount: 2, staged: 1, unstaged: 2
+      ok: true, commits: [], headHash: null, branch: 'main', dirty: true, uncommittedCount: 2, staged: 1, unstaged: 2,
+      hasMore: false, nextSkip: 0, branches: []
     })
+    expect(await gitGraph(unborn, { branch: 'HEAD' })).toMatchObject({ ok: true, commits: [] })
     expect(await gitGraph(temp)).toMatchObject({ ok: false, error: expect.any(String) })
+  })
+
+  it('excludes checkpoint-only commits and hides checkpoint decorations on public commits', async () => {
+    const head = await git(repo, 'rev-parse', 'HEAD')
+    const ref = 'refs/agentswitch/checkpoints/turn'
+    const snapshot = await git(repo, 'commit-tree', 'HEAD^{tree}', '-p', head, '-m', 'Internal checkpoint')
+    await git(repo, 'update-ref', ref + '/after', snapshot)
+    await git(repo, 'update-ref', ref + '/before', head)
+
+    expect(await gitGraph(repo)).toMatchObject({ ok: true, commits: [{
+      hash: head, refs: [{ kind: 'head', name: 'HEAD' }, { kind: 'branch', name: 'main' }]
+    }] })
+    expect(await gitGraph(repo, { branch: ref + '/after' })).toMatchObject({ ok: false, code: 'invalidBranch' })
+  })
+
+  it('filters exact local and remote histories and rejects revision syntax', async () => {
+    const root = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'topic.txt', 'topic', 'Topic commit')
+    const topic = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'update-ref', 'refs/remotes/origin/topic', topic)
+    await git(repo, 'switch', 'main')
+    await addCommit(repo, 'main.txt', 'main', 'Main commit')
+    const main = await git(repo, 'rev-parse', 'HEAD')
+
+    for (const branch of ['topic', 'refs/heads/topic', 'refs/remotes/origin/topic']) {
+      const result = await gitGraph(repo, { branch })
+      expect(result).toMatchObject({ ok: true, commits: [{ hash: topic }, { hash: root }], headHash: main, hasMore: false })
+      expect(result).not.toHaveProperty('headCommit')
+    }
+    expect(await gitGraph(repo, { branch: 'HEAD' })).toMatchObject({ ok: true, commits: [{ hash: main }, { hash: root }] })
+    expect(await gitGraph(repo, { branch: '__ALL__' })).toMatchObject({ ok: true, commits: expect.arrayContaining([
+      expect.objectContaining({ hash: topic }), expect.objectContaining({ hash: main })
+    ]) })
+    for (const branch of ['--all', 'HEAD~1', 'topic\0--all', 'refs/tags/topic', 'missing']) {
+      expect(await gitGraph(repo, { branch })).toMatchObject({ ok: false, code: 'invalidBranch' })
+    }
+  })
+
+  it('reads distinct pages and reports whether another page exists at exact boundaries', async () => {
+    await addCommit(repo, 'second.txt', 'two', 'Second')
+    await addCommit(repo, 'third.txt', 'three', 'Third')
+    await addCommit(repo, 'fourth.txt', 'four', 'Fourth')
+    expect(await gitGraph(repo, { limit: 2, skip: -1 })).toMatchObject({
+      ok: true, commits: [{ subject: 'Fourth' }, { subject: 'Third' }], hasMore: true, nextSkip: 2
+    })
+    expect(await gitGraph(repo, { limit: 2, skip: 2 })).toMatchObject({
+      ok: true, commits: [{ subject: 'Second' }, { subject: 'Initial commit' }], hasMore: false, nextSkip: 4
+    })
+    expect(await gitGraph(repo, { limit: 2, skip: 4 })).toMatchObject({ ok: true, commits: [], hasMore: false, nextSkip: 4 })
   })
 
   it('returns a root diff, a first-parent merge diff and normal rename/binary changes', async () => {
     const root = await git(repo, 'rev-parse', 'HEAD')
     const shortHash = await git(repo, 'rev-parse', '--short', root)
     expect(await gitCommitDetail(repo, shortHash)).toMatchObject({
-      ok: true, commit: { hash: root, shortHash, parents: [], body: '', email: 'git-gui@example.invalid',
+      ok: true, commit: { hash: root, shortHash, parents: [], body: '', email: 'git-gui@example.invalid', added: 1, removed: 0,
         files: [{ path: 'tracked.txt', status: 'A', added: 1, removed: 0, diff: expect.stringContaining('+initial') }] }
     })
 

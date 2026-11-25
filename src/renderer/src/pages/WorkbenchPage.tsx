@@ -16,7 +16,8 @@ import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
 import { estimateMessageCost, fmtTokens, useUsage } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
-import { ChangesPanel, Counts, useFileChanges, type ChangesTab } from '../components/ChangesPanel'
+import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
+import { GitGraphView } from '../components/GitGraphView'
 import { ProjectBar } from '../components/ProjectBar'
 import { GitBranchMenu } from '../components/GitBranchMenu'
 import { useProjectGit } from '../state/useProjectGit'
@@ -479,19 +480,13 @@ export function WorkbenchPage() {
 
   // 文件修改 panel: open state remembered across chats
   const [changesOpen, setChangesOpen] = useState(() => localStorage.getItem('agentswitch.changesOpen') === '1')
-  const [changesTab, setChangesTab] = useState<ChangesTab>('changes')
+  const [historyDir, setHistoryDir] = useState<string | null>(null)
   const setChangesVisible = (visible: boolean) => {
     localStorage.setItem('agentswitch.changesOpen', visible ? '1' : '0')
     setChangesOpen(visible)
   }
-  const openChangesTab = (tab: ChangesTab) => {
-    setChangesTab(tab)
-    setChangesVisible(true)
-  }
-  const toggleChanges = () => {
-    if (changesOpen) setChangesTab('changes')
-    setChangesVisible(!changesOpen)
-  }
+  const toggleChanges = () => setChangesVisible(!changesOpen)
+  const openHistory = () => setHistoryDir(ctx.projectDir)
   const gitBusy = isThreadBusy(thread)
   const fc = useFileChanges(thread, ctx.projectDir, gitBusy, showGitTools && changesOpen)
   const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, gitBusy, fc.refresh)
@@ -761,7 +756,7 @@ export function WorkbenchPage() {
               onNewHere={startThread}
               gitBranch={showGitTools && git.status && (
                 <GitBranchMenu key={ctx.projectDir} dir={ctx.projectDir!} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
-                  run={git.run} onViewChanges={() => openChangesTab('changes')} onViewHistory={() => openChangesTab('history')} />
+                  run={git.run} onViewChanges={() => setChangesVisible(true)} onViewHistory={openHistory} />
               )}
             />
           }
@@ -900,9 +895,18 @@ export function WorkbenchPage() {
       </div>
       {changesOpen && (
         <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={showGitTools ? git.refreshAll : fc.refresh}
-          onClose={toggleChanges} tab={changesTab} onTabChange={setChangesTab} gitTools={showGitTools && git.status
+          onClose={toggleChanges} onViewHistory={openHistory} gitTools={showGitTools && git.status
             ? { status: git.status, disabled: git.disabled || fc.loading, busy: gitBusy, run: git.run }
             : null} />
+      )}
+      {historyDir && historyDir === ctx.projectDir && (
+        <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)}
+          onViewChanges={() => {
+            setHistoryDir(null)
+            setChangesVisible(true)
+            if (showGitTools) git.refreshAll()
+            else fc.refresh()
+          }} />
       )}
       {rewindModal && (
         <RewindDialog
