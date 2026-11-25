@@ -125,7 +125,7 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
     [visible, data?.headHash, data?.dirty]
   )
   const graphWidth = GRAPH_LEFT_PAD * 2 + (topology.laneCount - 1) * GRAPH_LANE_GAP
-  const columns = `${graphWidth}px minmax(145px, 1fr) 104px 86px 83px`
+  const columns = `${graphWidth}px minmax(145px, 1fr) 96px 78px 80px`
   const tabStop = detail && byHash.has(detail.hash) ? detail.hash : visible[0]?.hash
 
   useLayoutEffect(() => {
@@ -171,7 +171,8 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
   return (
     <dialog ref={dialog} aria-labelledby="git-workspace-title"
       onCancel={(event) => { event.preventDefault(); onClose() }}
-      className="git-workspace no-drag fixed inset-x-3 top-11 bottom-3 m-0 h-auto max-h-none w-auto max-w-none overflow-hidden rounded-2xl border border-hairline bg-surface text-ink shadow-2xl backdrop:bg-(--scrim)">
+      onMouseDown={(event) => { if (event.target === dialog.current) onClose() }}
+      className="git-workspace no-drag fixed inset-0 m-auto h-[min(640px,calc(100vh-88px))] max-h-none w-[min(1000px,calc(100vw-64px))] max-w-none overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)] backdrop:bg-(--scrim) backdrop:backdrop-blur-md">
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-2 px-3 py-2">
           <h2 id="git-workspace-title" className="mr-2 flex shrink-0 items-center gap-2 text-[13px] font-semibold">
@@ -214,7 +215,7 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
         )}>
           <div ref={list} className="h-full overflow-auto scroll-pt-[32px]" onKeyDown={navigateRows}
             aria-label={t('git.historyTab')} role="region">
-            <div style={{ minWidth: graphWidth + 418 }}>
+            <div style={{ minWidth: graphWidth + 399 }}>
               <div className="sticky top-0 z-10 grid h-[32px] items-center border-b border-hairline bg-surface-2 text-[11px] font-medium text-ink-2" style={{ gridTemplateColumns: columns }}>
                 <span className="col-start-2 pl-2">{t('git.graphSubject')}</span>
                 <span className="pl-2">{t('git.graphAuthor')}</span>
