@@ -95,7 +95,7 @@ export function Segmented<T extends string>({
   )
 }
 
-/** Centered sheet over a frosted backdrop. */
+/** Centered sheet over a translucent scrim. */
 export function Modal({
   children,
   onClose,
@@ -115,7 +115,7 @@ export function Modal({
   useLayer({ onEsc: escClose ? onClose : null, onClose: closeOnCmdW ? onClose : null })
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim) backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim)"
       onMouseDown={() => backdropClose && onClose()}
     >
       <div

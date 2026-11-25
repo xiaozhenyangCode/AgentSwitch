@@ -47,9 +47,9 @@
   --tint: #000000;
   --sidebar: #f3f3f5;
   --tile: #ffffff;
-  --scrim: rgba(0, 0, 0, 0.2);
+  --scrim: rgba(0, 0, 0, 0.28);
   /* lighter scrim for sheets the page should still show through (settings) */
-  --scrim-soft: rgba(0, 0, 0, 0.16);
+  --scrim-soft: rgba(0, 0, 0, 0.22);
   --accent: #007aff;
   --accent-hover: #0066d6;
   /* status: text on canvas, soft background, solid dot / bar */
@@ -83,8 +83,8 @@
   --tint: #ffffff;
   --sidebar: #161618;
   --tile: #2c2c2e;
-  --scrim: rgba(0, 0, 0, 0.45);
-  --scrim-soft: rgba(0, 0, 0, 0.28);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --scrim-soft: rgba(0, 0, 0, 0.42);
   --accent: #0a84ff;
   --accent-hover: #409cff;
   --ok: #30d158;

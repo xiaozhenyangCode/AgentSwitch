@@ -279,7 +279,7 @@ export function SettingsDialog() {
   const shown = settingsOpen
   return (
     <div
-      className={`no-drag fixed inset-0 z-40 flex items-center justify-center bg-(--scrim-soft) backdrop-blur-[3px] ${shown ? 'scrim-in' : 'scrim-out'}`}
+      className={`no-drag fixed inset-0 z-40 flex items-center justify-center bg-(--scrim-soft) ${shown ? 'scrim-in' : 'scrim-out'}`}
       onMouseDown={(e) => e.target === e.currentTarget && closeSettings()}
       role="presentation"
     >

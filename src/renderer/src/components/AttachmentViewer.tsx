@@ -30,13 +30,13 @@ function ImageView({ a, onClose, open, reveal }: ViewProps) {
   const [missing, setMissing] = useState(!a.path)
   const src = !missing && a.path ? fileUrl(a.path) : a.thumb
   return (
-    <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-[rgba(0,0,0,0.55)] backdrop-blur-md" onClick={onClose}>
+    <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-(--scrim)" onClick={onClose}>
       {src ? (
         <img src={src} alt={a.name} onError={() => setMissing(true)} className={`max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)] ${missing ? 'min-w-[240px] blur-[0.3px]' : ''}`} />
       ) : (
-        <div className="rounded-2xl bg-white/10 px-6 py-10 text-[14px] text-white/80">{t('att.missing')}</div>
+        <div className="rounded-2xl bg-[#000]/65 px-6 py-10 text-[14px] text-white/80">{t('att.missing')}</div>
       )}
-      <div className="flex items-center gap-3 text-[14px] font-medium text-white/90" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-3 rounded-full bg-[#000]/65 px-3 py-1 text-[14px] font-medium text-white/90" onClick={(e) => e.stopPropagation()}>
         <span className="max-w-[40vw] truncate">{a.name}</span>
         {missing ? (
           <span className="text-[12.5px] font-normal text-white/70">{t('att.missingThumb')}</span>
@@ -70,7 +70,7 @@ function TextView({ a, onClose, open, reveal }: ViewProps) {
   }, [a.path])
   const { data, failed } = state
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-(--scrim-soft) backdrop-blur-[3px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-(--scrim-soft)" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="flex max-h-[80vh] w-[760px] max-w-[88vw] flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.22)]">
         <div className="flex items-center gap-2.5 border-b border-hairline px-4 py-3">
           <IconFile size={16} className="shrink-0 text-ink-2" />

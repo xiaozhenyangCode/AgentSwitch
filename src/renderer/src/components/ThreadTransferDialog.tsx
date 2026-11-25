@@ -115,7 +115,7 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div
-      className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) backdrop-blur-[3px] scrim-in"
+      className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) scrim-in"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="sheet-in flex h-[560px] max-h-[85vh] w-[660px] max-w-[92vw] flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)]">
@@ -293,7 +293,7 @@ export function ImportThreadsDialog({ bundle, filePath, onClose }: { bundle: Thr
 
   return createPortal(
     <div
-      className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) backdrop-blur-[3px] scrim-in"
+      className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) scrim-in"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="sheet-in flex h-[600px] max-h-[88vh] w-[720px] max-w-[94vw] flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)]">

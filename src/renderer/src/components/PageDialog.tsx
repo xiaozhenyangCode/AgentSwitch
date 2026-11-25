@@ -28,7 +28,7 @@ export function PageDialog() {
   if (which === 'workbench') return null
   return (
     <div
-      className={`no-drag fixed inset-0 z-40 bg-(--scrim-soft) backdrop-blur-[3px] ${open ? 'scrim-in' : 'scrim-out'}`}
+      className={`no-drag fixed inset-0 z-40 bg-(--scrim-soft) ${open ? 'scrim-in' : 'scrim-out'}`}
       onMouseDown={(e) => e.target === e.currentTarget && close()}
       role="presentation"
     >

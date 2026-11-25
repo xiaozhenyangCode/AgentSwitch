@@ -80,7 +80,8 @@ const fullTime = (ts: number) => {
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
-  const { page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar } = useApp()
+  const { info, page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar } = useApp()
+  const version = info?.version ? `v${info.version.replace(/^v/i, '')}` : null
   const chat = useChat()
   const start = useStartThread()
   const attention = profiles.filter((p) => p.status === 'uninstalled' || p.status === 'not_logged_in').length
@@ -182,7 +183,10 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
 
       <div className="flex items-center gap-2.5 px-5 pb-4">
         <BrandMark size={32} />
-        <div className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentSwitch</div>
+        <div className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1.5">
+          <span className="text-[15px] leading-5 font-semibold tracking-tight text-ink">AgentSwitch</span>
+          {version && <span className="truncate text-[12px] leading-5 text-ink-2 tabular-nums" title={version}>{version}</span>}
+        </div>
       </div>
 
       <div className="px-3 pb-3" hidden={!chatsAvailable}>

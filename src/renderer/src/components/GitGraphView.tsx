@@ -172,7 +172,7 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
     <dialog ref={dialog} aria-labelledby="git-workspace-title"
       onCancel={(event) => { event.preventDefault(); onClose() }}
       onMouseDown={(event) => { if (event.target === dialog.current) onClose() }}
-      className="git-workspace no-drag fixed inset-0 m-auto h-[min(640px,calc(100vh-88px))] max-h-none w-[min(1000px,calc(100vw-64px))] max-w-none overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)] backdrop:bg-(--scrim) backdrop:backdrop-blur-md">
+      className="git-workspace no-drag fixed inset-0 m-auto h-[calc(100vh*2/3)] min-h-[min(460px,calc(100vh-32px))] max-h-[calc(100vh-32px)] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)] backdrop:bg-(--scrim)">
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-2 px-3 py-2">
           <h2 id="git-workspace-title" className="mr-2 flex shrink-0 items-center gap-2 text-[13px] font-semibold">

@@ -148,22 +148,24 @@ export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?:
       </span>
       {open &&
         createPortal(
-          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-[rgba(0,0,0,0.55)] backdrop-blur-md" onClick={() => setOpen(false)}>
+          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-(--scrim)" onClick={() => setOpen(false)}>
             <img src={src} alt={alt} className="max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)]" />
-            <div className="flex items-center gap-3 text-[14px] font-medium text-white/90">
-              {alt && <span>{alt}</span>}
-              {path && (
-                <button
-                  className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[13px] hover:bg-white/25"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    void window.agentswitch.sys.showInFolder(path)
-                  }}
-                >
-                  <IconFolder size={14} /> {t('common.showInFinder')}
-                </button>
-              )}
-            </div>
+            {(alt || path) && (
+              <div className="flex items-center gap-3 rounded-full bg-[#000]/65 px-3 py-1 text-[14px] font-medium text-white/90">
+                {alt && <span>{alt}</span>}
+                {path && (
+                  <button
+                    className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[13px] hover:bg-white/25"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void window.agentswitch.sys.showInFolder(path)
+                    }}
+                  >
+                    <IconFolder size={14} /> {t('common.showInFinder')}
+                  </button>
+                )}
+              </div>
+            )}
           </div>,
           document.body
         )}
