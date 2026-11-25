@@ -5,6 +5,7 @@ import { t } from '../state/i18n'
 import { useApp } from '../state/AppContext'
 import type { RunGit } from '../state/useProjectGit'
 import { gitBranchLabel, gitInput } from './GitBranchMenu'
+import { GitOperationBanner } from './GitOperationBanner'
 import { DiffView } from './Process'
 import { IconBranch, IconChevronDown, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
 
@@ -222,6 +223,7 @@ export function ChangesPanel({
           </button>
         </div>
       )}
+      {tools && <GitOperationBanner status={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
       {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {!dir ? (
@@ -322,6 +324,7 @@ export function FileRow({ f, children }: { f: FileChange | GitCommitFile; childr
           <IconChevronDown size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? '' : '-rotate-90'}`} />
           <span className={`grid h-[18px] w-[18px] shrink-0 place-items-center rounded font-mono text-[10.5px] font-semibold ${STATUS_CLS[f.status]}`}
             title={t(`chg.st.${f.status}`)}>{f.status}</span>
+          {'conflicted' in f && f.conflicted && <span className="shrink-0 text-[10.5px] font-medium text-danger">{t('git.conflictTag')}</span>}
           <span className="min-w-0 flex-1 truncate text-[12.5px]">
             <span className={`text-ink ${f.status === 'D' ? 'line-through opacity-70' : ''}`}>{name}</span>
             {parent && <span className="ml-1.5 text-ink-3">{parent}</span>}
@@ -364,10 +367,13 @@ function CommitSection({ git, disabled, busy, run }: {
   run: RunGit
 }) {
   const [message, setMessage] = useState('')
-  if (!git.dirty) return null
-  const disabledReason = busy ? t('git.agentBusy') : disabled ? t('git.waiting')
-    : !message.trim() ? t('git.enterMessage') : !git.staged ? t('git.noStaged') : undefined
-  const canStageAndCommit = !disabled && !!message.trim() && git.unstaged > 0 && !git.staged
+  if (!git.dirty && git.operation !== 'merge') return null
+  const blockedReason = busy ? t('git.agentBusy') : disabled ? t('git.waiting')
+    : git.conflicts > 0 ? t('git.resolveConflictsFirst', { n: git.conflicts })
+    : git.operation && git.operation !== 'merge' ? t('git.blockedByOperation', { op: t(`git.op.${git.operation}`) })
+    : !message.trim() ? t('git.enterMessage') : undefined
+  const disabledReason = blockedReason ?? (!git.staged && git.operation !== 'merge' ? t('git.noStaged') : undefined)
+  const canStageAndCommit = !blockedReason && git.unstaged > 0 && !git.staged
   const commit = (kind: 'commit' | 'stageAndCommit') => {
     if (kind === 'commit' ? !!disabledReason : !canStageAndCommit) return
     const submitted = message
@@ -392,7 +398,7 @@ function CommitSection({ git, disabled, busy, run }: {
       {disabledReason && <p className="px-1 text-[11px] text-ink-3">{disabledReason}</p>}
       {!git.staged && git.unstaged > 0 && (
         <button className={gitButton + ' w-full'} disabled={!canStageAndCommit}
-          title={busy ? t('git.agentBusy') : !message.trim() ? t('git.enterMessage') : undefined}
+          title={blockedReason}
           onClick={() => commit('stageAndCommit')}>{t('git.stageAndCommit')}</button>
       )}
     </div>

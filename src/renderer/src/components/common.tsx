@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import { useLayer } from '../lib/escStack'
 import type { ProfileConfig, ProfileKind, ProfileState } from '@shared/types'
 import { KIND_META, accountBadge, type BadgeMeta } from '../lib/ui'
@@ -102,7 +102,9 @@ export function Modal({
   width = 500,
   escClose = true,
   closeOnCmdW = true,
-  backdropClose = true
+  backdropClose = true,
+  native = false,
+  label
 }: {
   children: ReactNode
   onClose: () => void
@@ -110,16 +112,36 @@ export function Modal({
   escClose?: boolean
   closeOnCmdW?: boolean
   backdropClose?: boolean
+  native?: boolean
+  label?: string
 }) {
   // Always occupy the topmost layer so Esc / ⌘W never leak to dialogs or the window underneath.
   useLayer({ onEsc: escClose ? onClose : null, onClose: closeOnCmdW ? onClose : null })
+  const dialog = useRef<HTMLDialogElement>(null)
+  useLayoutEffect(() => {
+    const modal = dialog.current
+    if (!modal) return
+    modal.showModal()
+    return () => modal.close()
+  }, [native])
+  const surface = 'max-h-[88vh] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]'
+  if (native) {
+    return (
+      <dialog ref={dialog} aria-label={label} className="no-drag fixed inset-0 m-auto max-w-[calc(100vw-32px)] overflow-visible rounded-2xl bg-transparent text-ink backdrop:bg-(--scrim)"
+        style={{ width }}
+        onCancel={(event) => { event.preventDefault(); if (escClose) onClose() }}
+        onMouseDown={(event) => { if (backdropClose && event.target === dialog.current) onClose() }}>
+        <div className={surface}>{children}</div>
+      </dialog>
+    )
+  }
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-(--scrim)"
       onMouseDown={() => backdropClose && onClose()}
     >
       <div
-        className="max-h-[88vh] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
+        className={surface}
         style={{ width }}
         onMouseDown={(e) => e.stopPropagation()}
       >

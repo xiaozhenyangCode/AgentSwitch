@@ -840,6 +840,7 @@ export interface FileChange {
   removed: number
   staged?: boolean
   unstaged?: boolean
+  conflicted?: boolean
   stagedChange?: FileChangePreview
   unstagedChange?: FileChangePreview
   /** Unified diff (may be cut short); empty for binary files. */
@@ -882,6 +883,9 @@ export interface FileChanges {
 export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode }
 
 export type GitErrorCode = 'invalidBranch' | 'busy' | 'switchChanges' | 'diverged' | 'noUpstream' | 'auth' | 'pushRejected' | 'indexLocked'
+  | 'operationInProgress' | 'unmerged' | 'localChanges'
+
+export type GitOperation = 'merge' | 'rebase' | 'cherryPick' | 'revert'
 
 export type GitMutationResult = GitResult<{ outcome?: GitMutationOutcome }>
 
@@ -890,6 +894,7 @@ type GitMutationOutcome =
   | { kind: 'pull'; count: number | null }
   | { kind: 'push'; target: string; count: number | null; published: boolean }
   | { kind: 'commit'; sha: string; subject: string }
+  | { kind: 'abortOperation'; operation: GitOperation }
 
 export interface GitBranch {
   name: string
@@ -903,6 +908,8 @@ export type GitStatus = { repo: false } | {
   upstream: string | null
   ahead: number
   behind: number
+  operation: GitOperation | null
+  conflicts: number
   dirty: boolean
   staged: number
   unstaged: number
@@ -975,6 +982,7 @@ export type GitMutation =
   | { kind: 'stage' | 'unstage'; path: string }
   | { kind: 'discard'; path: string; untracked: boolean }
   | { kind: 'commit' | 'stageAndCommit'; message: string }
+  | { kind: 'abortOperation'; operation: GitOperation }
 
 /** Read-only preview of an attached file (64 KB cap). */
 export interface AttachmentText extends ExtFileText {

@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import { lstat, realpath, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphOptions, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
+import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphOptions, GitGraphRef, GitMutation, GitMutationResult, GitOperation, GitResult, GitStatus } from '@shared/types'
 import { classifyGitError } from '@shared/gitErrors'
 import { matchesGitCommit, normalizeGitCommitQuery } from '@shared/gitCommitMatch'
 import { getBaseEnv } from './shellEnv'
@@ -111,9 +111,11 @@ export async function gitWorktree(dir: unknown): Promise<{ root: string; dir: st
   }
 }
 
+const conflictCodes = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'])
+
 export function parseStatus(output: string) {
   const tokens = output.split('\0')
-  const files: { xy: string; path: string; oldPath?: string; staged: boolean; unstaged: boolean }[] = []
+  const files: { xy: string; path: string; oldPath?: string; staged: boolean; unstaged: boolean; conflicted: boolean }[] = []
   for (let i = 0; i < tokens.length; i++) {
     const entry = tokens[i]
     if (entry.length < 4) continue
@@ -122,13 +124,34 @@ export function parseStatus(output: string) {
     files.push({
       xy, path: entry.slice(3), oldPath,
       staged: xy !== '??' && xy[0] !== ' ',
-      unstaged: xy[1] !== ' '
+      unstaged: xy[1] !== ' ',
+      conflicted: conflictCodes.has(xy)
     })
   }
   return files
 }
 
 const porcelain = ['status', '--porcelain=v1', '-z', '--untracked-files=all']
+
+const operationMarkers = [
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+  ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherryPick'],
+  ['REVERT_HEAD', 'revert']
+] as const satisfies readonly (readonly [string, GitOperation])[]
+
+async function currentOperation(root: string): Promise<GitOperation | null> {
+  try {
+    const output = await git(root, ['rev-parse', ...operationMarkers.flatMap(([marker]) => ['--git-path', marker])])
+    const paths = output.replace(/\n$/, '').split('\n')
+    if (paths.length !== operationMarkers.length || paths.some((path) => !path)) return null
+    const exists = await Promise.all(paths.map((path) => lstat(resolve(root, path)).then(() => true, () => false)))
+    return operationMarkers.find((_, index) => exists[index])?.[1] ?? null
+  } catch {
+    return null
+  }
+}
 
 function currentBranch(root: string): Promise<string | null> {
   return git(root, ['symbolic-ref', '--quiet', 'HEAD']).then((name) => name.trim().slice('refs/heads/'.length), () => null)
@@ -160,11 +183,15 @@ async function listRemotes(root: string): Promise<string[]> {
 
 class InvalidBranch extends Error {}
 class AgentBusy extends Error {}
+class OperationInProgress extends Error {}
+class Unmerged extends Error {}
 
 export function gitFailure(error: unknown): Extract<GitResult, { ok: false }> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 4_000)
   const code = error instanceof InvalidBranch ? 'invalidBranch'
-    : error instanceof AgentBusy ? 'busy' : classifyGitError(message)
+    : error instanceof AgentBusy ? 'busy'
+    : error instanceof OperationInProgress ? 'operationInProgress'
+    : error instanceof Unmerged ? 'unmerged' : classifyGitError(message)
   return { ok: false, error: message, ...(code ? { code } : {}) }
 }
 
@@ -173,12 +200,13 @@ export async function gitStatus(dir: unknown): Promise<GitResult<GitStatus>> {
   if (!worktree) return { ok: true, repo: false }
   const { root } = worktree
   try {
-    const [branch, detached, upstream, status, branches] = await Promise.all([
+    const [branch, detached, upstream, status, branches, operation] = await Promise.all([
       currentBranch(root),
       git(root, ['rev-parse', '--short', 'HEAD']).then((s) => s.trim(), () => null),
       git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).then((s) => s.trim(), () => null),
       git(root, porcelain),
-      listBranches(root)
+      listBranches(root),
+      currentOperation(root)
     ])
     const counts = upstream && detached
       ? await git(root, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}', '--'])
@@ -189,7 +217,8 @@ export async function gitStatus(dir: unknown): Promise<GitResult<GitStatus>> {
     const [ahead, behind] = counts.trim().split(/\s+/).map(Number)
     const files = parseStatus(status)
     return {
-      ok: true, repo: true, branch, detached: branch ? null : detached, upstream, ahead, behind,
+      ok: true, repo: true, branch, detached: branch ? null : detached, upstream, ahead, behind, operation,
+      conflicts: files.filter((file) => file.conflicted).length,
       dirty: files.length > 0, staged: files.filter((file) => file.staged).length,
       unstaged: files.filter((file) => file.unstaged).length, atRoot: root === worktree.dir, branches
     }
@@ -470,12 +499,15 @@ async function commit(root: string, message: string) {
   return { kind: 'commit' as const, sha, subject: subject ?? message.trim().split('\n')[0] }
 }
 
+const abortCommands = { merge: 'merge', rebase: 'rebase', cherryPick: 'cherry-pick', revert: 'revert' } as const satisfies Record<GitOperation, string>
+
 function isMutation(value: unknown): value is GitMutation {
   if (!value || typeof value !== 'object' || !('kind' in value)) return false
   const op = value as GitMutation
   switch (op.kind) {
     case 'switch': return typeof op.name === 'string' && (op.remote === null || typeof op.remote === 'string')
     case 'createBranch': return typeof op.name === 'string'
+    case 'abortOperation': return typeof op.operation === 'string' && Object.hasOwn(abortCommands, op.operation)
     case 'stage':
     case 'unstage': return typeof op.path === 'string'
     case 'discard': return typeof op.path === 'string' && typeof op.untracked === 'boolean'
@@ -503,6 +535,17 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
         if (await isBusy?.(root)) throw new AgentBusy(busyMessage ?? 'An Agent is running.')
       }
       await checkBusy()
+      if (op.kind === 'switch' || op.kind === 'createBranch' || op.kind === 'pull' || op.kind === 'push'
+        || op.kind === 'commit' || op.kind === 'stageAndCommit') {
+        const committing = op.kind === 'commit' || op.kind === 'stageAndCommit'
+        const operation = await currentOperation(root)
+        if (operation && (!committing || operation !== 'merge')) {
+          throw new OperationInProgress('A Git operation is in progress. Finish or abort it first.')
+        }
+        if (committing && parseStatus(await git(root, porcelain)).some((file) => file.conflicted)) {
+          throw new Unmerged('Resolve and stage the unmerged files before committing.')
+        }
+      }
       switch (op.kind) {
         case 'switch': {
           await validateBranch(root, op.name)
@@ -522,6 +565,12 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
         case 'fetch':
           await git(root, ['fetch', '--prune', '--no-recurse-submodules'], true)
           break
+        case 'abortOperation': {
+          if (await currentOperation(root) !== op.operation) throw new Error('The Git operation changed. Refresh and try again.')
+          await checkBusy()
+          await git(root, [abortCommands[op.operation], '--abort'], false, 60_000)
+          return { ok: true, outcome: { kind: 'abortOperation', operation: op.operation } }
+        }
         case 'pull': {
           const before = await head(root)
           await checkBusy()
@@ -544,10 +593,12 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
           await unstage(root, ['.'])
           break
         case 'stageAndCommit':
-          await git(root, ['add', '-A', '--', '.'])
-          await checkBusy()
-          return { ok: true, outcome: await commit(root, op.message) }
         case 'commit':
+          await checkBusy()
+          if (op.kind === 'stageAndCommit') {
+            await git(root, ['add', '-A', '--', '.'])
+            await checkBusy()
+          }
           return { ok: true, outcome: await commit(root, op.message) }
       }
       return { ok: true }

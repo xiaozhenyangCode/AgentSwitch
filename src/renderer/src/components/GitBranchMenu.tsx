@@ -41,6 +41,9 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
   onViewHistory: () => void
 }) {
   const { toast } = useApp()
+  const operationReason = status.operation ? t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) }) : undefined
+  const branchDisabled = disabled || !!operationReason
+  const branchDisabledReason = busy ? t('git.agentBusy') : operationReason
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<View>('branches')
   const [query, setQuery] = useState('')
@@ -138,7 +141,7 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
     const active = branch.remote === null && branch.name === status.branch
     const label = alreadyLocal ? `${branch.name} · ${t('git.alreadyLocal')}` : branch.name
     return (
-      <button key={branch.name} className={item} disabled={disabled || active} title={busy ? t('git.agentBusy') : label} onClick={() => {
+      <button key={branch.name} className={item} disabled={branchDisabled || active} title={branchDisabledReason ?? label} onClick={() => {
         void run({ kind: 'switch', name: alreadyLocal ? localName : branch.name, remote: alreadyLocal ? null : branch.remote }).then((result) => {
           if (result.ok) close()
         })
@@ -279,7 +282,7 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
           {view === 'branches' && (creating ? (
             <form className="pt-1" onSubmit={(e) => {
               e.preventDefault()
-              if (!name || invalid || disabled) return
+              if (!name || invalid || branchDisabled) return
               void run({ kind: 'createBranch', name }).then((result) => {
                 if (result.ok) close()
                 else if (result.code === 'invalidBranch') setServerInvalid(true)
@@ -295,27 +298,29 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
                     event.preventDefault()
                     event.currentTarget.form?.requestSubmit()
                   }} placeholder={t('git.branchName')} aria-label={t('git.branchName')} aria-invalid={invalid} />
-                <button className={compactItem + ' h-8 border border-hairline bg-surface-2/70 px-3 font-medium'} disabled={disabled || !name || invalid} title={busy ? t('git.agentBusy') : undefined}>{t('git.createBranch')}</button>
+                <button className={compactItem + ' h-8 border border-hairline bg-surface-2/70 px-3 font-medium'} disabled={branchDisabled || !name || invalid} title={branchDisabledReason}>{t('git.createBranch')}</button>
               </div>
               <p className="truncate px-1 pt-1 text-[11px] text-ink-3" title={branchLabel}>{t('git.branchBase', { name: branchLabel })}</p>
               {invalid && <p role="alert" className="px-1 text-[11px] text-danger">{t('git.invalidBranch')}</p>}
             </form>
           ) : (
-            <button className={item + ' mt-0.5 text-ink-2 hover:text-ink'} disabled={disabled} title={busy ? t('git.agentBusy') : undefined} onClick={() => setCreating(true)}>
+            <button className={item + ' mt-0.5 text-ink-2 hover:text-ink'} disabled={branchDisabled} title={branchDisabledReason} onClick={() => setCreating(true)}>
               <IconPlus size={14} className="shrink-0 text-ink-3" aria-hidden="true" />
               {t('git.createBranch')}
             </button>
           ))}
           <div className="mx-1.5 my-1 h-px bg-hairline" />
+          {operationReason && <p className="px-2.5 py-1 text-[11px] text-warn">{operationReason}</p>}
           <div className="grid grid-cols-3 gap-1">
             {syncActions.map(({ kind, Icon, progress }) => {
               const active = kind === pending
               const publish = kind === 'push' && !status.upstream
               const label = t(publish ? 'git.publish' : `git.${kind}`)
               const count = kind === 'pull' && status.behind ? `↓${status.behind}` : kind === 'push' && status.ahead ? `↑${status.ahead}` : ''
+              const blocked = kind === 'fetch' ? undefined : operationReason
               return (
                 <button key={kind} className={item + ` justify-center gap-1.5 px-1.5 text-[12px] font-medium text-ink-2 hover:text-ink ${active ? 'disabled:opacity-100!' : ''}`}
-                  disabled={disabled} title={busy ? t('git.agentBusy') : active ? t(progress) : [label, count].filter(Boolean).join(' ')}
+                  disabled={disabled || !!blocked} title={busy ? t('git.agentBusy') : active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')}
                   onClick={() => void run({ kind })}>
                   {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
                   <span className="min-w-0 truncate">{active ? t(progress) : label}</span>

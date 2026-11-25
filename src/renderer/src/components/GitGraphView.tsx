@@ -10,6 +10,7 @@ import { useApp } from '../state/AppContext'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
 import { gitErrorTitle, type RunGit } from '../state/useProjectGit'
 import { Counts, FileRow } from './ChangesPanel'
+import { GitOperationBanner } from './GitOperationBanner'
 import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
 
 type CommitDetail = { hash: string; commit?: GitCommitDetail; error?: string }
@@ -371,6 +372,9 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
             </button>
           </div>
         </header>
+        {remote?.status && <GitOperationBanner status={remote.status} disabled={remote.disabled} busy={remote.busy} run={remote.run}
+          onDone={() => { if (mounted.current) { setRemoteError(null); void reload() } }}
+          onError={(result) => { if (mounted.current) setRemoteError(result) }} />}
         {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
         <GitHistorySplit inspector={(
           <CommitInspector detail={detail} copiedHash={copiedHash} onCopy={(hash) => void copyHash(hash)} onRetry={(hash) => void openCommit(hash)} />
@@ -428,7 +432,9 @@ function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind
         const count = kind === 'pull' && status && status.behind > 0 ? `↓${status.behind}`
           : kind === 'push' && status && status.ahead > 0 ? `↑${status.ahead}` : ''
         let unavailable = ''
-        if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
+        if (status?.operation && kind !== 'fetch') {
+          unavailable = t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) })
+        } else if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
         else if (status && kind === 'pull' && !status.upstream) unavailable = t('git.pullNoUpstream')
         const title = busy ? t('git.agentBusy') : active ? t(progress) : unavailable || [label, count].filter(Boolean).join(' ')
         return (

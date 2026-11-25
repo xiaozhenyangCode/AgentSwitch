@@ -125,7 +125,7 @@ export async function gitChanges(dir: unknown, split = false): Promise<FileChang
   const files: FileChange[] = []
   const entries = parseStatus(status)
   const total = entries.length
-  for (const { xy, path: p, staged, unstaged } of entries.slice(0, MAX_FILES)) {
+  for (const { xy, path: p, staged, unstaged, conflicted } of entries.slice(0, MAX_FILES)) {
     const rel = relative(worktree.dir, join(root, p)).split(sep).join('/')
     const abs = join(dir, rel)
     if (xy === '??') {
@@ -137,6 +137,7 @@ export async function gitChanges(dir: unknown, split = false): Promise<FileChang
     const status = xy.includes('D') ? 'D' : xy[0] === 'R' ? 'R' : xy.includes('A') ? 'A' : 'M'
     files.push({
       path: rel, abs, staged, unstaged, ...preview(status, combined.get(p)),
+      ...(conflicted ? { conflicted: true } : {}),
       ...(index && staged ? { stagedChange: preview(changeStatus(xy[0]), index.get(p)) } : {}),
       ...(workingTree && unstaged ? { unstagedChange: preview(changeStatus(xy[1]), workingTree.get(p)) } : {})
     })

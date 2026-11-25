@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { classifyGitError } from '@shared/gitErrors'
 import { gitChanges, gitCommitDetail } from './gitChanges'
-import { gitGraph, gitLog, gitMutate, gitStatus, parseGitGraph, parseGitLog } from './gitOps'
+import { gitGraph, gitLog, gitMutate, gitStatus, parseGitGraph, parseGitLog, parseStatus } from './gitOps'
 
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 
@@ -39,6 +39,14 @@ async function createOrigin() {
   await git(repo, 'remote', 'add', 'origin', bare)
   expect(await gitMutate(repo, { kind: 'push' })).toMatchObject({ ok: true, outcome: { kind: 'push', target: 'origin/main', published: true } })
   return bare
+}
+
+async function createDivergingCommits() {
+  await git(repo, 'switch', '-c', 'feature')
+  await addCommit(repo, 'tracked.txt', 'feature edit\n', 'Feature edit')
+  await git(repo, 'switch', 'main')
+  await addCommit(repo, 'tracked.txt', 'main edit\n', 'Main edit')
+  return git(repo, 'rev-parse', 'HEAD')
 }
 
 describe('Git log parsing', () => {
@@ -452,6 +460,80 @@ describe('Git workbench operations', () => {
     expect(await git(repo, 'log', '-1', '--format=%s')).toBe('Stage and commit')
   })
 
+  it('detects merge conflicts, guards mutations and aborts only the requested active operation', { timeout: 15_000 }, async () => {
+    await createOrigin()
+    const before = await createDivergingCommits()
+    await expect(git(repo, 'merge', '--no-edit', 'feature')).rejects.toThrow(/merge/i)
+    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 1 })
+    expect((await gitChanges(repo, true)).files).toMatchObject([{ path: 'tracked.txt', conflicted: true, staged: true, unstaged: true }])
+    for (const op of [{ kind: 'pull' }, { kind: 'push' }, { kind: 'switch', name: 'feature', remote: null }, { kind: 'createBranch', name: 'blocked' }]) {
+      expect(await gitMutate(repo, op)).toMatchObject({ ok: false, code: 'operationInProgress' })
+    }
+    for (const kind of ['commit', 'stageAndCommit']) {
+      expect(await gitMutate(repo, { kind, message: 'Blocked' })).toMatchObject({ ok: false, code: 'unmerged' })
+    }
+    expect(await gitMutate(repo, { kind: 'fetch' })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'constructor' })).toEqual({ ok: false, error: 'Invalid Git operation.' })
+    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'rebase' })).toEqual({
+      ok: false, error: 'The Git operation changed. Refresh and try again.'
+    })
+    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'merge' }, async () => true)).toMatchObject({ ok: false, code: 'busy' })
+    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 1 })
+    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'merge' })).toEqual({
+      ok: true, outcome: { kind: 'abortOperation', operation: 'merge' }
+    })
+    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0, dirty: false })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('main edit\n')
+  })
+
+  it('allows a merge commit after staging a resolution that leaves the current tree unchanged', async () => {
+    const before = await createDivergingCommits()
+    const feature = await git(repo, 'rev-parse', 'feature')
+    await expect(git(repo, 'merge', '--no-edit', 'feature')).rejects.toThrow(/merge/i)
+    await writeFile(join(repo, 'tracked.txt'), 'main edit\n')
+    expect(await gitMutate(repo, { kind: 'stage', path: 'tracked.txt' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 0, staged: 0, dirty: false })
+    expect(await gitMutate(repo, { kind: 'commit', message: 'Resolve merge' })).toMatchObject({ ok: true, outcome: { kind: 'commit' } })
+    expect(await git(repo, 'log', '-1', '--format=%P')).toBe(`${before} ${feature}`)
+    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0 })
+  })
+
+  it('detects a rebase conflict and aborts back to the original branch and HEAD', async () => {
+    const before = await createDivergingCommits()
+    await expect(git(repo, 'rebase', 'feature')).rejects.toThrow(/could not apply/i)
+    expect(await gitStatus(repo)).toMatchObject({ branch: null, operation: 'rebase', conflicts: 1 })
+    expect(await gitMutate(repo, { kind: 'commit', message: 'Blocked' })).toMatchObject({ ok: false, code: 'operationInProgress' })
+    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'rebase' })).toEqual({
+      ok: true, outcome: { kind: 'abortOperation', operation: 'rebase' }
+    })
+    expect(await gitStatus(repo)).toMatchObject({ branch: 'main', operation: null, conflicts: 0 })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
+  it('detects cherry-pick and revert markers in their linked worktree', { timeout: 15_000 }, async () => {
+    const before = await createDivergingCommits()
+    const linked = join(temp, 'linked worktree')
+    await git(repo, 'worktree', 'add', '--detach', linked, before)
+    await expect(git(linked, 'cherry-pick', 'feature')).rejects.toThrow(/could not apply/i)
+    expect(await gitStatus(linked)).toMatchObject({ operation: 'cherryPick', conflicts: 1 })
+    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0 })
+    expect(await gitMutate(linked, { kind: 'abortOperation', operation: 'cherryPick' })).toMatchObject({ ok: true })
+    await expect(git(linked, 'revert', '--no-edit', 'HEAD^')).rejects.toThrow(/could not revert/i)
+    expect(await gitStatus(linked)).toMatchObject({ operation: 'revert', conflicts: 1 })
+    expect(await gitMutate(linked, { kind: 'abortOperation', operation: 'revert' })).toMatchObject({ ok: true })
+    expect(await gitStatus(linked)).toMatchObject({ operation: null, conflicts: 0 })
+    expect(await git(linked, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
+  it('detects unmerged files without an operation marker and does not auto-stage them on commit', async () => {
+    await createDivergingCommits()
+    await expect(git(repo, 'merge', '--squash', 'feature')).rejects.toThrow(/merge/i)
+    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 1 })
+    expect(await gitMutate(repo, { kind: 'stageAndCommit', message: 'Blocked' })).toMatchObject({ ok: false, code: 'unmerged' })
+    expect(await git(repo, 'status', '--porcelain')).toBe('UU tracked.txt')
+  })
+
   it('unstages both sides of a rename and handles an unborn branch', async () => {
     await rename(join(repo, 'tracked.txt'), join(repo, 'renamed.txt'))
     await gitMutate(repo, { kind: 'stageAll' })
@@ -499,6 +581,13 @@ describe('Git workbench operations', () => {
 describe('Git error categories', () => {
   it.each([
     ['error: Your local changes to the following files would be overwritten by checkout:', 'switchChanges'],
+    ['error: The following untracked working tree files would be overwritten by checkout:', 'switchChanges'],
+    ['error: Your local changes to the following files would be overwritten by merge:', 'localChanges'],
+    ['error: The following untracked working tree files would be overwritten by merge:', 'localChanges'],
+    ['error: you need to resolve your current index first', 'unmerged'],
+    ['error: Pulling is not possible because you have unmerged files.', 'unmerged'],
+    ['tracked.txt: needs merge', 'unmerged'],
+    ['hint: fix conflicts and then commit', 'unmerged'],
     ['fatal: Not possible to fast-forward, aborting.', 'diverged'],
     ['There is no tracking information for the current branch.', 'noUpstream'],
     ['fatal: could not read Username for a remote: terminal prompts disabled', 'auth'],
@@ -508,4 +597,14 @@ describe('Git error categories', () => {
   ])('categorizes %s', (error, code) => {
     expect(classifyGitError(error)).toBe(code)
   })
+})
+
+it('flags all porcelain unmerged codes without changing staged and unstaged flags', () => {
+  const codes = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']
+  const status = codes.map((xy) => `${xy} ${xy}.txt\0`).join('') + '?? new.txt\0 M edited.txt\0'
+  expect(parseStatus(status)).toMatchObject([
+    ...codes.map((xy) => ({ xy, conflicted: true, staged: true, unstaged: true })),
+    { xy: '??', conflicted: false, staged: false, unstaged: true },
+    { xy: ' M', conflicted: false, staged: false, unstaged: true }
+  ])
 })

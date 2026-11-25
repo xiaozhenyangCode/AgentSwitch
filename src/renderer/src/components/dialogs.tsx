@@ -416,11 +416,11 @@ export function ConfirmDialog() {
   const okRef = useRef<HTMLButtonElement>(null)
   const [checked, setChecked] = useState(false)
   useEffect(() => {
-    okRef.current?.focus()
+    if (!c?.native) okRef.current?.focus()
   }, [c])
   if (!c) return null
   return (
-    <Modal onClose={() => c.resolve(false)} width={400}>
+    <Modal onClose={() => c.resolve(false)} width={400} native={c.native} label={c.title}>
       <div className="p-7">
         <div className="text-[17px] font-semibold text-ink">{c.title}</div>
         <div className="mt-2 text-[14px] leading-relaxed text-ink-2">{c.message}</div>

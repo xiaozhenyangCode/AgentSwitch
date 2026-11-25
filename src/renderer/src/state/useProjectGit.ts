@@ -20,6 +20,7 @@ const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: t
       return outcome.count === null ? t('git.pushed', { name }) : t('git.pushedCount', { n: outcome.count, name })
     }
     case 'commit': return outcome.sha ? t('git.committed', { sha: outcome.sha, subject: outcome.subject }) : t('git.commitDone')
+    case 'abortOperation': return t('git.operationAborted', { op: t(`git.op.${outcome.operation}`) })
   }
   switch (op.kind) {
     case 'fetch': return t('git.fetched')
@@ -35,7 +36,8 @@ const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: t
 const errorTitles = {
   invalidBranch: 'git.invalidBranch', busy: 'git.agentBusy', switchChanges: 'git.errSwitchChanges',
   diverged: 'git.errDiverged', noUpstream: 'git.errNoUpstream', auth: 'git.errAuth',
-  pushRejected: 'git.errPushRejected', indexLocked: 'git.errIndexLocked'
+  pushRejected: 'git.errPushRejected', indexLocked: 'git.errIndexLocked',
+  operationInProgress: 'git.errOperationInProgress', unmerged: 'git.errUnmerged', localChanges: 'git.errLocalChanges'
 } as const
 
 export function gitErrorTitle(result: Extract<GitMutationResult, { ok: false }>): string {
