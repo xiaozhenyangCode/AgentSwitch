@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
-import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import type { FileSearchItem, ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
+import { FileSearchMenu } from '../components/FileSearchMenu'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
+import { useFileSearch } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
-import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady } from '../lib/ui'
+import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
@@ -25,6 +27,7 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { escLayers, useEscape } from '../lib/escStack'
 import { COMPOSER_MAX_HEIGHT, composerEscapeAction, nextComposerExpanded, showComposerExpand } from '../lib/composerExpand'
+import { applyFileReference, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
 import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
@@ -123,7 +126,6 @@ function makeQuote(msg: UserMessage | AssistantMessage): MessageQuote | null {
 
 const pill =
   'flex h-9 items-center gap-2 rounded-full bg-surface px-4 text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-surface-2 active:scale-[0.98]'
-const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
 
 function useOutside<T extends HTMLElement>(open: boolean, close: () => void) {
   const ref = useRef<T>(null)
@@ -1873,6 +1875,8 @@ function Composer({
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
   /** / menu: AgentSwitch built-in commands + skills/commands of the lead account in this project. */
   const [slash, setSlash] = useState<{ start: number; query: string; index: number } | null>(null)
+  const [file, setFile] = useState<{ trigger: FileTrigger; index: number } | null>(null)
+  const fileMenuId = useId()
   const cliSkillsEnabled = !driver || !!getProviderCapabilities(driver.kind).skillTriggerPrefix
   const skills = useSkills(cliSkillsEnabled ? (driver?.id ?? null) : null, projectDir, !!slash && cliSkillsEnabled)
   const skillItems = cliSkillsEnabled ? (skills.data?.items ?? []) : []
@@ -1886,6 +1890,9 @@ function Composer({
   }, [slash, skillItems, builtinSlash, pins])
   /** Extensions panel (skills, agents, plugins, MCP, rules & hooks), read-only. */
   const [extOpen, setExtOpen] = useState(false)
+  const fileOpen = !extOpen && !mention && !slash && !!file
+  const fileSearch = useFileSearch(projectDir, fileOpen ? file.trigger : null)
+  const fileActive = Math.min(file?.index ?? 0, Math.max(0, fileSearch.items.length - 1))
   const overview = useOverview(driver?.id ?? null, projectDir, true)
   const closeExt = useCallback(() => setExtOpen(false), [])
   const reloadOverview = overview.reload
@@ -1917,6 +1924,7 @@ function Composer({
     setQuote(d?.quote ?? null)
     setMention(null)
     setSlash(null)
+    setFile(null)
     setExtOpen(false)
     dismissed.current = null
     changeExpansion('thread')
@@ -1930,6 +1938,7 @@ function Composer({
     setQuote(seed.quote)
     setMention(null)
     setSlash(null)
+    setFile(null)
     requestAnimationFrame(() => {
       const el = ta.current
       if (!el) return
@@ -1951,7 +1960,7 @@ function Composer({
     m.style.width = el.clientWidth + 'px'
     m.scrollTop = el.scrollTop
   }, [])
-  const ghost = !!suggestion && !text && !atts.length && !mention && !slash
+  const ghost = !!suggestion && !text && !atts.length && !mention && !slash && !file
   const compactHeight = Math.min(compactMetrics.scrollHeight, COMPOSER_MAX_HEIGHT)
   const showExpand = showComposerExpand({ ...compactMetrics, expanded, hasText: !!text, clientHeight: compactHeight })
   const editorPadding = ghost ? (showExpand ? 'pr-24' : 'pr-16') : showExpand ? 'pr-14' : 'pr-5'
@@ -2071,16 +2080,27 @@ function Composer({
   const [subEffort, setSubEffort] = useState<string | null>(null)
 
   /**
-   * Opens / updates / closes the @ menu from the text before the caret. `@` (or full-width `＠`)
+   * Updates completion from the text before the caret. `@` (or full-width `＠`)
    * triggers anywhere except right after a letter or digit (e-mail addresses): line start, after a
    * space and right after Chinese text (`让@`). Same `@` and query -> the menu keeps its selection.
    */
-  const syncMention = (value: string, caret: number | null) => {
-    if (caret === null) return setMention(null)
+  const syncCompletion = (value: string, caret: number | null) => {
+    if (caret === null) {
+      setFile(null)
+      return
+    }
     // closed with Esc: stay closed until the text or the caret changes
     const d = dismissed.current
     if (d && d.value === value && d.caret === caret) return
     dismissed.current = null
+    const fileTrigger = matchFileTrigger(value, caret)
+    if (fileTrigger) {
+      setMention(null)
+      setSlash(null)
+      setFile((cur) => cur?.trigger.start === fileTrigger.start && cur.trigger.query === fileTrigger.query ? cur : { trigger: fileTrigger, index: 0 })
+      return
+    }
+    setFile(null)
     const before = value.slice(0, caret)
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
@@ -2097,7 +2117,7 @@ function Composer({
     setMention((cur) => (cur && cur.start === start && cur.query === m[1] ? cur : { start, query: m[1], index: 0, sub: null, subIndex: 0 }))
   }
   useEffect(() => {
-    if (!expanded && !mention && !slash && !ghost) return
+    if (!expanded && !mention && !slash && !fileOpen && !ghost) return
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       const el = ta.current
@@ -2105,14 +2125,15 @@ function Composer({
       if (event.target instanceof Element && event.target.closest('.xterm')) return
       const action = composerEscapeAction({
         expanded, composing: composingRef.current || event.isComposing || event.keyCode === 229,
-        higherLayer: escLayers() > 0, extensionsOpen: extOpen, mention: !!mention, slash: !!slash, ghost
+        higherLayer: escLayers() > 0, extensionsOpen: extOpen, mention: !!mention, slash: !!slash, file: fileOpen, ghost
       })
       if (!action) return
       event.preventDefault()
-      if (action === 'mention' || action === 'slash') {
+      if (action === 'mention' || action === 'slash' || action === 'file') {
         dismissed.current = { value: el.value, caret: el.selectionStart }
         if (action === 'mention') setMention(null)
-        else setSlash(null)
+        else if (action === 'slash') setSlash(null)
+        else setFile(null)
       } else if (action === 'ghost') {
         if (threadId) clearSuggestion(threadId)
       } else {
@@ -2122,7 +2143,7 @@ function Composer({
     }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
-  }, [expanded, extOpen, ghost, mention, slash, threadId])
+  }, [expanded, extOpen, fileOpen, ghost, mention, slash, threadId])
 
   const runCompact = () => {
     changeExpansion('send')
@@ -2183,6 +2204,21 @@ function Composer({
     })
   }
 
+  const insertFile = (item: FileSearchItem) => {
+    const el = ta.current
+    if (!el || !file || !fileOpen || fileSearch.loading || el.selectionStart !== el.selectionEnd) return
+    const match = matchFileTrigger(el.value, el.selectionStart)
+    if (!match || match.start !== file.trigger.start || match.query !== file.trigger.query) return
+    const next = applyFileReference(el.value, match.start, el.selectionStart, item.relPath)
+    setText(next.value)
+    setFile(null)
+    requestAnimationFrame(() => {
+      if (ta.current !== el || el.value !== next.value) return
+      el.focus({ preventScroll: true })
+      el.setSelectionRange(next.caret, next.caret)
+    })
+  }
+
   /** Inserts a token at the caret (space-separated from what is around it) and focuses the box. */
   const insertAtCaret = (token: string) => {
     const el = ta.current
@@ -2235,6 +2271,7 @@ function Composer({
     const r = onSend(trimmed, atts, quote)
     clearComposerDraft(draftKey)
     setText('')
+    setFile(null)
     setAtts([])
     setQuote(null)
     if (!r) changeExpansion('send')
@@ -2256,7 +2293,7 @@ function Composer({
   }
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const composing = e.nativeEvent.isComposing || e.keyCode === 229
+    const composing = composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229
     if (mention && !composing && matches.length) {
       const inSub = mention.sub !== null
       const p = matches[Math.min(inSub ? mention.sub! : mention.index, matches.length - 1)]
@@ -2292,6 +2329,18 @@ function Composer({
         return insertSkill(slashMatches[Math.min(slash.index, n - 1)], e.key === 'Tab' ? 'tab' : 'enter')
       }
     }
+    if (fileOpen && !composing && !fileSearch.loading && fileSearch.items.length && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const n = fileSearch.items.length
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const d = e.key === 'ArrowDown' ? 1 : -1
+        return setFile((x) => x && { ...x, index: (fileActive + d + n) % n })
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        return insertFile(fileSearch.items[fileActive])
+      }
+    }
     // suggested next input: Tab takes it as editable text
     if (ghost && !composing && !mention && !slash) {
       if (e.key === 'Tab' && !e.shiftKey) {
@@ -2308,7 +2357,7 @@ function Composer({
       }
     }
     // ↑/↓ input history recall (text only; preserves multiline caret movement & never conflicts with @, / or IME)
-    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !composing && !mention && !slash && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && history.length > 0) {
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !composing && !mention && !slash && !fileOpen && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && history.length > 0) {
       const el = e.currentTarget
       const step = stepInputHistory({
         key: e.key,
@@ -2343,6 +2392,7 @@ function Composer({
     }
   }
 
+  const completionPopover = `absolute bottom-full left-0 z-30 mb-2 ${expanded ? '[&>div]:max-h-[min(380px,calc(50dvh-4.5rem))]' : ''}`
   return (
     <div ref={wrap} className={`pointer-events-none absolute inset-x-0 bottom-0 flex flex-col px-8 pt-8 pb-6 [interpolate-size:allow-keywords] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
       expanded ? 'z-30 h-[clamp(260px,50%,calc(100%-3.5rem))] bg-[linear-gradient(to_bottom,transparent,var(--canvas)_48px)]' : 'h-auto bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)]'
@@ -2356,7 +2406,7 @@ function Composer({
           </div>
         )}
         {!extOpen && !mention && slash && (
-          <div className={`absolute bottom-full left-0 z-30 mb-2 ${expanded ? '[&>div]:max-h-[min(380px,calc(50dvh-4.5rem))]' : ''}`}>
+          <div className={completionPopover}>
             <SlashMenu
               account={driver}
               items={slashMatches}
@@ -2366,6 +2416,18 @@ function Composer({
               pinned={pins}
               onPick={(it) => insertSkill(it, 'click')}
               onHover={(i) => setSlash((x) => x && { ...x, index: i })}
+            />
+          </div>
+        )}
+        {fileOpen && (
+          <div className={completionPopover + ' right-0 pointer-events-none [&>div]:pointer-events-auto'}>
+            <FileSearchMenu
+              id={fileMenuId}
+              {...fileSearch}
+              active={fileActive}
+              hasProject={!!projectDir}
+              onPick={insertFile}
+              onHover={(index) => setFile((x) => x && { ...x, index })}
             />
           </div>
         )}
@@ -2524,27 +2586,34 @@ function Composer({
               rows={1}
               onScroll={syncMirror}
               value={text}
+              aria-autocomplete={fileOpen ? 'list' : undefined}
+              aria-controls={fileOpen ? fileMenuId : undefined}
+              aria-activedescendant={fileOpen && !fileSearch.loading && fileSearch.items.length ? `${fileMenuId}-${fileActive}` : undefined}
               onChange={(e) => {
                 histRef.current = null
                 // the suggestion only hides while there is text (ghost needs an empty box): typing,
                 // pinyin or a thread switch never throws it away — sending or Esc does
                 setText(e.target.value)
                 // mid-composition text is pinyin, not the query: wait for compositionend
-                if (!composingRef.current) syncMention(e.target.value, e.target.selectionStart)
+                if (!composingRef.current && !(e.nativeEvent as InputEvent).isComposing) syncCompletion(e.target.value, e.target.selectionStart)
               }}
-              onCompositionStart={() => (composingRef.current = true)}
+              onCompositionStart={() => {
+                composingRef.current = true
+                setFile(null)
+              }}
               onCompositionEnd={(e) => {
                 composingRef.current = false
-                syncMention(e.currentTarget.value, e.currentTarget.selectionStart)
+                syncCompletion(e.currentTarget.value, e.currentTarget.selectionStart)
               }}
               // caret moved (click, ←/→, Home/End) without typing: reopen / close for that position
               onSelect={(e) => {
                 const el = e.currentTarget
-                if (!composingRef.current && el.selectionStart === el.selectionEnd) syncMention(el.value, el.selectionStart)
+                if (!composingRef.current) syncCompletion(el.value, el.selectionStart === el.selectionEnd ? el.selectionStart : null)
               }}
               onBlur={() => {
                 setMention(null)
                 setSlash(null)
+                setFile(null)
               }}
               onKeyDown={onKey}
               onPaste={(e) => {

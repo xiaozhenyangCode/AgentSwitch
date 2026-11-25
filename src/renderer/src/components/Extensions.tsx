@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
+import { popover } from '../lib/ui'
 import type { MsgKey } from '@shared/i18n'
 import type { ExtFileText, ExtOverview, ExtSource, McpServer, ProfileKind, ProfileState, RuleScope, SkillItem } from '@shared/types'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { pinnedFirst, togglePin, usePins } from '../state/extensions'
 import { t } from '../state/i18n'
 import { IconChevronDown, IconFile, IconFolder, IconPuzzle, IconRefresh, IconSearch, IconSlash, IconStar, IconX, Spinner } from './icons'
-
-const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
 
 const SOURCE_KEY = { project: 'ext.src.project', global: 'ext.src.global', plugin: 'ext.src.plugin', builtin: 'ext.src.builtin' } as const
 export const sourceLabel = (s: ExtSource): string => t(SOURCE_KEY[s])

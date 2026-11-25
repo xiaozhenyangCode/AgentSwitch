@@ -39,7 +39,7 @@ describe('composer expand availability', () => {
 })
 
 describe('composer expansion and Escape', () => {
-  const idle = { composing: false, higherLayer: false, extensionsOpen: false, mention: false, slash: false, ghost: false }
+  const idle = { composing: false, higherLayer: false, extensionsOpen: false, mention: false, slash: false, file: false, ghost: false }
 
   it('toggles between editing modes and returns to compact after sending or switching threads', () => {
     expect(nextComposerExpanded(false, 'toggle')).toBe(true)
@@ -51,8 +51,9 @@ describe('composer expansion and Escape', () => {
   })
 
   it('dismisses composer suggestions and completion before collapsing', () => {
-    expect(composerEscapeAction({ ...idle, expanded: true, mention: true })).toBe('mention')
-    expect(composerEscapeAction({ ...idle, expanded: true, slash: true })).toBe('slash')
+    expect(composerEscapeAction({ ...idle, expanded: true, mention: true, slash: true, file: true, ghost: true })).toBe('mention')
+    expect(composerEscapeAction({ ...idle, expanded: true, slash: true, file: true, ghost: true })).toBe('slash')
+    expect(composerEscapeAction({ ...idle, expanded: true, file: true, ghost: true })).toBe('file')
     expect(composerEscapeAction({ ...idle, expanded: true, ghost: true })).toBe('ghost')
     expect(composerEscapeAction({ ...idle, expanded: true })).toBe('collapse')
     expect(composerEscapeAction({ ...idle, expanded: false, slash: true })).toBe('slash')
@@ -60,7 +61,7 @@ describe('composer expansion and Escape', () => {
   })
 
   it('leaves Escape with IME, the extensions panel, or the topmost registered layer', () => {
-    const rollover = { ...idle, expanded: true, mention: true }
+    const rollover = { ...idle, expanded: true, file: true }
     expect(composerEscapeAction({ ...rollover, composing: true })).toBeNull()
     expect(composerEscapeAction({ ...rollover, extensionsOpen: true })).toBeNull()
     expect(composerEscapeAction({ ...rollover, higherLayer: true })).toBeNull()

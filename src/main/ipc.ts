@@ -93,11 +93,12 @@ import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot,
 import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail } from './gitChanges'
 import { gitGraph, gitLog, gitMutate, gitStatus, gitWorktree } from './gitOps'
+import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { AttachmentText, OnboardingState, RunRequest } from '@shared/types'
+import type { AttachmentText, FileSearchRequest, OnboardingState, RunRequest } from '@shared/types'
 import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, shellEnvStatus } from './shellEnv'
 import { cliNodeRuntime } from './runtime'
 import { isTranscriptEntry } from '@shared/transcript'
@@ -340,20 +341,25 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.ptyBuffer, (_e, id: unknown) => ptys.getBuffer(typeof id === 'string' ? id : ''))
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
+  ipcMain.handle(IPC.filesSearch, (_e, request: FileSearchRequest) => searchProjectFiles(request))
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
   ipcMain.handle(IPC.gitGraph, (_e, dir: unknown, options?: unknown) => gitGraph(dir, options))
   ipcMain.handle(IPC.gitCommitDetail, (_e, dir: unknown, hash: unknown) => gitCommitDetail(dir, hash))
-  ipcMain.handle(IPC.gitMutate, (_e, dir: unknown, op: unknown, threadId: unknown) =>
-    gitMutate(dir, op, async (root) => {
+  ipcMain.handle(IPC.gitMutate, async (_e, dir: unknown, op: unknown, threadId: unknown) => {
+    let repoRoot: string | undefined
+    const result = await gitMutate(dir, op, async (root) => {
+      repoRoot = root
       const projects = orchestrator.activeProjects()
       const matches = await Promise.all(projects.map(async (project) => (await gitWorktree(project.dir))?.root === root))
       const active = orchestrator.active()
       return orchestrator.checkpoints.isRestoring(root) || active.some((turn) => turn.threadId === threadId)
         || projects.some((project, i) => matches[i] && active.some((turn) => turn.threadId === project.threadId))
     }, t('git.agentBusy'))
-  )
+    if (result.ok && repoRoot) invalidateFileIndex(repoRoot)
+    return result
+  })
   /** Closes a drawer tab: kills the process (if any) and drops its scrollback. */
   ipcMain.handle(IPC.ptyForget, (_e, id: unknown) => {
     if (typeof id === 'string' && id) {

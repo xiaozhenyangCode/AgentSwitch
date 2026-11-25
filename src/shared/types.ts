@@ -557,6 +557,7 @@ export const IPC = {
   ptyBuffer: 'pty:buffer',
   ptySessions: 'pty:sessions',
   ptyForget: 'pty:forget',
+  filesSearch: 'files:search',
   gitChanges: 'git:changes',
   gitStatus: 'git:status',
   gitLog: 'git:log',
@@ -848,6 +849,25 @@ export interface FileChange {
 }
 
 export type FileChangePreview = Pick<FileChange, 'status' | 'added' | 'removed' | 'diff' | 'binary' | 'truncated'>
+
+export interface FileSearchRequest {
+  cwd: string
+  query: string
+  limit?: number
+  refresh?: boolean
+}
+
+export interface FileSearchItem {
+  name: string
+  relPath: string
+  dir: string
+  indexes: number[]
+}
+
+export interface FileSearchResponse {
+  items: FileSearchItem[]
+  truncated: boolean
+}
 
 export interface FileChanges {
   /** The folder is inside a git work tree. */

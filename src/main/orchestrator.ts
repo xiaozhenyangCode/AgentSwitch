@@ -27,6 +27,7 @@ import { createThreadHistory, upsertPersistentThreadHistory, type ThreadHistoryC
 import { Checkpoints } from './checkpoints'
 import { SKIP_DIRS, SNAPSHOT_MAX_FILES } from './checkpointFiles'
 import { isInside } from './gitOps'
+import { invalidateFileIndex } from './fileSearch'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -543,6 +544,7 @@ export class Orchestrator {
       .then(() => this.checkpoints.finish(turn.req.threadId, turn.req.turnId))
       .catch(() => {})
       .then(() => {
+        invalidateFileIndex(turn.cwd)
         this.turns.delete(turn.req.threadId)
         turn.resolveDone()
         this.emit({ kind: 'turn-end', threadId: turn.req.threadId, turnId: turn.req.turnId, status })

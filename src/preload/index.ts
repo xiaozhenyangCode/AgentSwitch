@@ -7,6 +7,8 @@ import {
   type ProfileConnect,
   type AppInfo,
   type FileChanges,
+  type FileSearchRequest,
+  type FileSearchResponse,
   type GitCommit,
   type GitCommitDetail,
   type GitGraphData,
@@ -188,6 +190,9 @@ const api = {
   onboarding: {
     get: (): Promise<OnboardingState> => ipcRenderer.invoke(IPC.onboardingGet),
     set: (completed: boolean): Promise<void> => ipcRenderer.invoke(IPC.onboardingSet, completed)
+  },
+  files: {
+    search: (req: FileSearchRequest): Promise<FileSearchResponse> => ipcRenderer.invoke(IPC.filesSearch, req)
   },
   git: {
     /** Changed files of a project folder (read-only git status / diff). */

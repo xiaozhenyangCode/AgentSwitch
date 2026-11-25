@@ -1,6 +1,8 @@
 import type { ProfileKind, ProfileState } from '@shared/types'
 import { t } from '../state/i18n'
 
+export const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
+
 export interface BadgeMeta {
   label: string
   /** pill background + text */

@@ -1,6 +1,7 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { lstat, realpath, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphOptions, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
 import { classifyGitError } from '@shared/gitErrors'
 import { getBaseEnv } from './shellEnv'
@@ -37,16 +38,48 @@ export function git(cwd: string, args: string[], network = false, timeout = netw
   return gitBytes(cwd, args, { network, timeout }).then((output) => output.toString())
 }
 
+function gitArgs(args: string[], network = false): string[] {
+  return ['-c', 'core.quotepath=off', '--no-optional-locks', '--literal-pathspecs',
+    ...(network ? ['-c', 'credential.interactive=false'] : []), ...args]
+}
+
+/** Visits NUL-delimited output without buffering it all. Returning false stops Git early. */
+export function visitGitRecords(cwd: string, args: string[], visit: (record: string) => boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', gitArgs(args), {
+      cwd, env: gitEnv(false), stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000
+    })
+    const decoder = new StringDecoder()
+    let tail = ''
+    let stopped = false
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (stopped) return
+      const data = tail + decoder.write(chunk)
+      let start = 0
+      for (let end = data.indexOf('\0'); end !== -1; end = data.indexOf('\0', start)) {
+        if (!visit(data.slice(start, end))) {
+          stopped = true
+          child.kill()
+          return
+        }
+        start = end + 1
+      }
+      tail = data.slice(start)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (stopped || code === 0) resolve()
+      else reject(new Error(`Git ${args[0]} failed.`))
+    })
+  })
+}
+
 export function gitBytes(cwd: string, args: string[], options: {
   network?: boolean; timeout?: number; env?: NodeJS.ProcessEnv; input?: Buffer; maxBuffer?: number
 } = {}): Promise<Buffer> {
   const { network = false, timeout = 15_000, env, input, maxBuffer = 4 * 1024 * 1024 } = options
   return new Promise((resolve, reject) => {
-    const child = execFile('git', [
-      '-c', 'core.quotepath=off', '--no-optional-locks', '--literal-pathspecs',
-      ...(network ? ['-c', 'credential.interactive=false'] : []),
-      ...args
-    ], {
+    const child = execFile('git', gitArgs(args, network), {
       cwd, env: { ...gitEnv(network), ...env }, encoding: 'buffer', maxBuffer, timeout
     }, (err, stdout, stderr) => {
       if (!err) return resolve(stdout)

@@ -23,7 +23,7 @@ export function nextComposerExpanded(expanded: boolean, action: 'toggle' | 'esca
 }
 
 export function composerEscapeAction({
-  expanded, composing, higherLayer, extensionsOpen, mention, slash, ghost
+  expanded, composing, higherLayer, extensionsOpen, mention, slash, file, ghost
 }: {
   expanded: boolean
   composing: boolean
@@ -31,11 +31,13 @@ export function composerEscapeAction({
   extensionsOpen: boolean
   mention: boolean
   slash: boolean
+  file: boolean
   ghost: boolean
-}): 'mention' | 'slash' | 'ghost' | 'collapse' | null {
+}): 'mention' | 'slash' | 'file' | 'ghost' | 'collapse' | null {
   if (composing || higherLayer || extensionsOpen) return null
   if (mention) return 'mention'
   if (slash) return 'slash'
+  if (file) return 'file'
   if (ghost) return 'ghost'
   return expanded ? 'collapse' : null
 }

@@ -27,6 +27,9 @@
   },
   "dependencies": {
     "diff": "^9.0.0",
+    "fdir": "^6.5.0",
+    "fuzzysort": "^4.0.2",
+    "ignore": "^7.0.16",
     "node-pty": "^1.1.0",
     "smol-toml": "^1.9.1"
   },

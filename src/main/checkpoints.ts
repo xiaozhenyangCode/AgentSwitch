@@ -6,6 +6,7 @@ import type { CheckpointChoice, CheckpointPlan, CheckpointResult, CheckpointStat
 import { captureCheckpoint, checkpointChanges, checkpointGit, openCheckpointRepo, pruneHiddenObjects, publishCheckpoint, removeCheckpointRefs, type CheckpointRepo, type FileChange } from './checkpointGit'
 import { CheckpointLimit, currentVersion, directoryHasOtherFiles, parentEntry, restoreFile, sameVersion, type FileVersion } from './checkpointFiles'
 import { git, isInside } from './gitOps'
+import { invalidateFileIndex } from './fileSearch'
 
 const allowedId = (id: string) => /^[\w-]{1,128}$/.test(id)
 const overlap = (a: string, b: string) => isInside(a, b) || isInside(b, a)
@@ -273,6 +274,7 @@ export class Checkpoints {
   action(threadId: string, turnId: string, busy: (root: string) => boolean, token?: string, choice?: CheckpointChoice): Promise<CheckpointResult> {
     return this.enqueue(async () => {
       if (!allowedId(turnId)) return { kind: 'unavailable' }
+      let touchedRoot: string | undefined
       try {
         const record = await this.read(turnId)
         if (!record || record.threadId !== threadId || record.status !== 'ready') return { kind: 'unavailable' }
@@ -310,6 +312,7 @@ export class Checkpoints {
             }
             // An ancestor file can stand in for an absent descendant.
             if (entry.before || entry.parent === 'directory' || entry.current) {
+              touchedRoot = repo.root
               await restoreFile(repo.root, entry.path, entry.before, bytes, permissions.get(entry.path))
             }
             restored++
@@ -326,6 +329,7 @@ export class Checkpoints {
         return { kind: 'failed' }
       } finally {
         this.restoring = null
+        if (touchedRoot) invalidateFileIndex(touchedRoot)
       }
     })
   }
@@ -476,12 +480,14 @@ export class Checkpoints {
 
         // Phase 2: Restore turns strictly from newest -> oldest so each file returns to pre-target state.
         let totalFailed = 0
+        const touchedRoots = new Set<string>()
         try {
           for (const step of prepared) {
             this.restoring = step.record.repo.root
             for (const entry of step.selected) {
               try {
                 if (entry.before || entry.parent === 'directory' || entry.current) {
+                  touchedRoots.add(step.record.repo.root)
                   await restoreFile(step.record.repo.root, entry.path, entry.before, entry.bytes, step.permissions.get(entry.path))
                 }
                 totalRestored++
@@ -496,6 +502,7 @@ export class Checkpoints {
           }
         } finally {
           this.restoring = null
+          for (const root of touchedRoots) invalidateFileIndex(root)
         }
       }
 
