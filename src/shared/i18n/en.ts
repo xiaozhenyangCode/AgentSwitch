@@ -68,6 +68,7 @@ export const en: Dict = {
   'nav.noMatchThreads': 'No matching chats',
   'nav.noThreads': 'No chats yet',
   'nav.noProject': 'No project',
+  'nav.showMoreThreads': 'Show {n} more',
   'nav.usage': 'Usage & Limits',
   'nav.engines': 'Model Engines',
   'nav.settings': 'Settings',

@@ -4,6 +4,7 @@ import type { HistoryEntry, HistoryThread, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { activeThread, archiveThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, unarchiveThread, useChat, type Thread } from '../state/chat'
 import { useEscape } from '../lib/escStack'
+import { getSidebarGroups, loadCollapsedProjects, saveCollapsedProjects } from '../lib/sidebarGroups'
 import { useStartThread } from '../state/threads'
 import { isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
@@ -99,25 +100,31 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
   }, [])
 
   const [archivedOpen, setArchivedOpen] = useState(false)
+  const [expandedProjects, setExpandedProjects] = useState(() => new Set<string>())
+  const [collapsedProjects, setCollapsedProjects] = useState(loadCollapsedProjects)
 
-  // group active threads by project (pinned lead); archived threads go in their own collapsible section
-  const { groups, archivedThreads } = useMemo(() => {
-    const map = new Map<string, Thread[]>()
-    const archived: Thread[] = []
-    for (const th of [...chat.threads].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt)) {
-      if (th.preview) continue
-      if (q && !th.title.toLowerCase().includes(q) && !(th.projectDir ?? '').toLowerCase().includes(q)) continue
-      if (th.archived) {
-        archived.push(th)
-        continue
-      }
-      const k = th.projectDir ?? ''
-      map.set(k, [...(map.get(k) ?? []), th])
-    }
-    archived.sort((a, b) => (b.archivedAt ?? b.updatedAt) - (a.archivedAt ?? a.updatedAt))
-    return { groups: [...map.entries()], archivedThreads: archived }
-  }, [chat.threads, q])
+  const { groups, archivedThreads } = useMemo(
+    () => getSidebarGroups(chat.threads, { activeThreadId: chat.activeId, expandedProjects, collapsedProjects, query: q }),
+    [chat.threads, chat.activeId, expandedProjects, collapsedProjects, q]
+  )
   const showArchived = archivedOpen || (!!q && archivedThreads.length > 0) || !!current?.archived
+
+  const setProjectCollapsed = (dir: string, collapsed: boolean) => {
+    const next = new Set(collapsedProjects)
+    if (collapsed) next.add(dir)
+    else next.delete(dir)
+    setCollapsedProjects(next)
+    saveCollapsedProjects(next)
+  }
+
+  const toggleProjectMore = (dir: string) => {
+    setExpandedProjects((projects) => {
+      const next = new Set(projects)
+      if (next.has(dir)) next.delete(dir)
+      else next.add(dir)
+      return next
+    })
+  }
 
   const remove = async (th: Thread) => {
     let purgeCli = false
@@ -222,20 +229,35 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
         {groups.length === 0 && archivedThreads.length === 0 && (
           <div className="px-3 pt-6 text-center text-[13px] leading-relaxed text-ink-3">{q ? t('nav.noMatchThreads') : t('nav.noThreads')}</div>
         )}
-        {groups.map(([dir, threads]) => (
-          <div key={dir || '_'} className="mb-3.5">
-            <div className="group flex h-8 items-center gap-2 pr-1 pl-2.5 text-[13.5px] font-semibold text-ink-2" title={dir || undefined}>
-              <IconFolder size={15} className="shrink-0 text-ink-3" />
-              <span className="min-w-0 flex-1 truncate">{dir ? baseName(dir) : t('nav.noProject')}</span>
+        {groups.map(({ dir, collapsed, expanded, extraThreadCount, visibleThreads }) => (
+          <div key={dir} className="mb-3.5">
+            <div className="group flex h-8 items-center gap-1 pr-1">
               <button
-                onClick={() => start(dir || null)}
+                type="button"
+                aria-expanded={!collapsed}
+                disabled={!!q}
+                onClick={() => setProjectCollapsed(dir, !collapsed)}
+                className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-lg pr-1 pl-2.5 text-left text-[13.5px] font-semibold text-ink-2 transition-colors enabled:hover:bg-black/[0.04] dark:enabled:hover:bg-white/[0.05]"
+                title={dir || undefined}
+              >
+                <IconFolder size={15} aria-hidden="true" className="shrink-0 text-ink-3" />
+                <span className="min-w-0 flex-1 truncate">{dir ? baseName(dir) : t('nav.noProject')}</span>
+                <IconChevronDown size={13} aria-hidden="true" className={`shrink-0 text-ink-3 transition-transform duration-150 motion-reduce:transition-none ${collapsed ? '-rotate-90' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (collapsed) setProjectCollapsed(dir, false)
+                  start(dir || null)
+                }}
                 className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/[0.06] hover:text-ink focus-visible:opacity-100 dark:hover:bg-white/[0.08]"
                 title={dir ? t('nav.newInProject', { name: baseName(dir) }) : t('nav.newNoProject')}
               >
                 <IconPlus size={14} />
               </button>
             </div>
-            {threads.map((th) => (
+            {visibleThreads.map((th) => (
               <ThreadRow
                 key={th.id}
                 t={th}
@@ -248,6 +270,16 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
                 onNewHere={() => start(th.projectDir ?? null)}
               />
             ))}
+            {extraThreadCount > 0 && (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => toggleProjectMore(dir)}
+                className="flex h-7 w-full items-center rounded-lg pr-2.5 pl-8 text-left text-[12px] text-ink-3 transition-colors hover:bg-black/[0.04] hover:text-ink-2 dark:hover:bg-white/[0.05]"
+              >
+                {expanded ? t('common.collapse') : t('nav.showMoreThreads', { n: extraThreadCount })}
+              </button>
+            )}
           </div>
         ))}
         {archivedThreads.length > 0 && (

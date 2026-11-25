@@ -68,6 +68,7 @@ export const ja: Dict = {
   'nav.noMatchThreads': '一致するチャットはありません',
   'nav.noThreads': 'チャットはまだありません',
   'nav.noProject': 'プロジェクト未選択',
+  'nav.showMoreThreads': 'ほか {n} 件を表示',
   'nav.usage': '使用量と上限',
   'nav.engines': 'モデルエンジン',
   'nav.settings': '設定',

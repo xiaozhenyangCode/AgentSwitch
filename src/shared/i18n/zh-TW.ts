@@ -72,6 +72,7 @@ export const zhTW: Dict = {
   'nav.noMatchThreads': '沒有匹配的對話',
   'nav.noThreads': '還沒有對話',
   'nav.noProject': '未選擇專案',
+  'nav.showMoreThreads': '展開其餘 {n} 條',
   'nav.usage': '用量限額',
   'nav.engines': '模型引擎',
   'nav.settings': '設定',

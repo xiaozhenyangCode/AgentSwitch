@@ -74,6 +74,7 @@ export const zhCN = {
   'nav.noMatchThreads': '没有匹配的对话',
   'nav.noThreads': '还没有对话',
   'nav.noProject': '未选择项目',
+  'nav.showMoreThreads': '展开其余 {n} 条',
   'nav.usage': '用量限额',
   'nav.engines': '模型引擎',
   'nav.settings': '设置',
