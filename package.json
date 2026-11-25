@@ -1,6 +1,6 @@
 {
   "name": "agentswitch",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "One desktop chat for Claude Code, Codex CLI and Gemini (Antigravity CLI)",
   "homepage": "https://agentswitch.app",
   "repository": {
