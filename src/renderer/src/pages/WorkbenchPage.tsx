@@ -2020,9 +2020,10 @@ function Composer({
   useEffect(() => {
     const el = wrap.current
     const area = editor.current
-    if (!el || !area || expanded) return
-    // Conversation spacing follows the compact slot, including while the overlay animates closed.
-    const report = () => onHeight(el.offsetHeight - area.offsetHeight + compactHeight)
+    if (!el || !area) return
+    // Track actual overlay height when expanded so the upper message list remains scrollable above it;
+    // when compact/closing, target the compact slot immediately instead of waiting for the 200ms collapse.
+    const report = () => onHeight(expanded ? el.offsetHeight : el.offsetHeight - area.offsetHeight + compactHeight)
     report()
     const ro = new ResizeObserver(report)
     ro.observe(el)
@@ -2343,8 +2344,8 @@ function Composer({
   }
 
   return (
-    <div ref={wrap} className={`absolute inset-x-0 bottom-0 flex flex-col px-8 pt-8 pb-6 [interpolate-size:allow-keywords] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
-      expanded ? 'z-30 h-[calc(100%-3.5rem)] bg-canvas' : 'pointer-events-none h-auto bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)]'
+    <div ref={wrap} className={`pointer-events-none absolute inset-x-0 bottom-0 flex flex-col px-8 pt-8 pb-6 [interpolate-size:allow-keywords] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+      expanded ? 'z-30 h-[clamp(260px,50%,calc(100%-3.5rem))] bg-[linear-gradient(to_bottom,transparent,var(--canvas)_48px)]' : 'h-auto bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)]'
     }`}>
       <div className="pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[820px] flex-1 flex-col">
         {notice}
@@ -2355,7 +2356,7 @@ function Composer({
           </div>
         )}
         {!extOpen && !mention && slash && (
-          <div className={`absolute left-0 z-30 ${expanded ? 'top-12 right-0 [&>div]:max-w-full' : 'bottom-full mb-2'}`}>
+          <div className={`absolute bottom-full left-0 z-30 mb-2 ${expanded ? '[&>div]:max-h-[min(380px,calc(50dvh-4.5rem))]' : ''}`}>
             <SlashMenu
               account={driver}
               items={slashMatches}
@@ -2369,7 +2370,7 @@ function Composer({
           </div>
         )}
         {mention && (
-          <div className={`absolute left-0 z-30 flex gap-2 ${expanded ? 'top-12 right-0 items-start [&>div]:min-w-0' : 'bottom-full mb-2 items-end'}`}>
+          <div className={`absolute bottom-full left-0 z-30 mb-2 flex items-end gap-2 ${expanded ? '[&>div]:max-h-[min(400px,calc(50dvh-4.5rem))] [&>div]:min-w-0' : ''}`}>
             <div className={popover + ' max-h-[min(400px,calc(100dvh-12rem))] w-72 overflow-y-auto overscroll-contain'}>
               <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
                 <IconAt size={13} /> {t('wb.inviteModels')} <span className="ml-auto">{t('wb.pickSubHint')}</span>
@@ -2467,7 +2468,7 @@ function Composer({
             </div>
           )}
           {atts.length > 0 && (
-            <div className={`flex shrink-0 flex-wrap gap-2 px-4 pt-4 ${expanded ? 'max-h-[144px] overflow-y-auto' : ''}`}>
+            <div className={`flex shrink-0 flex-wrap gap-2 px-4 pt-4 ${expanded ? 'max-h-[96px] overflow-y-auto' : ''}`}>
               {atts.map((a) =>
                 a.isImage && a.thumb ? (
                   <span key={a.id} className="group relative" title={a.path ?? a.name}>
@@ -2492,7 +2493,7 @@ function Composer({
             </div>
           )}
 
-          <div ref={editor} className="relative min-h-0 flex-auto" style={{ height: compactHeight }}>
+          <div ref={editor} className={`relative flex-auto ${expanded ? 'min-h-[96px]' : 'min-h-0'}`} style={expanded ? undefined : { height: compactHeight }}>
             {ghost && (
               <span className={`pointer-events-none absolute top-[17px] z-10 rounded-[5px] px-1.5 py-px font-mono text-[10.5px] leading-4 text-ink-3 shadow-[inset_0_0_0_1px_var(--ring),0_1px_0_var(--ring)] ${showExpand ? 'right-14' : 'right-4'}`} title={t('wb.tabAccept')}>
                 Tab
