@@ -750,7 +750,7 @@ export function WorkbenchPage() {
               onPick={() => void pickProject()}
               onNewHere={startThread}
               gitBranch={showGitTools && git.status && (
-                <GitBranchMenu key={ctx.projectDir} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
+                <GitBranchMenu key={ctx.projectDir} dir={ctx.projectDir!} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
                   run={git.run} onViewChanges={() => setChangesVisible(true)} />
               )}
             />

@@ -164,22 +164,39 @@ export async function gitStatus(dir: unknown): Promise<GitResult<GitStatus>> {
   }
 }
 
-export async function gitLog(dir: unknown): Promise<GitResult<{ commits: GitCommit[] }>> {
+export function parseGitLog(output: string): GitCommit[] {
+  const commits: GitCommit[] = []
+  // Git terminates each formatted record with a newline. Splitting at the record
+  // boundary preserves line breaks and inline record separators in commit text.
+  for (const record of output.split(/(?:^|\r?\n)\x1e/).slice(1)) {
+    const fields = record.trimEnd().split('\x1f')
+    if (fields.length !== 5 || record.includes('\0')) continue
+    const [hash, shortHash, subject, author, seconds] = fields
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash) ||
+      !/^[a-f0-9]{4,}$/.test(shortHash) || !hash.startsWith(shortHash) || !/^\d+$/.test(seconds)) continue
+    const timestamp = Number(seconds) * 1000
+    if (timestamp > 8.64e15) continue
+    commits.push({ sha: shortHash, shortHash, hash, subject, author, authoredAt: timestamp, timestamp })
+  }
+  return commits
+}
+
+export async function gitLog(dir: unknown, limit?: unknown): Promise<GitResult<{ commits: GitCommit[] }>> {
   const worktree = await gitWorktree(dir)
   if (!worktree) return failure('This folder is not in a Git worktree.')
   const { root } = worktree
+  const count = typeof limit === 'number' && Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, limit)) : 20
   try {
-    if (!await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => '')) {
+    const output = await git(root, [
+      'log', '-n', String(count), '--no-show-signature', '--no-notes', '--no-color', '--encoding=UTF-8',
+      '--format=%x1e%H%x1f%h%x1f%s%x1f%an%x1f%at', '--'
+    ])
+    return { ok: true, commits: parseGitLog(output) }
+  } catch (error) {
+    // With implicit HEAD and LC_ALL=C, Git reports an unborn branch explicitly.
+    if (error instanceof Error && /^fatal: your current branch '.+' does not have any commits yet$/.test(error.message)) {
       return { ok: true, commits: [] }
     }
-    const fields = (await git(root, ['log', '-z', '-n', '20', '--format=%h%x00%s%x00%an%x00%at', 'HEAD', '--'])).split('\0')
-    const commits: GitCommit[] = []
-    for (let i = 0; i + 3 < fields.length; i += 4) {
-      const [sha, subject, author, timestamp] = fields.slice(i, i + 4)
-      commits.push({ sha, subject, author, authoredAt: Number(timestamp) * 1000 })
-    }
-    return { ok: true, commits }
-  } catch (error) {
     return failure(error)
   }
 }

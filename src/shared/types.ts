@@ -888,10 +888,16 @@ export type GitStatus = { repo: false } | {
 }
 
 export interface GitCommit {
+  /** Legacy alias for shortHash. */
   sha: string
+  shortHash: string
+  hash: string
   subject: string
   author: string
+  /** Legacy alias for timestamp. */
   authoredAt: number
+  /** Author time in milliseconds. */
+  timestamp: number
 }
 
 export type GitMutation =

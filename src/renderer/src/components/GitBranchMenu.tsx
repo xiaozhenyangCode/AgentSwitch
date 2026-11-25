@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GitBranch, GitMutation, GitStatus } from '@shared/types'
+import type { GitBranch, GitCommit, GitMutation, GitStatus } from '@shared/types'
 import { useEscape } from '../lib/escStack'
-import { t } from '../state/i18n'
+import { useApp } from '../state/AppContext'
+import { fmtAgo, t } from '../state/i18n'
 import type { RunGit } from '../state/useProjectGit'
+import { Segmented } from './common'
 import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconDownload, IconRefresh, Spinner } from './icons'
 
 const item = 'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-45'
@@ -23,7 +25,11 @@ const syncActions = [
   { kind: 'push', Icon: IconArrowUp, progress: 'git.pushing' }
 ] as const
 
-export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChanges }: {
+type View = 'branches' | 'commits'
+type CommitLog = { kind: 'loading' } | { kind: 'ready'; commits: GitCommit[] } | { kind: 'error'; detail: string }
+
+export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onViewChanges }: {
+  dir: string
   status: Extract<GitStatus, { repo: true }>
   disabled: boolean
   busy: boolean
@@ -31,12 +37,17 @@ export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChan
   run: RunGit
   onViewChanges: () => void
 }) {
+  const { toast } = useApp()
   const [open, setOpen] = useState(false)
+  const [view, setView] = useState<View>('branches')
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [serverInvalid, setServerInvalid] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [commitLog, setCommitLog] = useState<CommitLog>({ kind: 'loading' })
+  const [copiedHash, setCopiedHash] = useState<string | null>(null)
+  const logRequest = useRef(0)
   const ref = useRef<HTMLDivElement>(null)
   const search = useRef<HTMLInputElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -46,9 +57,45 @@ export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChan
     setServerInvalid(false)
   }
   const close = () => {
+    logRequest.current++
     setOpen(false)
+    setView('branches')
     setQuery('')
     leaveCreate()
+  }
+
+  const loadCommitLog = async () => {
+    const request = ++logRequest.current
+    setCommitLog({ kind: 'loading' })
+    setCopiedHash(null)
+    try {
+      const result = await window.agentswitch.git.log(dir)
+      if (request !== logRequest.current) return
+      setCommitLog(result.ok ? { kind: 'ready', commits: result.commits } : { kind: 'error', detail: result.error })
+    } catch (error) {
+      if (request === logRequest.current) setCommitLog({ kind: 'error', detail: String(error) })
+    }
+  }
+
+  const selectView = (next: View) => {
+    if (next === view) return
+    setView(next)
+    setQuery('')
+    if (creating) search.current?.focus()
+    leaveCreate()
+    if (next === 'commits') void loadCommitLog()
+    else logRequest.current++
+  }
+
+  const copyHash = async (commit: GitCommit) => {
+    const request = logRequest.current
+    const hash = commit.hash || commit.shortHash
+    try {
+      await window.agentswitch.sys.copy(hash)
+      if (request === logRequest.current) setCopiedHash(hash)
+    } catch {
+      if (request === logRequest.current) toast({ kind: 'error', title: t('git.copyHashFailed') })
+    }
   }
 
   useEscape(() => {
@@ -100,9 +147,50 @@ export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChan
     )
   }
 
+  const renderCommitLog = () => {
+    if (commitLog.kind === 'loading') {
+      return <div role="status" className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] text-ink-3"><Spinner size={13} />{t('git.loadingHistory')}</div>
+    }
+    if (commitLog.kind === 'error') {
+      return (
+        <div className="flex items-center gap-1.5 px-2.5 py-1 text-[12px]">
+          <span role="status" className="min-w-0 flex-1 text-ink-2" title={commitLog.detail}>{t('git.historyFailed')}</span>
+          <button type="button" className={item + ' w-auto shrink-0'} onClick={() => void loadCommitLog()}>{t('git.retryHistory')}</button>
+        </div>
+      )
+    }
+    const matches = commitLog.commits.filter((commit) =>
+      [commit.subject, commit.shortHash, commit.sha, commit.hash, commit.author].some((field) => field.toLowerCase().includes(filter))
+    )
+    if (!matches.length) {
+      return <div className="px-2.5 py-1 text-[12px] text-ink-3">{t(commitLog.commits.length ? 'git.noMatchingCommits' : 'git.noCommits')}</div>
+    }
+    return matches.map((commit) => {
+      const hash = commit.hash || commit.shortHash
+      const copied = copiedHash === hash
+      const copyLabel = t('git.copyHash', { hash: commit.shortHash })
+      return (
+        <div key={hash} className="min-w-0 border-b border-hairline px-2.5 py-1.5 last:border-0">
+          <div className="truncate text-[12px] text-ink" title={commit.subject}>{commit.subject || t('git.noCommitSubject')}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-ink-3">
+            <button type="button" aria-label={copyLabel} title={copied ? t('common.copied') : copyLabel}
+              className="inline-flex h-5 max-w-[40%] shrink-0 items-center gap-1 rounded px-1 font-mono text-ink-2 hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07]"
+              onClick={() => void copyHash(commit)}>
+              <span className="min-w-0 truncate">{commit.shortHash}</span>
+              {copied && <IconCheck size={12} aria-hidden="true" className="shrink-0 text-accent" />}
+            </button>
+            <span className="min-w-0 truncate" title={commit.author}>{commit.author}</span>
+            <span className="shrink-0">{fmtAgo(commit.timestamp)}</span>
+          </div>
+        </div>
+      )
+    })
+  }
+
   const invalid = !!name && (serverInvalid || invalidBranchName(name))
   const networkAction = syncActions.find((action) => action.kind === pending)
   const progressLabel = networkAction && t(networkAction.progress)
+  const searchLabel = t(view === 'commits' ? 'git.searchCommits' : 'git.search')
 
   return (
     <div ref={ref} className="ml-1 flex min-w-0 max-w-[55%] shrink-0">
@@ -123,30 +211,47 @@ export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChan
       <span className="sr-only" role="status">{progressLabel}</span>
       {open && (
         <div className="absolute bottom-full right-0 z-30 mb-1.5 w-[340px] max-w-full rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
-          <input ref={search} autoFocus className={gitInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('git.search')} aria-label={t('git.search')} />
-          <div className="max-h-[min(230px,30vh)] overflow-y-auto py-1">
-            {locals.length > 0 && <div className="px-2.5 py-1 text-[11px] text-ink-3">{t('git.local')}</div>}
-            {locals.map(renderBranch)}
-            {[...remotes].map(([remote, group]) => {
-              const show = !!filter || expanded.has(remote)
-              return (
-                <div key={remote}>
-                  <button className={item + ' text-ink-3!'} aria-expanded={show} title={t('git.remote', { name: remote })} onClick={() => setExpanded((previous) => {
-                    const next = new Set(previous)
-                    if (next.has(remote)) next.delete(remote)
-                    else next.add(remote)
-                    return next
-                  })}>
-                    <IconChevronDown size={12} className={`shrink-0 transition-transform ${show ? '' : '-rotate-90'}`} />
-                    <span className="truncate">{t('git.remote', { name: remote })}</span>
-                  </button>
-                  {show && <div className="pl-4">{group.map(renderBranch)}</div>}
-                </div>
-              )
-            })}
-            {branches.length === 0 && <div className="px-2.5 py-1 text-[12px] text-ink-3">{t('git.noBranches')}</div>}
+          <Segmented size="sm" value={view} onChange={selectView} options={[
+            { value: 'branches', label: t('git.branchesTab') },
+            { value: 'commits', label: t('git.commitsTab') }
+          ]} />
+          <div className="mt-1.5 flex items-center gap-1">
+            <input ref={search} autoFocus className={gitInput + ' flex-1'} value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchLabel} aria-label={searchLabel} />
+            {view === 'commits' && (
+              <button type="button" className={item + ' w-auto shrink-0'} disabled={commitLog.kind === 'loading'}
+                aria-label={t('common.refresh')} title={t('common.refresh')} onClick={() => void loadCommitLog()}>
+                <IconRefresh size={14} aria-hidden="true" />
+              </button>
+            )}
           </div>
-          {creating ? (
+          <div key={view} className="max-h-[min(230px,30vh)] overflow-y-auto py-1">
+            {view === 'commits' ? renderCommitLog() : (
+              <>
+                {locals.length > 0 && <div className="px-2.5 py-1 text-[11px] text-ink-3">{t('git.local')}</div>}
+                {locals.map(renderBranch)}
+                {[...remotes].map(([remote, group]) => {
+                  const show = !!filter || expanded.has(remote)
+                  return (
+                    <div key={remote}>
+                      <button className={item + ' text-ink-3!'} aria-expanded={show} title={t('git.remote', { name: remote })} onClick={() => setExpanded((previous) => {
+                        const next = new Set(previous)
+                        if (next.has(remote)) next.delete(remote)
+                        else next.add(remote)
+                        return next
+                      })}>
+                        <IconChevronDown size={12} className={`shrink-0 transition-transform ${show ? '' : '-rotate-90'}`} />
+                        <span className="truncate">{t('git.remote', { name: remote })}</span>
+                      </button>
+                      {show && <div className="pl-4">{group.map(renderBranch)}</div>}
+                    </div>
+                  )
+                })}
+                {branches.length === 0 && <div className="px-2.5 py-1 text-[12px] text-ink-3">{t('git.noBranches')}</div>}
+              </>
+            )}
+          </div>
+          <span className="sr-only" role="status">{view === 'commits' && copiedHash && t('common.copied')}</span>
+          {view === 'branches' && (creating ? (
             <form className="p-1" onSubmit={(e) => {
               e.preventDefault()
               if (!name || invalid || disabled) return
@@ -169,7 +274,7 @@ export function GitBranchMenu({ status, disabled, busy, pending, run, onViewChan
               <p className="truncate px-1 pt-1 text-[11px] text-ink-3" title={branchLabel}>{t('git.branchBase', { name: branchLabel })}</p>
               {invalid && <p role="alert" className="px-1 text-[11px] text-danger">{t('git.invalidBranch')}</p>}
             </form>
-          ) : <button className={item} disabled={disabled} title={busy ? t('git.agentBusy') : undefined} onClick={() => setCreating(true)}>{t('git.createBranch')}</button>}
+          ) : <button className={item} disabled={disabled} title={busy ? t('git.agentBusy') : undefined} onClick={() => setCreating(true)}>{t('git.createBranch')}</button>)}
           <div className="grid grid-cols-3 gap-1 border-y border-hairline py-1">
             {syncActions.map(({ kind, Icon, progress }) => {
               const active = kind === pending

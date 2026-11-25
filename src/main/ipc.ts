@@ -342,7 +342,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
-  ipcMain.handle(IPC.gitLog, (_e, dir: unknown) => gitLog(dir))
+  ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
   ipcMain.handle(IPC.gitMutate, (_e, dir: unknown, op: unknown, threadId: unknown) =>
     gitMutate(dir, op, async (root) => {
       const projects = orchestrator.activeProjects()

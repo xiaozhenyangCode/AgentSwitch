@@ -190,7 +190,7 @@ const api = {
     /** Changed files of a project folder (read-only git status / diff). */
     changes: (dir: string, split = false): Promise<FileChanges> => ipcRenderer.invoke(IPC.gitChanges, dir, split),
     status: (dir: string): Promise<GitResult<GitStatus>> => ipcRenderer.invoke(IPC.gitStatus, dir),
-    log: (dir: string): Promise<GitResult<{ commits: GitCommit[] }>> => ipcRenderer.invoke(IPC.gitLog, dir),
+    log: (dir: string, limit?: number): Promise<GitResult<{ commits: GitCommit[] }>> => ipcRenderer.invoke(IPC.gitLog, dir, limit),
     mutate: (dir: string, op: GitMutation, threadId: string | null): Promise<GitMutationResult> => ipcRenderer.invoke(IPC.gitMutate, dir, op, threadId)
   },
   sys: {

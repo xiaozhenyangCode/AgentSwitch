@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { classifyGitError } from '@shared/gitErrors'
 import { gitChanges } from './gitChanges'
-import { gitLog, gitMutate, gitStatus } from './gitOps'
+import { gitLog, gitMutate, gitStatus, parseGitLog } from './gitOps'
 
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 
@@ -41,18 +41,52 @@ async function createOrigin() {
   return bare
 }
 
-beforeEach(async () => {
-  temp = await mkdtemp(join(tmpdir(), 'agentswitch-git-'))
-  repo = join(temp, 'repo')
-  await initRepository(repo)
-  await addCommit(repo, 'tracked.txt', 'initial\n', 'Initial commit')
-})
+describe('Git log parsing', () => {
+  const hash = '1234567890abcdef'.repeat(2) + '12345678'
+  const sha256 = '182abdf'.padEnd(64, '0')
+  const record = (fields: string[]) => '\x1e' + fields.join('\x1f') + '\n'
 
-afterEach(async () => {
-  await rm(temp, { recursive: true, force: true })
+  it('preserves multiline and special-character subjects and parses both hash lengths', () => {
+    const subject = '修复 “工作区”\t[#42]\nNext line with inline \x1e separator'
+    const output = record([hash, '1234567', subject, 'José & 李', '1700000000']) +
+      record([sha256, '182abd', '', 'Naomi', '0'])
+
+    expect(parseGitLog(output)).toEqual([
+      { sha: '1234567', shortHash: '1234567', hash, subject, author: 'José & 李', authoredAt: 1700000000000, timestamp: 1700000000000 },
+      { sha: '182abd', shortHash: '182abd', hash: sha256, subject: '', author: 'Naomi', authoredAt: 0, timestamp: 0 }
+    ])
+  })
+
+  it('ignores empty output and skips malformed records without dropping surrounding commits', () => {
+    expect(parseGitLog('')).toEqual([])
+    expect(parseGitLog('\n')).toEqual([])
+
+    const valid = record([hash, '1234567', 'Valid', 'Author', '1'])
+    const malformed = [
+      [hash, '1234567', 'Incomplete'],
+      ['bad-hash', '1234567', 'Subject', 'Author', '1'],
+      [hash, 'abcde', 'Wrong abbreviation', 'Author', '1'],
+      [hash, '1234567', 'Bad timestamp', 'Author', '1.5'],
+      [hash, '1234567', 'Out-of-range timestamp', 'Author', '9000000000000'],
+      [hash, '1234567', 'Embedded\x1f field separator', 'Author', '1']
+    ].map(record).join('')
+
+    expect(parseGitLog(valid + malformed + valid).map((commit) => commit.subject)).toEqual(['Valid', 'Valid'])
+  })
 })
 
 describe('Git workbench operations', () => {
+  beforeEach(async () => {
+    temp = await mkdtemp(join(tmpdir(), 'agentswitch-git-'))
+    repo = join(temp, 'repo')
+    await initRepository(repo)
+    await addCommit(repo, 'tracked.txt', 'initial\n', 'Initial commit')
+  })
+
+  afterEach(async () => {
+    await rm(temp, { recursive: true, force: true })
+  })
+
   it('reports branch and dirty state from a subfolder and handles detached HEAD', async () => {
     const child = join(repo, 'child')
     await mkdir(child)
@@ -148,6 +182,36 @@ describe('Git workbench operations', () => {
       { subject: 'Initial commit' }
     ] })
     expect(await gitStatus(repo)).toMatchObject({ dirty: false, staged: 0, unstaged: 0 })
+  })
+
+  it('reads full and short Git hashes and UTF-8 subjects, with bounded request limits', async () => {
+    for (let index = 1; index <= 19; index++) {
+      await git(repo, 'commit', '--allow-empty', '-m', `Fixture commit ${index}`)
+    }
+    await git(repo, 'config', 'i18n.logOutputEncoding', 'ISO-8859-1')
+    await git(repo, '-c', 'user.name=José & 李', 'commit', '--allow-empty', '-m', '修复 #42 — “入口”\n第二行\n\nBody')
+    const hash = await git(repo, 'rev-parse', 'HEAD')
+    const shortHash = await git(repo, 'rev-parse', '--short', 'HEAD')
+    const timestamp = Number(await git(repo, 'show', '-s', '--format=%at', 'HEAD')) * 1000
+
+    const defaultLog = await gitLog(repo)
+    if (!defaultLog.ok) throw new Error(defaultLog.error)
+    expect(defaultLog.commits).toHaveLength(20)
+    expect(defaultLog.commits.at(-1)?.subject).toBe('Fixture commit 1')
+    expect(await gitLog(repo, '1')).toEqual(defaultLog)
+    expect(await gitLog(repo, 2)).toEqual({ ok: true, commits: defaultLog.commits.slice(0, 2) })
+    expect(await gitLog(repo, 0)).toEqual({ ok: true, commits: [{
+      sha: shortHash, shortHash, hash, subject: '修复 #42 — “入口” 第二行', author: 'José & 李', authoredAt: timestamp, timestamp
+    }] })
+    const largeLog = await gitLog(repo, 999)
+    if (!largeLog.ok) throw new Error(largeLog.error)
+    expect(largeLog.commits).toHaveLength(21)
+    expect(largeLog.commits.at(-1)?.subject).toBe('Initial commit')
+  })
+
+  it('reports Git log errors for a HEAD pointing to a missing object', async () => {
+    await writeFile(join(repo, '.git', 'refs', 'heads', 'main'), '1'.repeat(40) + '\n')
+    expect(await gitLog(repo)).toMatchObject({ ok: false, error: expect.any(String) })
   })
 
   it('keeps the legacy diff and separates staged, working tree and untracked previews', async () => {
