@@ -1051,16 +1051,17 @@ export function applyThreadImport(
   profiles: { id: ProfileId; kind: ProfileKind; status: string }[],
   conflictMode: ImportConflictMode
 ): { added: number; replaced: number } {
-  const ready = profiles.filter((p) => p.status === 'logged_in' || p.status === 'rate_limited')
+  const ready = profiles.filter((p) => p.status === 'idle' || p.status === 'running' || p.status === 'rate_limited')
+  const healthy = ready.filter((p) => p.status !== 'rate_limited')
   const readyIds = ready.map((p) => p.id)
   const validIds = new Set(profiles.map((p) => p.id))
   const pickAccount = (origId: ProfileId | null, kind: ProfileKind | null): ProfileId | null => {
     if (origId && validIds.has(origId)) return origId
     if (kind) {
-      const sameReady = ready.find((p) => p.kind === kind) ?? profiles.find((p) => p.kind === kind)
+      const sameReady = healthy.find((p) => p.kind === kind) ?? ready.find((p) => p.kind === kind) ?? profiles.find((p) => p.kind === kind)
       if (sameReady) return sameReady.id
     }
-    return ready[0]?.id ?? profiles[0]?.id ?? null
+    return healthy[0]?.id ?? ready[0]?.id ?? profiles[0]?.id ?? null
   }
 
   let threads = [...state.threads]

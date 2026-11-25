@@ -393,6 +393,34 @@ describe('chat rewind, archive, and quote', () => {
     const sentTranscript = api.send.mock.lastCall![0].transcript
     expect(sentTranscript.map((e) => e.text)).toEqual(['first question', 'first answer'])
   })
+
+  it('applyThreadImport includes idle, running, and rate_limited accounts and prefers healthy accounts for driver remapping', async () => {
+    await open()
+    const importedItem = {
+      projectName: null,
+      sourceProjectDir: null,
+      driverKind: 'claude' as const,
+      thread: {
+        ...fixture,
+        id: 'imported-1',
+        driver: { profileId: 'missing-id', model: null },
+        participants: ['missing-id']
+      }
+    }
+    const res = chat.applyThreadImport(
+      [importedItem],
+      [
+        { id: 'out', kind: 'claude', status: 'not_logged_in' },
+        { id: 'limited', kind: 'claude', status: 'rate_limited' },
+        { id: 'healthy', kind: 'claude', status: 'idle' }
+      ],
+      'replace'
+    )
+    expect(res).toEqual({ added: 1, replaced: 0 })
+    const t = chat.getThread('imported-1')!
+    expect(t.driver.profileId).toBe('healthy')
+    expect(t.participants).toEqual(['limited', 'healthy'])
+  })
 })
 
 describe('chat transfer import and project rebind', () => {

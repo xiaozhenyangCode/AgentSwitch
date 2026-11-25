@@ -7,7 +7,7 @@ import { useEscape } from '../lib/escStack'
 import { formatFullLocalTime, formatListTime } from '../lib/listTime'
 import { getSidebarGroups, loadCollapsedProjects, saveCollapsedProjects } from '../lib/sidebarGroups'
 import { useStartThread } from '../state/threads'
-import { isReady } from '../lib/ui'
+import { isReady, isSignedIn } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { IconArchive, IconCheck, IconChevronDown, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { t } from '../state/i18n'
@@ -423,7 +423,7 @@ function HistoryList({ query }: { query: string }) {
     setOpening(e.key)
     try {
       const fresh = !importedThreadOf(e.key)
-      const id = await openHistory(e, { profileId: p.id, name: p.name, kind: p.kind, model: null }, profiles.filter(isReady).map((x) => x.id))
+      const id = await openHistory(e, { profileId: p.id, name: p.name, kind: p.kind, model: null }, profiles.filter(isSignedIn).map((x) => x.id))
       const alias = meta[e.key]?.title
       if (fresh && alias) renameThread(id, alias)
       navigate('workbench')
@@ -907,8 +907,8 @@ function UsageSummary() {
   useSettings()
   const today = snap ? Object.values(snap.accounts).reduce((a, u) => a + tokenSum(u.today), 0) : 0
   const ctx = activeThread(chat) ?? draft
-  const sorted = [...profiles].sort((a, b) => Number(isReady(b)) - Number(isReady(a)))
-  const participants = ctx.participants.length ? ctx.participants : sorted.filter(isReady).map((p) => p.id)
+  const sorted = [...profiles].sort((a, b) => Number(isReady(b)) - Number(isReady(a)) || Number(isSignedIn(b)) - Number(isSignedIn(a)))
+  const participants = ctx.participants.length ? ctx.participants : sorted.filter(isSignedIn).map((p) => p.id)
   const driver = pickDriver(ctx, sorted, participants)
   const model = ctx.driver.profileId === driver?.id ? ctx.driver.model : null
   const { level, reason } = quotaLevel(driver, driver ? snap?.accounts[driver.id] : undefined, model)

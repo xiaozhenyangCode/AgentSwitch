@@ -10,7 +10,7 @@ import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extension
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
-import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, popover } from '../lib/ui'
+import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, isSignedIn, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
@@ -149,7 +149,9 @@ function useSortedAccounts(): ProfileState[] {
   const { profiles } = useApp()
   return useMemo(() => {
     const order = { claude: 0, codex: 1, gemini: 2, reasonix: 3 } as const
-    return [...profiles].sort((a, b) => Number(isReady(b)) - Number(isReady(a)) || order[a.kind] - order[b.kind] || a.createdAt - b.createdAt)
+    return [...profiles].sort(
+      (a, b) => Number(isReady(b)) - Number(isReady(a)) || Number(isSignedIn(b)) - Number(isSignedIn(a)) || order[a.kind] - order[b.kind] || a.createdAt - b.createdAt
+    )
   }, [profiles])
 }
 
@@ -214,8 +216,8 @@ export function WorkbenchPage() {
   const ctx: Ctx = thread ?? draft
   const update = (patch: Partial<Ctx>) => (thread ? updateThread(thread.id, patch) : patchDraft(patch))
 
-  // participants default to every ready account when unset
-  const participants = ctx.participants.length ? ctx.participants.filter((id) => byId(id)) : sorted.filter(isReady).map((p) => p.id)
+  // participants default to every signed-in account when unset
+  const participants = ctx.participants.length ? ctx.participants.filter((id) => byId(id)) : sorted.filter(isSignedIn).map((p) => p.id)
   const driverP = pickDriver(ctx, sorted, participants)
   const driverModel = ctx.driver.profileId === driverP?.id ? ctx.driver.model : null
   const setDriver = (id: ProfileId, model: string | null) =>
@@ -1107,23 +1109,27 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
         <div className={popover + ' absolute top-11 right-0 z-30 w-72'}>
           <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.participantsTitle')}</div>
           {accounts.map((p) => {
-            const ready = isReady(p)
+            const signedIn = isSignedIn(p)
             const on = participants.includes(p.id)
             const isDriver = p.id === driverId
             return (
               <button
                 key={p.id}
-                disabled={!ready || isDriver}
+                disabled={!signedIn || isDriver}
                 onClick={() => onChange(on ? participants.filter((x) => x !== p.id) : [...participants, p.id])}
                 className="flex h-10 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left transition-colors enabled:hover:bg-black/[0.04] disabled:cursor-default"
                 title={isDriver ? t('wb.driverAlways') : undefined}
               >
-                <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && ready ? 'bg-accent text-white' : 'bg-surface shadow-[inset_0_0_0_1.5px_var(--ring)]'} ${!ready ? 'opacity-40' : ''}`}>
-                  {on && ready && <IconCheck size={12} strokeWidth={3} />}
+                <span className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] ${on && signedIn ? 'bg-accent text-white' : 'bg-surface shadow-[inset_0_0_0_1.5px_var(--ring)]'} ${!signedIn ? 'opacity-40' : ''}`}>
+                  {on && signedIn && <IconCheck size={12} strokeWidth={3} />}
                 </span>
                 <ProfileAvatar profile={p} size={22} />
-                <span className={`min-w-0 flex-1 truncate text-[14px] ${ready ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
-                {isDriver ? <span className="text-[11px] text-ink-3">{t('wb.driver')}</span> : !ready && <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span>}
+                <span className={`min-w-0 flex-1 truncate text-[14px] ${signedIn ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
+                {isDriver ? (
+                  <span className="text-[11px] text-ink-3">{t('wb.driver')}</span>
+                ) : (
+                  !isReady(p) && <span className={`text-[11px] ${p.status === 'rate_limited' ? 'text-danger' : 'text-ink-3'}`}>{accountBadge(p).label}</span>
+                )}
               </button>
             )
           })}
@@ -1141,7 +1147,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
 
 function EmptyState({ projectDir, onPickProject, participants }: { projectDir: string | null; onPickProject: () => void; participants: ProfileId[] }) {
   const { navigate, profiles } = useApp()
-  const ready = useSortedAccounts().filter((p) => isReady(p) && participants.includes(p.id))
+  const ready = useSortedAccounts().filter((p) => isSignedIn(p) && participants.includes(p.id))
   return (
     <div className="flex flex-1 flex-col items-center justify-center pb-10 text-center">
       <div className="text-[28px] leading-tight font-semibold tracking-tight text-ink">{t('wb.emptyTitle')}</div>
@@ -1590,9 +1596,10 @@ function AccountRow({ p, active, selected, trailing, onClick }: { p: ProfileStat
       className={`flex h-10 w-full cursor-default items-center gap-2.5 rounded-[10px] px-2.5 transition-colors ${active ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}
     >
       <ProfileAvatar profile={p} size={24} />
-      <span className={`min-w-0 flex-1 truncate text-[14px] ${isReady(p) ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
+      <span className={`min-w-0 flex-1 truncate text-[14px] ${isSignedIn(p) ? 'text-ink' : 'text-ink-3'}`}>{p.name}</span>
       {trailing}
-      {!isReady(p) ? <span className="text-[11px] text-ink-3">{accountBadge(p).label}</span> : selected && <IconCheck size={15} className="text-accent" />}
+      {!isReady(p) && <span className={`text-[11px] ${p.status === 'rate_limited' ? 'text-danger' : 'text-ink-3'}`}>{accountBadge(p).label}</span>}
+      {isSignedIn(p) && selected && <IconCheck size={15} className="text-accent" />}
     </div>
   )
 }
@@ -2161,7 +2168,7 @@ function Composer({
       return -1
     }
     const scored = accounts
-      .filter(isReady)
+      .filter(isSignedIn)
       .map((p, i) => ({ p, s: score(p), i: i - (participants.includes(p.id) ? 1000 : 0) + (p.id === driver?.id ? 100000 : 0) }))
       .filter((x) => x.s >= 0)
     const byName = scored.filter((x) => x.s < 9)
@@ -2171,7 +2178,7 @@ function Composer({
 
   // preload model lists for the @ menu's sub-model column
   useEffect(() => {
-    for (const p of accounts) if (isReady(p) && !getModelList(p.id)) void loadModels(p.id)
+    for (const p of accounts) if (isSignedIn(p) && !getModelList(p.id)) void loadModels(p.id)
   }, [accounts])
   const subOptions = (p: ProfileState): (string | null)[] => {
     const main = (getModelList(p.id)?.models ?? []).filter((m) => m.group === 'main').map((m) => m.id)
@@ -2397,7 +2404,7 @@ function Composer({
     }
     if (!driver) return toast({ kind: 'warn', title: t('wb.noModel'), action: { label: t('wb.addAccount'), run: () => navigate('engines') } })
     if (!text.trim() && !atts.length) return
-    if (!isReady(driver))
+    if (!isSignedIn(driver))
       return toast({
         kind: 'warn',
         title: t('wb.notUsable', { name: driver.name }),

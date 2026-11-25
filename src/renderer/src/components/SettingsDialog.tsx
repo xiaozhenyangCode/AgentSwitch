@@ -6,7 +6,7 @@ import { setLanguage, t, useI18n } from '../state/i18n'
 import { setThemeMode, useTheme } from '../state/theme'
 import { openOnboarding } from '../state/onboarding'
 import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settings'
-import { KIND_META, isReady } from '../lib/ui'
+import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
 import { SheetCloseButton, WorkspaceSheetModal } from './WorkspaceSheetModal'
@@ -522,7 +522,7 @@ function DefaultDriverRow({ title }: { title: ReactNode }) {
       <Select<string>
         value={defaultDriver && profiles.some((p) => p.id === defaultDriver) ? defaultDriver : ''}
         onChange={(v) => setSetting('defaultDriver', v || null)}
-        options={[{ value: '', label: t('set.followCurrent') }, ...profiles.map((p) => ({ value: p.id, label: isReady(p) ? p.name : `${p.name} (${t('status.notLoggedIn')})` }))]}
+        options={[{ value: '', label: t('set.followCurrent') }, ...profiles.map((p) => ({ value: p.id, label: isReady(p) ? p.name : `${p.name} (${accountBadge(p).label})` }))]}
       />
     </Row>
   )

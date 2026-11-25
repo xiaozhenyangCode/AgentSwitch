@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { OnboardingState } from '@shared/types'
 import { useApp } from './AppContext'
-import { isReady } from '../lib/ui'
+import { isSignedIn } from '../lib/ui'
 
 /**
  * First-run guide. Shown when userData has no `onboardingCompleted` flag and either this is a
@@ -42,7 +42,7 @@ export function useOnboarding(): boolean {
     void load()
     return () => void subs.delete(f)
   }, [])
-  const anyReady = profiles.some(isReady)
+  const anyReady = profiles.some(isSignedIn)
   const upgradeSkip = !!state && !state.completed && !state.firstRun && loaded && anyReady
   useEffect(() => {
     if (upgradeSkip) void finishOnboarding()

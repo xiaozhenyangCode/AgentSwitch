@@ -48,8 +48,11 @@ export const KIND_META: Record<ProfileKind, { name: string; cli: string; vendor:
   reasonix: { name: 'Reasonix', cli: 'reasonix', vendor: 'DeepSeek', letter: 'R', color: '#4257D9', bar: 'linear-gradient(90deg, #6B8CFF, #4257D9)' }
 }
 
-/** Ready to be used by a workflow node. */
+/** Ready to be used right now (installed, signed in, and not rate-limited). */
 export const isReady = (p: ProfileState | undefined): boolean => !!p && (p.status === 'idle' || p.status === 'running')
+
+/** Installed and signed in, including temporarily rate-limited accounts. */
+export const isSignedIn = (p: ProfileState | undefined): boolean => isReady(p) || p?.status === 'rate_limited'
 
 /* ---- buttons ---------------------------------------------------------------- */
 

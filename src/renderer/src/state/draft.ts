@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { ProfileId, ProfileState } from '@shared/types'
-import { isReady } from '../lib/ui'
+import { isReady, isSignedIn } from '../lib/ui'
 import { getSettings } from './settings'
 import type { Thread } from './chat'
 
@@ -46,6 +46,8 @@ export function pickDriver(ctx: DraftCtx, sorted: ProfileState[], participants: 
     byId(getSettings().defaultDriver) ??
     sorted.find((p) => participants.includes(p.id) && isReady(p)) ??
     sorted.find(isReady) ??
+    sorted.find((p) => participants.includes(p.id) && isSignedIn(p)) ??
+    sorted.find(isSignedIn) ??
     sorted[0]
   )
 }

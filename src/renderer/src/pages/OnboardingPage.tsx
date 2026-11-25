@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { KINDS, type ProfileKind, type ProfileState } from '@shared/types'
 import { canUseOAuthLogin, getProviderCapabilities } from '@shared/providerCapabilities'
 import { useApp } from '../state/AppContext'
-import { KIND_META, isReady } from '../lib/ui'
+import { KIND_META, isSignedIn } from '../lib/ui'
 import { BrandMark, KindAvatar, ProfileAvatar } from '../components/common'
 import { IconCheck, IconCopy, IconDownload, Spinner } from '../components/icons'
 import { finishOnboarding } from '../state/onboarding'
@@ -42,7 +42,7 @@ function useVersions(): Partial<Record<ProfileKind, string | null>> {
 
 export function OnboardingPage() {
   const { profiles, loaded } = useApp()
-  const ready = profiles.filter(isReady)
+  const ready = profiles.filter(isSignedIn)
   const [step, setStep] = useState<1 | 2>(1)
 
   return (
@@ -90,7 +90,7 @@ function Detecting() {
 }
 
 function stageOf(kind: ProfileKind, installed: boolean, accounts: ProfileState[]): Stage {
-  if (accounts.some((p) => p.kind === kind && isReady(p))) return 'ready'
+  if (accounts.some((p) => p.kind === kind && isSignedIn(p))) return 'ready'
   return installed ? 'installed' : 'uninstalled'
 }
 
@@ -200,7 +200,7 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
     if (!oauth) return openAddAccount(kind)
     setBusy(true)
     try {
-      let target = accounts.find((p) => !isReady(p) && !p.apiKey) // API-key accounts never use the OAuth sheet
+      let target = accounts.find((p) => !isSignedIn(p) && !p.apiKey) // API-key accounts never use the OAuth sheet
       if (!target) {
         const id = await window.agentswitch.profiles.add(kind)
         const home = info?.realHome ?? ''
@@ -237,7 +237,7 @@ function EngineCard({ kind }: { kind: ProfileKind }) {
           <div className="mt-0.5 truncate text-[12px] text-ink-3">
             {stage === 'ready'
               ? accounts
-                  .filter(isReady)
+                  .filter(isSignedIn)
                   .map((p) => p.name)
                   .join(t('common.listSep'))
               : t(`ob.desc.${kind}`)}
