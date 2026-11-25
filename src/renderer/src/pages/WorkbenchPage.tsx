@@ -905,6 +905,7 @@ export function WorkbenchPage() {
       )}
       {historyDir && historyDir === ctx.projectDir && (
         <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)}
+          remote={showGitTools ? { status: git.status, disabled: git.disabled, busy: gitBusy, pending: git.pending, run: git.run, refresh: git.refresh } : null}
           onViewChanges={() => {
             setHistoryDir(null)
             setChangesVisible(true)

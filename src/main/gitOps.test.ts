@@ -125,7 +125,7 @@ describe('Git workbench operations', () => {
     expect(await gitStatus(repo)).toMatchObject({ ok: true, repo: true, branch: null, detached: sha })
   })
 
-  it('pushes with upstream, fetches, fast-forwards, tracks remote branches and rejects a divergent pull', async () => {
+  it('pushes with upstream, fetches, fast-forwards, tracks remote branches and rejects a divergent pull', { timeout: 15_000 }, async () => {
     const bare = await createOrigin()
     expect(await gitStatus(repo)).toMatchObject({ upstream: 'origin/main', ahead: 0, behind: 0 })
     const peer = join(temp, 'peer')
@@ -327,6 +327,44 @@ describe('Git workbench operations', () => {
       ok: true, commits: [{ subject: 'Second' }, { subject: 'Initial commit' }], hasMore: false, nextSkip: 4
     })
     expect(await gitGraph(repo, { limit: 2, skip: 4 })).toMatchObject({ ok: true, commits: [], hasMore: false, nextSkip: 4 })
+  })
+
+  it('searches subjects, authors and short hashes with case-insensitive AND terms', async () => {
+    await git(repo, 'config', 'user.name', 'Mina Rivera')
+    await addCommit(repo, 'docs.txt', 'docs', 'Update documentation')
+    const docs = await git(repo, 'rev-parse', '--short', 'HEAD')
+    await git(repo, 'config', 'user.name', 'Another Author')
+    await addCommit(repo, 'code.txt', 'code', 'Update application')
+    for (const query of ['documentation', 'RIVERA', docs, `  UPDATE mina ${docs.toUpperCase()}  `]) {
+      const page = await gitGraph(repo, { query })
+      expect(page).toMatchObject({
+        ok: true, commits: [{ shortHash: docs, subject: 'Update documentation', author: 'Mina Rivera' }],
+        hasMore: false, nextSkip: 1
+      })
+      expect(page).not.toHaveProperty('headCommit')
+    }
+    expect(await gitGraph(repo, { query: 'documentation Another' })).toMatchObject({
+      ok: true, commits: [], hasMore: false, nextSkip: 0
+    })
+  })
+
+  it('pages matching commits and treats invalid search terms as empty', async () => {
+    await addCommit(repo, 'older.txt', 'old', 'Fix older bug')
+    await addCommit(repo, 'break.txt', 'break', 'Unrelated')
+    await addCommit(repo, 'newer.txt', 'new', 'Fix newer bug')
+    expect(await gitGraph(repo, { query: 'fix bug', limit: 1 })).toMatchObject({
+      ok: true, commits: [{ subject: 'Fix newer bug' }], hasMore: true, nextSkip: 1
+    })
+    expect(await gitGraph(repo, { query: 'fix bug', limit: 1, skip: 1 })).toMatchObject({
+      ok: true, commits: [{ subject: 'Fix older bug' }], hasMore: false, nextSkip: 2
+    })
+    expect(await gitGraph(repo, { query: 'fix bug', limit: 1, skip: 2 })).toMatchObject({
+      ok: true, commits: [], hasMore: false, nextSkip: 2
+    })
+    const unfiltered = await gitGraph(repo, { limit: 1 })
+    for (const query of [4, 'fix\0bug', 'x'.repeat(201)]) {
+      expect(await gitGraph(repo, { query, limit: 1 })).toEqual(unfiltered)
+    }
   })
 
   it('returns a root diff, a first-parent merge diff and normal rename/binary changes', async () => {

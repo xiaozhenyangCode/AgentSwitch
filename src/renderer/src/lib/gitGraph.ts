@@ -1,4 +1,5 @@
 import type { GitGraphCommit, GitGraphData } from '@shared/types'
+export { matchesGitCommit } from '@shared/gitCommitMatch'
 
 export const WORKTREE_NODE = ':worktree'
 export const GRAPH_ROW_HEIGHT = 32
@@ -33,12 +34,6 @@ export function appendGraphPage(previous: GitGraphData, page: GitGraphData): Git
     ...page, commits: [...commits.values()],
     headCommit: headCommit?.hash === page.headHash && !commits.has(headCommit.hash) ? headCommit : undefined
   }
-}
-
-export function matchesGitCommit(commit: GitGraphCommit, query: string): boolean {
-  const terms = query.trim().toLowerCase().split(/\s+/)
-  const text = [commit.subject, commit.hash, commit.shortHash, commit.author].join(' ').toLowerCase()
-  return terms.every((term) => text.includes(term))
 }
 
 export function graphCommits(data: GitGraphData): GitGraphCommit[] {

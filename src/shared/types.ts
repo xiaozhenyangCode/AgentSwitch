@@ -936,6 +936,7 @@ export interface GitGraphCommit extends GitCommit {
 export interface GitGraphOptions {
   limit?: number
   skip?: number
+  query?: string
   /** HEAD, an exact local/remote branch, or null for all public refs. */
   branch?: string | null
 }

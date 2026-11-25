@@ -1,18 +1,38 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import type { GitBranch, GitCommitDetail, GitGraphCommit, GitGraphData } from '@shared/types'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { normalizeGitCommitQuery } from '@shared/gitCommitMatch'
+import type { GitBranch, GitCommitDetail, GitGraphCommit, GitGraphData, GitMutation, GitMutationResult, GitStatus } from '@shared/types'
 import { useLayer } from '../lib/escStack'
 import {
-  appendGraphPage, getGraphNodes, graphCommits, graphLinePath, layoutGitGraph, matchesGitCommit,
+  appendGraphPage, getGraphNodes, graphCommits, graphLinePath, layoutGitGraph,
   GRAPH_LANE_GAP, GRAPH_LEFT_PAD, GRAPH_ROW_HEIGHT, WORKTREE_NODE, type GraphRow
 } from '../lib/gitGraph'
 import { useApp } from '../state/AppContext'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
+import { gitErrorTitle, type RunGit } from '../state/useProjectGit'
 import { Counts, FileRow } from './ChangesPanel'
-import { IconBranch, IconCheck, IconChevronDown, IconCopy, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
+import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
 
 type CommitDetail = { hash: string; commit?: GitCommitDetail; error?: string }
+type RemoteControls = {
+  status: Extract<GitStatus, { repo: true }> | null
+  disabled: boolean
+  busy: boolean
+  pending: GitMutation['kind'] | null
+  run: RunGit
+  refresh: () => void
+}
+type RemoteFailure = Extract<GitMutationResult, { ok: false }>
 
+const PAGE_SIZE = 100
 const allBranches = '__ALL__'
+const columnKey = 'agentswitch.gitGraph.columns'
+const defaultWidths = { author: 96, time: 78, hash: 80 }
+const minWidths = { author: 70, time: 70, hash: 68 }
+type Column = keyof typeof defaultWidths
+const columnLabels = { author: 'git.graphAuthor', time: 'git.graphDate', hash: 'git.graphHash' } as const
+const adjustableColumns = ['author', 'time', 'hash'] as const
+const maxWidth = 400
+const clampWidth = (column: Column, width: number) => Math.min(maxWidth, Math.max(minWidths[column], width))
 const splitKey = 'agentswitch.gitGraph.inspectorRatio'
 const defaultRatio = 0.35
 const minRatio = 0.25
@@ -20,16 +40,38 @@ const maxRatio = 0.62
 const clampRatio = (ratio: number) => Math.min(maxRatio, Math.max(minRatio, ratio))
 const iconButton = 'grid size-8 shrink-0 place-items-center rounded-lg text-ink-2 hover:bg-black/[0.06] hover:text-ink disabled:opacity-40'
 const textButton = 'rounded-md px-2.5 py-1 text-[12px] font-medium text-ink-2 hover:bg-black/[0.06] hover:text-ink disabled:opacity-45'
+const toolbarButton = 'flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-2 hover:bg-black/[0.06] hover:text-ink disabled:opacity-40'
 const laneColor = (color: number) => `var(--git-lane-${color % 6})`
+const syncActions = [
+  { kind: 'fetch', Icon: IconRefresh, progress: 'git.fetching' },
+  { kind: 'pull', Icon: IconDownload, progress: 'git.pulling' },
+  { kind: 'push', Icon: IconArrowUp, progress: 'git.pushing' }
+] as const
+type RemoteAction = typeof syncActions[number]['kind']
 
-export function GitGraphView({ dir, onClose, onViewChanges }: {
+function readColumnWidths() {
+  const widths = { ...defaultWidths }
+  try {
+    const saved = JSON.parse(localStorage.getItem(columnKey) ?? 'null')
+    for (const column of adjustableColumns) {
+      const width = saved?.[column]
+      if (typeof width === 'number' && Number.isFinite(width)) widths[column] = clampWidth(column, width)
+    }
+  } catch { /* Use defaults when storage is unavailable or invalid. */ }
+  return widths
+}
+
+export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
   dir: string
   onClose: () => void
   onViewChanges: () => void
+  remote: RemoteControls | null
 }) {
   const { toast } = useApp()
   const dialog = useRef<HTMLDialogElement>(null)
   const list = useRef<HTMLDivElement>(null)
+  const sentinel = useRef<HTMLDivElement>(null)
+  const table = useRef<HTMLDivElement>(null)
   const search = useRef<HTMLInputElement>(null)
   const [branch, setBranch] = useState(allBranches)
   const [branches, setBranches] = useState<GitBranch[]>([])
@@ -40,7 +82,18 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
   const [detail, setDetail] = useState<CommitDetail | null>(null)
   const [copiedHash, setCopiedHash] = useState<string | null>(null)
   const [focusHash, setFocusHash] = useState<string | null>(null)
+  const [remoteError, setRemoteError] = useState<RemoteFailure | null>(null)
+  const [widths, setWidths] = useState(readColumnWidths)
+  const savedWidths = useRef(widths)
   const graphRequest = useRef(0)
+  const inFlight = useRef(false)
+  const nextSkip = useRef<number | null>(null)
+  const filters = useRef({ branch: allBranches, query: '' })
+  const searchValue = useRef('')
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const composing = useRef(false)
+  const mounted = useRef(false)
+  const remoteRunning = useRef(false)
   const detailRequest = useRef(0)
   const copyRequest = useRef(0)
 
@@ -53,18 +106,32 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
     return () => modal.close()
   }, [])
 
-  const loadPage = useCallback(async (skip: number, ref: string) => {
+  const cancelSearch = useCallback(() => {
+    if (searchTimer.current !== null) clearTimeout(searchTimer.current)
+    searchTimer.current = null
+  }, [])
+
+  const loadPage = useCallback(async (skip: number, ref: string, query: string) => {
     const request = ++graphRequest.current
+    inFlight.current = true
     if (!skip) setData(null)
     setLoading(true)
     setLoadError('')
     try {
-      const result = await window.agentswitch.git.graph(dir, { branch: ref, skip })
+      const readPage = (branch: string) => window.agentswitch.git.graph(dir, { branch, skip, limit: PAGE_SIZE, query })
+      let result = await readPage(ref)
       if (request !== graphRequest.current) return null
+      if (!skip && !result.ok && result.code === 'invalidBranch' && ref !== allBranches) {
+        filters.current.branch = allBranches
+        setBranch(allBranches)
+        result = await readPage(allBranches)
+        if (request !== graphRequest.current) return null
+      }
       if (!result.ok) {
         setLoadError(result.error)
         return null
       }
+      nextSkip.current = result.hasMore ? result.nextSkip : null
       setData((previous) => skip && previous ? appendGraphPage(previous, result) : result)
       setBranches(result.branches)
       return result
@@ -72,20 +139,44 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
       if (request === graphRequest.current) setLoadError(String(error))
       return null
     } finally {
-      if (request === graphRequest.current) setLoading(false)
+      if (request === graphRequest.current) {
+        inFlight.current = false
+        setLoading(false)
+      }
     }
   }, [dir])
 
+  const resetList = useCallback((ref: string, query: string) => {
+    graphRequest.current++
+    cancelSearch()
+    filters.current = { branch: ref, query }
+    nextSkip.current = null
+    setBranch(ref)
+    detailRequest.current++
+    setDetail(null)
+    setFocusHash(null)
+    list.current?.scrollTo(0, 0)
+    return loadPage(0, ref, query)
+  }, [cancelSearch, loadPage])
+
   useEffect(() => {
+    mounted.current = true
     let active = true
-    queueMicrotask(() => { if (active) void loadPage(0, allBranches) })
+    queueMicrotask(() => { if (active) void resetList(allBranches, '') })
     return () => {
       active = false
+      mounted.current = false
+      cancelSearch()
       graphRequest.current++
+      inFlight.current = false
+      nextSkip.current = null
       detailRequest.current++
       copyRequest.current++
     }
-  }, [loadPage])
+  }, [cancelSearch, resetList])
+
+  const refreshStatus = remote?.refresh
+  useEffect(() => { refreshStatus?.() }, [refreshStatus])
 
   const openCommit = async (hash: string) => {
     const request = ++detailRequest.current
@@ -99,12 +190,46 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
     }
   }
 
-  const resetList = (ref: string) => {
-    detailRequest.current++
-    setDetail(null)
-    setFocusHash(null)
-    list.current?.scrollTo(0, 0)
-    return loadPage(0, ref)
+  const currentQuery = () => composing.current ? filters.current.query : normalizeGitCommitQuery(searchValue.current)
+
+  const scheduleSearch = () => {
+    cancelSearch()
+    graphRequest.current++
+    inFlight.current = false
+    setLoading(true)
+    setLoadError('')
+    searchTimer.current = setTimeout(() => {
+      void resetList(filters.current.branch, currentQuery())
+    }, 250)
+  }
+
+  const updateSearch = (value: string) => {
+    searchValue.current = value
+    setQuery(value)
+    if (!composing.current) scheduleSearch()
+  }
+
+  const reload = () => resetList(filters.current.branch, currentQuery())
+
+  const syncRemote = async (kind: RemoteAction) => {
+    if (!remote || remote.disabled || remoteRunning.current) return
+    remoteRunning.current = true
+    setRemoteError(null)
+    try {
+      const result = await remote.run({ kind }, { errorToast: false })
+      if (!mounted.current) return
+      if (result.ok) void reload()
+      else setRemoteError(result)
+    } finally {
+      remoteRunning.current = false
+    }
+  }
+
+  const saveWidth = (column: Column, width: number) => {
+    const next = { ...savedWidths.current, [column]: width }
+    savedWidths.current = next
+    setWidths(next)
+    try { localStorage.setItem(columnKey, JSON.stringify(next)) } catch { /* Keep in-memory widths. */ }
   }
 
   const copyHash = async (hash: string) => {
@@ -118,15 +243,40 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
   }
 
   const commits = useMemo(() => data ? graphCommits(data) : [], [data])
-  const visible = useMemo(() => commits.filter((commit) => matchesGitCommit(commit, query)), [commits, query])
-  const byHash = useMemo(() => new Map(visible.map((commit) => [commit.hash, commit])), [visible])
+  const byHash = useMemo(() => new Map(commits.map((commit) => [commit.hash, commit])), [commits])
   const topology = useMemo(
-    () => layoutGitGraph(getGraphNodes(visible, data?.headHash ?? null, data?.dirty ?? false)),
-    [visible, data?.headHash, data?.dirty]
+    () => layoutGitGraph(getGraphNodes(commits, data?.headHash ?? null, data?.dirty ?? false)),
+    [commits, data?.headHash, data?.dirty]
   )
   const graphWidth = GRAPH_LEFT_PAD * 2 + (topology.laneCount - 1) * GRAPH_LANE_GAP
-  const columns = `${graphWidth}px minmax(145px, 1fr) 96px 78px 80px`
-  const tabStop = detail && byHash.has(detail.hash) ? detail.hash : visible[0]?.hash
+  const columns = `${graphWidth}px minmax(180px, 1fr) var(--col-author) var(--col-time) var(--col-hash)`
+  const tableStyle = {
+    '--col-author': `${widths.author}px`, '--col-time': `${widths.time}px`, '--col-hash': `${widths.hash}px`,
+    minWidth: `calc(${graphWidth}px + 180px + var(--col-author) + var(--col-time) + var(--col-hash))`
+  } as CSSProperties
+  const tabStop = detail && byHash.has(detail.hash) ? detail.hash : commits[0]?.hash
+
+  const loadMore = useCallback(() => {
+    if (!data?.hasMore || loading || inFlight.current || searchTimer.current !== null || composing.current
+      || data.nextSkip !== nextSkip.current) return
+    void loadPage(data.nextSkip, filters.current.branch, filters.current.query)
+  }, [data, loading, loadPage])
+
+  const pagination = useRef({ loadMore, loadError })
+  useLayoutEffect(() => { pagination.current = { loadMore, loadError } }, [loadMore, loadError])
+  const canAutoLoad = data?.hasMore && !loading && !loadError
+  useLayoutEffect(() => {
+    if (!canAutoLoad || !list.current || !sentinel.current || typeof IntersectionObserver === 'undefined') return
+    let active = true
+    const observer = new IntersectionObserver((entries) => {
+      if (active && entries.some((entry) => entry.isIntersecting) && !pagination.current.loadError) pagination.current.loadMore()
+    }, { root: list.current, rootMargin: '0px 0px 200px 0px' })
+    observer.observe(sentinel.current)
+    return () => {
+      active = false
+      observer.disconnect()
+    }
+  }, [canAutoLoad, data])
 
   useLayoutEffect(() => {
     if (!focusHash) return
@@ -135,7 +285,7 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
     row.focus({ preventScroll: true })
     row.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     setFocusHash(null)
-  }, [focusHash, visible])
+  }, [focusHash, commits])
 
   const selectCommit = (hash: string) => {
     if (hash !== detail?.hash) void openCommit(hash)
@@ -143,29 +293,36 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
   }
   const locateHead = async () => {
     if (!data?.headHash) return
+    const alreadyLoaded = !composing.current && searchTimer.current === null && !currentQuery()
+      && !filters.current.query && byHash.has(data.headHash)
+    cancelSearch()
+    searchValue.current = ''
     setQuery('')
-    if (commits.some((commit) => commit.hash === data.headHash)) {
+    if (alreadyLoaded) {
       selectCommit(data.headHash)
       return
     }
-    setBranch('HEAD')
-    const result = await resetList('HEAD')
-    if (result?.headHash) {
+    const ref = filters.current.branch === allBranches ? allBranches : 'HEAD'
+    const result = await resetList(ref, '')
+    if (!result) return
+    if (result.headHash && graphCommits(result).some(({ hash }) => hash === result.headHash)) {
       void openCommit(result.headHash)
       setFocusHash(result.headHash)
+    } else {
+      toast({ kind: 'error', title: t('git.headNotLoaded') })
     }
   }
 
   const navigateRows = (event: KeyboardEvent) => {
-    if (!visible.length || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
-    if (!(event.target instanceof HTMLElement) || event.target.closest('input,select,textarea,[contenteditable="true"]')) return
+    if (!commits.length || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+    if (!(event.target instanceof HTMLElement) || event.target.closest('input,select,textarea,[contenteditable="true"],[role="separator"]')) return
     event.preventDefault()
     const focused = event.target.closest<HTMLElement>('[data-history-row]')?.dataset.historyRow
-    const index = visible.findIndex(({ hash }) => hash === (focused ?? detail?.hash))
+    const index = commits.findIndex(({ hash }) => hash === (focused ?? detail?.hash))
     const next = index < 0
-      ? event.key === 'ArrowDown' ? 0 : visible.length - 1
-      : Math.min(visible.length - 1, Math.max(0, index + (event.key === 'ArrowDown' ? 1 : -1)))
-    selectCommit(visible[next].hash)
+      ? event.key === 'ArrowDown' ? 0 : commits.length - 1
+      : Math.min(commits.length - 1, Math.max(0, index + (event.key === 'ArrowDown' ? 1 : -1)))
+    selectCommit(commits[next].hash)
   }
 
   return (
@@ -181,7 +338,7 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
           </h2>
           <label className="relative flex min-w-0 shrink-0 items-center">
             <select aria-label={t('git.graphBranchFilter')} value={branch}
-              onChange={(event) => { setBranch(event.target.value); void resetList(event.target.value) }}
+              onChange={(event) => void resetList(event.target.value, currentQuery())}
               className="h-8 max-w-[180px] appearance-none truncate rounded-lg border border-hairline bg-surface pl-2.5 pr-7 text-[12px] text-ink focus-visible:outline-2 focus-visible:outline-accent">
               <option value={allBranches}>{t('git.graphAllBranches')}</option>
               <option value="HEAD">{t('git.graphCurrentBranch')}</option>
@@ -193,36 +350,41 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
           <label className="flex h-8 min-w-28 max-w-[370px] flex-1 items-center gap-2 rounded-lg border border-hairline bg-surface px-2.5 focus-within:border-accent">
             <IconSearch size={14} className="shrink-0 text-ink-3" aria-hidden="true" />
             <input ref={search} type="search" className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-ink-3"
-              placeholder={t('git.searchCommits')} aria-label={t('git.searchCommits')} value={query} onChange={(event) => setQuery(event.target.value)} />
+              placeholder={t('git.searchCommits')} aria-label={t('git.searchCommits')} value={query}
+              onChange={(event) => updateSearch(event.target.value)}
+              onCompositionStart={() => { composing.current = true; cancelSearch() }}
+              onCompositionEnd={(event) => { composing.current = false; updateSearch(event.currentTarget.value) }} />
           </label>
           <div className="ml-auto flex items-center gap-1">
-            <button type="button" className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] text-ink-2 hover:bg-black/[0.06] hover:text-ink disabled:opacity-40"
-              onClick={() => void locateHead()} disabled={!data?.headHash || loading} title={t('git.graphLocateHead')}>
+            {remote && <RemoteButtons remote={remote} onRun={(kind) => void syncRemote(kind)} />}
+            <button type="button" className={toolbarButton}
+              onClick={() => void locateHead()} disabled={!data?.headHash} title={t('git.graphLocateHead')}>
               <IconFocus size={14} aria-hidden="true" />
               <span>{t('git.graphLocateHead')}</span>
             </button>
-            <button type="button" className={iconButton} onClick={() => void resetList(branch)} disabled={loading}
+            <button type="button" className={iconButton} onClick={() => { refreshStatus?.(); void reload() }}
               aria-label={t('git.refreshGraph')} title={t('git.refreshGraph')}>
-              {loading ? <Spinner size={14} /> : <IconRefresh size={15} />}
+              <IconRefresh size={15} />
             </button>
             <button type="button" className={iconButton} onClick={onClose} aria-label={t('common.close')} title={t('common.close')}>
               <IconX size={16} aria-hidden="true" />
             </button>
           </div>
         </header>
+        {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
         <GitHistorySplit inspector={(
           <CommitInspector detail={detail} copiedHash={copiedHash} onCopy={(hash) => void copyHash(hash)} onRetry={(hash) => void openCommit(hash)} />
         )}>
           <div ref={list} className="h-full overflow-auto scroll-pt-[32px]" onKeyDown={navigateRows}
             aria-label={t('git.historyTab')} role="region">
-            <div style={{ minWidth: graphWidth + 399 }}>
+            <div ref={table} style={tableStyle}>
               <div className="sticky top-0 z-10 grid h-[32px] items-center border-b border-hairline bg-surface-2 text-[11px] font-medium text-ink-2" style={{ gridTemplateColumns: columns }}>
-                <span className="col-start-2 pl-2">{t('git.graphSubject')}</span>
-                <span className="pl-2">{t('git.graphAuthor')}</span>
-                <span className="pl-2">{t('git.graphDate')}</span>
-                <span className="pl-2">{t('git.graphHash')}</span>
+                <span className="col-start-2 min-w-0 truncate pl-2">{t('git.graphSubject')}</span>
+                {adjustableColumns.map((column) => (
+                  <ColumnHeader key={column} column={column} width={widths[column]} table={table} onResize={saveWidth} />
+                ))}
               </div>
-              {data?.dirty && !data.headHash && <WorktreeRow count={data.uncommittedCount} onClick={onViewChanges} />}
+              {data?.dirty && !data.headHash && !filters.current.query && <WorktreeRow count={data.uncommittedCount} onClick={onViewChanges} />}
               {topology.rows.map((row) => {
                 const isHead = row.hash === data?.headHash
                 const graph = <GraphRail row={row} head={isHead} width={graphWidth} />
@@ -232,25 +394,125 @@ export function GitGraphView({ dir, onClose, onViewChanges }: {
                   selected={detail?.hash === row.hash} tabIndex={tabStop === row.hash ? 0 : -1} copied={copiedHash === row.hash}
                   onSelect={() => selectCommit(row.hash)} onCopy={() => void copyHash(row.hash)} />
               })}
-              {!data && loading && <p role="status" className="px-4 py-5 text-[12px] text-ink-2">{t('git.loadingHistory')}</p>}
-              {data && !visible.length && (
-                <p className="px-4 py-4 text-[12px] text-ink-2">{t(commits.length ? 'git.noMatchingCommits' : 'git.noCommits')}</p>
+              {data && !loading && !commits.length && (
+                <p className="px-4 py-4 text-[12px] text-ink-2">{t(filters.current.query ? 'git.noMatchingCommits' : 'git.noCommits')}</p>
               )}
               {loadError && <ReadError text={t('git.historyFailed')} detail={loadError}
-                onRetry={() => void (data ? loadPage(data.nextSkip, branch) : resetList(branch))} />}
-              {data?.hasMore && !loadError && (
+                onRetry={() => { if (data) loadMore(); else void reload() }} />}
+              {!loadError && (loading || data) && (
                 <div className="border-t border-hairline px-3 py-2">
-                  <button type="button" className={textButton} disabled={loading} onClick={() => void loadPage(data.nextSkip, branch)}>
-                    {loading ? t('git.loadingHistory') : t('git.graphMore')}
-                  </button>
+                  {loading
+                    ? <p role="status" className="flex items-center gap-2 px-2.5 py-1 text-[12px] text-ink-2"><Spinner size={13} />{t('git.loadingHistory')}</p>
+                    : data?.hasMore
+                      ? <button type="button" className={textButton} onClick={loadMore}>{t('git.graphMore')}</button>
+                      : <p role="status" className="px-2.5 py-1 text-[12px] text-ink-3">{t('git.historyAllLoaded')}</p>}
                 </div>
               )}
+              <div ref={sentinel} className="h-px" aria-hidden="true" />
             </div>
           </div>
         </GitHistorySplit>
         <span className="sr-only" role="status">{copiedHash && t('common.copied')}</span>
       </div>
     </dialog>
+  )
+}
+
+function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind: RemoteAction) => void }) {
+  const { status, pending, disabled, busy } = remote
+  return (
+    <>
+      {syncActions.map(({ kind, Icon, progress }) => {
+        const active = pending === kind
+        const label = t(kind === 'push' && status?.branch && !status.upstream ? 'git.publish' : `git.${kind}`)
+        const count = kind === 'pull' && status && status.behind > 0 ? `↓${status.behind}`
+          : kind === 'push' && status && status.ahead > 0 ? `↑${status.ahead}` : ''
+        let unavailable = ''
+        if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
+        else if (status && kind === 'pull' && !status.upstream) unavailable = t('git.pullNoUpstream')
+        const title = busy ? t('git.agentBusy') : active ? t(progress) : unavailable || [label, count].filter(Boolean).join(' ')
+        return (
+          <span key={kind} className="inline-flex" title={title}>
+            <button type="button" className={toolbarButton + ' disabled:pointer-events-none' + (active ? ' disabled:opacity-100!' : '')}
+              disabled={!status || disabled || !!unavailable} onClick={() => onRun(kind)}>
+              {active ? <Spinner size={13} className="text-accent" /> : <Icon size={14} aria-hidden="true" />}
+              <span>{active ? t(progress) : label}</span>
+              {!active && count && <span className="text-[10px] tabular-nums text-ink-3">{count}</span>}
+            </button>
+          </span>
+        )
+      })}
+      <span aria-hidden="true" className="mx-1 h-4 w-px bg-hairline" />
+    </>
+  )
+}
+
+function RemoteError({ result, onClose }: { result: RemoteFailure; onClose: () => void }) {
+  const message = result.code === 'busy' ? '' : result.error.split(/\r?\n/)
+    .map((line) => line.trim()).filter((line) => line && !line.startsWith('hint:')).slice(0, 4).join('\n').slice(0, 400)
+  return (
+    <div role="alert" className="flex shrink-0 items-start justify-between gap-2 border-b border-hairline bg-danger/10 px-3 py-2 text-danger">
+      <div className="min-w-0">
+        <p className="text-[12px] font-medium">{gitErrorTitle(result)}</p>
+        {message && <p className="mt-0.5 select-text font-mono text-[11px] wrap-anywhere whitespace-pre-wrap">{message}</p>}
+      </div>
+      <button type="button" className={iconButton} onClick={onClose} aria-label={t('common.close')} title={t('common.close')}>
+        <IconX size={14} aria-hidden="true" />
+      </button>
+    </div>
+  )
+}
+
+function ColumnHeader({ column, width, table, onResize }: {
+  column: Column
+  width: number
+  table: RefObject<HTMLDivElement | null>
+  onResize: (column: Column, width: number) => void
+}) {
+  const drag = useRef<{ pointerId: number; startX: number; startWidth: number; width: number } | null>(null)
+  const label = t(columnLabels[column])
+  const resizeLabel = t('git.resizeColumn')
+  const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const active = drag.current
+    if (!active || active.pointerId !== event.pointerId) return
+    drag.current = null
+    delete event.currentTarget.dataset.dragging
+    onResize(column, active.width)
+  }
+
+  return (
+    <div className="relative flex h-full min-w-0 items-center">
+      <span className="min-w-0 truncate pl-2">{label}</span>
+      <div role="separator" aria-orientation="vertical" aria-label={label} title={resizeLabel}
+        aria-valuemin={minWidths[column]} aria-valuemax={maxWidth} aria-valuenow={width} tabIndex={0}
+        className="group/resize absolute inset-y-0 -left-[3px] z-10 flex w-[6px] touch-none cursor-col-resize items-stretch justify-center focus-visible:outline-none"
+        onPointerDown={(event) => {
+          if (event.button !== 0 || drag.current) return
+          event.preventDefault()
+          const handle = event.currentTarget
+          handle.focus({ preventScroll: true })
+          handle.setPointerCapture(event.pointerId)
+          handle.dataset.dragging = 'true'
+          drag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width, width }
+        }}
+        onPointerMove={(event) => {
+          const active = drag.current
+          if (!active || active.pointerId !== event.pointerId) return
+          active.width = clampWidth(column, active.startWidth + active.startX - event.clientX)
+          table.current?.style.setProperty(`--col-${column}`, `${active.width}px`)
+        }}
+        onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish}
+        onDoubleClick={() => onResize(column, defaultWidths[column])}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home') return
+          event.preventDefault()
+          if (drag.current) return
+          const value = event.key === 'Home' ? defaultWidths[column] : clampWidth(column, width + (event.key === 'ArrowLeft' ? 8 : -8))
+          onResize(column, value)
+        }}>
+        <span aria-hidden="true" className="w-px group-hover/resize:bg-accent group-focus-visible/resize:bg-accent group-data-[dragging]/resize:bg-accent" />
+      </div>
+    </div>
   )
 }
 
@@ -382,7 +644,7 @@ function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, o
         className="col-span-4 grid h-full min-w-0 grid-cols-subgrid items-center overflow-hidden text-left focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-inset focus-visible:outline-none"
         title={[subject, ...commit.refs.map((ref) => ref.name)].join('\n')} onClick={onSelect}>
         {rail}
-        <span className="flex min-w-0 items-center gap-1.5 pl-2 pr-1">
+        <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap pl-2 pr-1">
           {refs.slice(0, 2).map((ref) => (
             <span key={ref.kind + ':' + ref.name} title={ref.name}
               className={`inline-flex max-w-[29%] shrink-0 items-center gap-1 rounded-md px-1 py-0.5 text-[10px] leading-3 ${head && (ref === branch || ref.kind === 'head') ? 'bg-info-soft text-info' : 'bg-black/[0.055] text-ink-2'}`}>
@@ -394,9 +656,9 @@ function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, o
           <span className="min-w-0 flex-1 truncate">{subject}</span>
         </span>
         <span className="min-w-0 truncate px-2 text-[11px] text-ink-2" title={commit.author}>{commit.author}</span>
-        <time className="truncate px-2 text-[11px] text-ink-2" title={date} dateTime={new Date(commit.timestamp).toISOString()}>{fmtAgo(commit.timestamp)}</time>
+        <time className="min-w-0 truncate px-2 text-[11px] text-ink-2" title={date} dateTime={new Date(commit.timestamp).toISOString()}>{fmtAgo(commit.timestamp)}</time>
       </button>
-      <HashButton hash={commit.hash} copied={copied} onCopy={onCopy} className="justify-self-start" tabIndex={tabIndex} />
+      <HashButton hash={commit.hash} copied={copied} onCopy={onCopy} className="max-w-full min-w-0 justify-self-start overflow-hidden" tabIndex={tabIndex} />
     </div>
   )
 }
@@ -452,8 +714,8 @@ function HashButton({ hash, copied, onCopy, className, tabIndex }: {
   return (
     <button type="button" className={`group/hash inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-ink-2 hover:bg-black/[0.055] hover:text-ink ${className}`}
       title={copied ? t('common.copied') : label} aria-label={label} tabIndex={tabIndex} onClick={onCopy}>
-      {shortHash}
-      <Icon size={11} className={copied ? 'text-accent' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-hover/hash:opacity-100 group-focus-visible/hash:opacity-100'} aria-hidden="true" />
+      <span className="truncate">{shortHash}</span>
+      <Icon size={11} className={copied ? 'shrink-0 text-accent' : 'shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-hover/hash:opacity-100 group-focus-visible/hash:opacity-100'} aria-hidden="true" />
     </button>
   )
 }

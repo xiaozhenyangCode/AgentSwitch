@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { GitBranch, GitCommit, GitGraphCommit, GitGraphData, GitGraphOptions, GitGraphRef, GitMutation, GitMutationResult, GitResult, GitStatus } from '@shared/types'
 import { classifyGitError } from '@shared/gitErrors'
+import { matchesGitCommit, normalizeGitCommitQuery } from '@shared/gitCommitMatch'
 import { getBaseEnv } from './shellEnv'
 
 function gitEnv(network: boolean): NodeJS.ProcessEnv {
@@ -301,14 +302,16 @@ export async function gitGraph(dir: unknown, options?: unknown): Promise<GitResu
   if (!worktree) return gitFailure('This folder is not in a Git worktree.')
   const { root } = worktree
   const params: GitGraphOptions = options && typeof options === 'object' ? options : { limit: typeof options === 'number' ? options : undefined }
-  const count = Number(readLimit(params.limit, 200, 500))
+  const count = Number(readLimit(params.limit, 100, 500))
   const skip = typeof params.skip === 'number' && Number.isSafeInteger(params.skip)
     ? Math.min(2_147_483_647, Math.max(0, params.skip))
     : 0
   const chosenBranch = params.branch
+  const query = normalizeGitCommitQuery(params.query)
   const allBranches = chosenBranch == null || chosenBranch === '__ALL__'
-  const format = [...logOptions, '--decorate=full', '--decorate-refs-exclude=refs/agentswitch/*',
-    '--format=%x1e%H%x1f%h%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at']
+  const decorations = [...logOptions, '--decorate=full', '--decorate-refs-exclude=refs/agentswitch/*']
+  const fields = '%H%x1f%h%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at'
+  const format = [...decorations, `--format=%x1e${fields}`]
   try {
     const [branch, head, status, branches] = await Promise.all([
       currentBranch(root),
@@ -320,13 +323,30 @@ export async function gitGraph(dir: unknown, options?: unknown): Promise<GitResu
     const revisions = allBranches
       ? ['--exclude=refs/agentswitch/*', '--branches', '--tags', '--remotes', ...(head ? [head] : [])]
       : tip ? [tip] : []
-    const output = revisions.length
-      ? await git(root, ['log', '--parents', '--topo-order', '-n', String(count + 1), '--skip', String(skip), ...format, ...revisions, '--'])
-      : ''
-    const records = logRecords(output)
-    const commits = records.slice(0, count).flatMap(parseGraphRecord)
+    let commits: GitGraphCommit[] = []
+    let pageSize = 0
+    if (revisions.length && query) {
+      let skipped = 0
+      await visitGitRecords(root, ['log', '--parents', '--topo-order', '-z', ...decorations, `--format=${fields}`, ...revisions, '--'], (record) => {
+        const [commit] = parseGraphRecord(record)
+        if (!commit || !matchesGitCommit(commit, query)) return true
+        if (skipped < skip) {
+          skipped++
+          return true
+        }
+        pageSize++
+        if (pageSize > count) return false
+        commits.push(commit)
+        return true
+      })
+    } else if (revisions.length) {
+      const output = await git(root, ['log', '--parents', '--topo-order', '-n', String(count + 1), '--skip', String(skip), ...format, ...revisions, '--'])
+      const records = logRecords(output)
+      commits = records.slice(0, count).flatMap(parseGraphRecord)
+      pageSize = records.length
+    }
     let headCommit: GitGraphCommit | undefined
-    if (!skip && head && !commits.some((commit) => commit.hash === head)) {
+    if (!query && !skip && head && !commits.some((commit) => commit.hash === head)) {
       const headInScope = allBranches || tip === head || (tip && await git(root, ['merge-base', '--is-ancestor', head, tip]).then(() => true, () => false))
       if (headInScope) {
         [headCommit] = parseGitGraph(await git(root, ['log', '-n', '1', ...format, head, '--']))
@@ -336,7 +356,7 @@ export async function gitGraph(dir: unknown, options?: unknown): Promise<GitResu
     return {
       ok: true, commits, headHash: head, branch, dirty: files.length > 0,
       ...(headCommit ? { headCommit } : {}),
-      hasMore: records.length > count, nextSkip: skip + Math.min(records.length, count), branches,
+      hasMore: pageSize > count, nextSkip: skip + Math.min(pageSize, count), branches,
       uncommittedCount: files.length,
       staged: files.filter((file) => file.staged).length,
       unstaged: files.filter((file) => file.unstaged).length

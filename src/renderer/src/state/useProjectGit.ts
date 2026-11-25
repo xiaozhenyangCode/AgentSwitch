@@ -4,7 +4,7 @@ import { useApp } from './AppContext'
 import { t } from './i18n'
 import { getSettings } from './settings'
 
-export type RunGit = (op: GitMutation) => Promise<GitMutationResult>
+export type RunGit = (op: GitMutation, options?: { errorToast?: boolean }) => Promise<GitMutationResult>
 
 const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: true }>) => {
   const outcome = result.outcome
@@ -37,6 +37,10 @@ const errorTitles = {
   diverged: 'git.errDiverged', noUpstream: 'git.errNoUpstream', auth: 'git.errAuth',
   pushRejected: 'git.errPushRejected', indexLocked: 'git.errIndexLocked'
 } as const
+
+export function gitErrorTitle(result: Extract<GitMutationResult, { ok: false }>): string {
+  return t(result.code ? errorTitles[result.code] : 'git.failed')
+}
 
 export function useProjectGit(dir: string | null, threadId: string | null, busy: boolean, refreshFiles: () => void) {
   const { toast } = useApp()
@@ -80,12 +84,12 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
   const current = useRef({ dir, threadId, busy, refreshAll })
   current.current = { dir, threadId, busy, refreshAll }
 
-  const run: RunGit = async (op) => {
+  const run: RunGit = async (op, { errorToast = true } = {}) => {
     const context = current.current
     if (!getSettings().showGitTools) return { ok: false, error: t('git.failed') }
     if (!dir || dir !== context.dir || threadId !== context.threadId || context.busy || operation.current) {
-      if (context.busy) toast({ kind: 'error', title: t('git.agentBusy') })
-      return { ok: false, error: context.busy ? t('git.agentBusy') : t('git.failed') }
+      if (context.busy && errorToast) toast({ kind: 'error', title: t('git.agentBusy') })
+      return context.busy ? { ok: false, code: 'busy', error: t('git.agentBusy') } : { ok: false, error: t('git.failed') }
     }
     operation.current = true
     setPending({ dir, kind: op.kind })
@@ -93,15 +97,15 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
       const result = await window.agentswitch.git.mutate(dir, op, threadId)
       if (!getSettings().showGitTools) return result
       if (result.ok) toast({ kind: 'success', title: resultTitle(op, result) })
-      else toast({
+      else if (errorToast) toast({
         kind: 'error',
-        title: t(result.code ? errorTitles[result.code] : 'git.failed'),
+        title: gitErrorTitle(result),
         desc: result.code === 'busy' ? undefined : result.error
       })
       return result
     } catch (error) {
       const detail = String(error)
-      if (getSettings().showGitTools) toast({ kind: 'error', title: t('git.failed'), desc: detail })
+      if (errorToast && getSettings().showGitTools) toast({ kind: 'error', title: t('git.failed'), desc: detail })
       return { ok: false, error: detail }
     } finally {
       operation.current = false
@@ -111,5 +115,5 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
   }
 
   const status = dir && snapshot?.dir === dir && snapshot.status.repo ? snapshot.status : null
-  return { status, disabled: busy || pending !== null, pending: pending?.dir === dir ? pending.kind : null, run, refreshAll }
+  return { status, disabled: busy || pending !== null, pending: pending?.dir === dir ? pending.kind : null, run, refresh, refreshAll }
 }
