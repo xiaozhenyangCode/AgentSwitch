@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,6 +39,15 @@ async function createOrigin() {
   await git(repo, 'remote', 'add', 'origin', bare)
   expect(await gitMutate(repo, { kind: 'push' })).toMatchObject({ ok: true, outcome: { kind: 'push', target: 'origin/main', published: true } })
   return bare
+}
+
+async function cloneOrigin(bare: string) {
+  const peer = join(temp, 'peer')
+  await git(temp, 'clone', '--', bare, peer)
+  await git(peer, 'config', '--local', 'user.name', 'Git GUI Peer')
+  await git(peer, 'config', '--local', 'user.email', 'peer@example.invalid')
+  await git(peer, 'config', '--local', 'commit.gpgSign', 'false')
+  return peer
 }
 
 async function createDivergingCommits() {
@@ -125,7 +134,7 @@ describe('Git workbench operations', () => {
     await mkdir(child)
     await writeFile(join(child, 'new.txt'), 'new')
     expect(await gitStatus(child)).toMatchObject({
-      ok: true, repo: true, branch: 'main', detached: null, upstream: null, dirty: true,
+      ok: true, repo: true, repoPath: await realpath(repo), branch: 'main', detached: null, upstream: null, dirty: true,
       staged: 0, unstaged: 1, atRoot: false, branches: [{ name: 'main', remote: null }]
     })
     await git(repo, 'switch', '--detach', 'HEAD')
@@ -136,11 +145,7 @@ describe('Git workbench operations', () => {
   it('pushes with upstream, fetches, fast-forwards, tracks remote branches and rejects a divergent pull', { timeout: 15_000 }, async () => {
     const bare = await createOrigin()
     expect(await gitStatus(repo)).toMatchObject({ upstream: 'origin/main', ahead: 0, behind: 0 })
-    const peer = join(temp, 'peer')
-    await git(temp, 'clone', '--', bare, peer)
-    await git(peer, 'config', '--local', 'user.name', 'Git GUI Peer')
-    await git(peer, 'config', '--local', 'user.email', 'peer@example.invalid')
-    await git(peer, 'config', '--local', 'commit.gpgSign', 'false')
+    const peer = await cloneOrigin(bare)
     await addCommit(peer, 'upstream.txt', 'remote', 'Remote commit')
     await git(peer, 'branch', '--', 'topic')
     await git(peer, 'push', '--', 'origin', 'main', 'topic')
@@ -166,6 +171,81 @@ describe('Git workbench operations', () => {
     await git(repo, 'config', '--local', 'remote.origin.mirror', 'true')
     expect(await gitMutate(repo, { kind: 'push' })).toMatchObject({ ok: false })
     expect(await git(bare, 'rev-parse', 'refs/heads/main')).toBe(await git(peer, 'rev-parse', 'HEAD'))
+  })
+
+  it('fetches before refusing overlapping modified and untracked files without touching HEAD or the worktree', { timeout: 15_000 }, async () => {
+    await addCommit(repo, 'a.ts', 'base\n', 'Track a')
+    const before = await git(repo, 'rev-parse', 'HEAD')
+    const peer = await cloneOrigin(await createOrigin())
+    await addCommit(peer, 'a.ts', 'remote a\n', 'Update a')
+    await addCommit(peer, 'new.ts', 'remote new\n', 'Add new')
+    await git(peer, 'push')
+    await writeFile(join(repo, 'a.ts'), 'working a\n')
+    await writeFile(join(repo, 'new.ts'), 'working new\n')
+    expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({
+      ok: false, code: 'pullConflict', files: ['a.ts', 'new.ts']
+    })
+    expect(await git(repo, 'rev-parse', 'refs/remotes/origin/main')).toBe(await git(peer, 'rev-parse', 'HEAD'))
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+    expect(await readFile(join(repo, 'a.ts'), 'utf8')).toBe('working a\n')
+    expect(await readFile(join(repo, 'new.ts'), 'utf8')).toBe('working new\n')
+    expect(await git(repo, 'status', '--porcelain')).toBe(' M a.ts\n?? new.ts')
+  })
+
+  it('reports original local paths for renames, case-insensitive matches and file-directory collisions', { timeout: 15_000 }, async () => {
+    await git(repo, 'config', '--local', 'core.ignorecase', 'true')
+    const peer = await cloneOrigin(await createOrigin())
+    await git(repo, 'mv', 'tracked.txt', 'Renamed.txt')
+    await writeFile(join(repo, 'LocalCase.ts'), 'local\n')
+    await writeFile(join(repo, 'prefix'), 'local file\n')
+    await mkdir(join(repo, 'folder'))
+    await writeFile(join(repo, 'folder', 'child'), 'local child\n')
+    await addCommit(peer, 'tracked.txt', 'remote change\n', 'Update the original path')
+    await addCommit(peer, 'localcase.ts', 'remote case\n', 'Add case variant')
+    await mkdir(join(peer, 'prefix'))
+    await addCommit(peer, 'prefix/child', 'remote child\n', 'Add directory')
+    await addCommit(peer, 'folder', 'remote file\n', 'Add file')
+    await git(peer, 'push')
+    expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({
+      ok: false, code: 'pullConflict', files: ['LocalCase.ts', 'folder/child', 'prefix', 'tracked.txt']
+    })
+  })
+
+  it('fast-forwards a disjoint change while preserving staged and unstaged local edits', { timeout: 15_000 }, async () => {
+    await addCommit(repo, 'a.ts', 'base\n', 'Track a')
+    const peer = await cloneOrigin(await createOrigin())
+    await addCommit(peer, 'b.ts', 'remote b\n', 'Add b')
+    await git(peer, 'push')
+    await writeFile(join(repo, 'a.ts'), 'staged a\n')
+    await git(repo, 'add', 'a.ts')
+    await writeFile(join(repo, 'a.ts'), 'working a\n')
+    expect(await gitMutate(repo, { kind: 'pull' })).toEqual({ ok: true, outcome: { kind: 'pull', count: 1 } })
+    expect(await git(repo, 'show', ':a.ts')).toBe('staged a')
+    expect(await readFile(join(repo, 'a.ts'), 'utf8')).toBe('working a\n')
+    expect(await readFile(join(repo, 'b.ts'), 'utf8')).toBe('remote b\n')
+    expect(await gitMutate(repo, { kind: 'pull' })).toEqual({ ok: true, outcome: { kind: 'pull', count: 0 } })
+  })
+
+  it('reports a missing upstream and still honors the repository busy guard', async () => {
+    expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({ ok: false, code: 'noUpstream' })
+    expect(await gitMutate(repo, { kind: 'pull' }, async () => true)).toMatchObject({
+      ok: false, code: 'busy', error: 'The repository is busy.'
+    })
+  })
+
+  it('lets Git reject a local edit that lands after preflight', { timeout: 15_000 }, async () => {
+    const before = await git(repo, 'rev-parse', 'HEAD')
+    const peer = await cloneOrigin(await createOrigin())
+    await addCommit(peer, 'tracked.txt', 'remote edit\n', 'Remote change')
+    await git(peer, 'push')
+    let checks = 0
+    const result = await gitMutate(repo, { kind: 'pull' }, async () => {
+      if (++checks === 3) await writeFile(join(repo, 'tracked.txt'), 'late local edit\n')
+      return false
+    })
+    expect(result).toMatchObject({ ok: false, code: 'localChanges' })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('late local edit\n')
   })
 
   it('returns a Git error when a remote requires credentials', async () => {
@@ -588,6 +668,7 @@ describe('Git error categories', () => {
     ['error: Pulling is not possible because you have unmerged files.', 'unmerged'],
     ['tracked.txt: needs merge', 'unmerged'],
     ['hint: fix conflicts and then commit', 'unmerged'],
+    ['Auto-merging a.ts\nCONFLICT (content): Merge conflict in a.ts', 'unmerged'],
     ['fatal: Not possible to fast-forward, aborting.', 'diverged'],
     ['There is no tracking information for the current branch.', 'noUpstream'],
     ['fatal: could not read Username for a remote: terminal prompts disabled', 'auth'],

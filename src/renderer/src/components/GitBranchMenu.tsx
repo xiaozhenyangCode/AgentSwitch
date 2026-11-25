@@ -30,11 +30,10 @@ const syncActions = [
 type View = 'branches' | 'commits'
 type CommitLog = { kind: 'loading' } | { kind: 'ready'; commits: GitCommit[] } | { kind: 'error'; detail: string }
 
-export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onViewChanges, onViewHistory }: {
+export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChanges, onViewHistory }: {
   dir: string
   status: Extract<GitStatus, { repo: true }>
   disabled: boolean
-  busy: boolean
   pending: GitMutation['kind'] | null
   run: RunGit
   onViewChanges: () => void
@@ -43,7 +42,6 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
   const { toast } = useApp()
   const operationReason = status.operation ? t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) }) : undefined
   const branchDisabled = disabled || !!operationReason
-  const branchDisabledReason = busy ? t('git.agentBusy') : operationReason
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<View>('branches')
   const [query, setQuery] = useState('')
@@ -54,6 +52,8 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
   const [commitLog, setCommitLog] = useState<CommitLog>({ kind: 'loading' })
   const [copiedHash, setCopiedHash] = useState<string | null>(null)
   const logRequest = useRef(0)
+  const currentView = useRef(view)
+  currentView.current = view
   const ref = useRef<HTMLDivElement>(null)
   const search = useRef<HTMLInputElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -141,7 +141,7 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
     const active = branch.remote === null && branch.name === status.branch
     const label = alreadyLocal ? `${branch.name} · ${t('git.alreadyLocal')}` : branch.name
     return (
-      <button key={branch.name} className={item} disabled={branchDisabled || active} title={branchDisabledReason ?? label} onClick={() => {
+      <button key={branch.name} className={item} disabled={branchDisabled || active} title={operationReason ?? label} onClick={() => {
         void run({ kind: 'switch', name: alreadyLocal ? localName : branch.name, remote: alreadyLocal ? null : branch.remote }).then((result) => {
           if (result.ok) close()
         })
@@ -298,13 +298,13 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
                     event.preventDefault()
                     event.currentTarget.form?.requestSubmit()
                   }} placeholder={t('git.branchName')} aria-label={t('git.branchName')} aria-invalid={invalid} />
-                <button className={compactItem + ' h-8 border border-hairline bg-surface-2/70 px-3 font-medium'} disabled={branchDisabled || !name || invalid} title={branchDisabledReason}>{t('git.createBranch')}</button>
+                <button className={compactItem + ' h-8 border border-hairline bg-surface-2/70 px-3 font-medium'} disabled={branchDisabled || !name || invalid} title={operationReason}>{t('git.createBranch')}</button>
               </div>
               <p className="truncate px-1 pt-1 text-[11px] text-ink-3" title={branchLabel}>{t('git.branchBase', { name: branchLabel })}</p>
               {invalid && <p role="alert" className="px-1 text-[11px] text-danger">{t('git.invalidBranch')}</p>}
             </form>
           ) : (
-            <button className={item + ' mt-0.5 text-ink-2 hover:text-ink'} disabled={branchDisabled} title={branchDisabledReason} onClick={() => setCreating(true)}>
+            <button className={item + ' mt-0.5 text-ink-2 hover:text-ink'} disabled={branchDisabled} title={operationReason} onClick={() => setCreating(true)}>
               <IconPlus size={14} className="shrink-0 text-ink-3" aria-hidden="true" />
               {t('git.createBranch')}
             </button>
@@ -320,8 +320,10 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
               const blocked = kind === 'fetch' ? undefined : operationReason
               return (
                 <button key={kind} className={item + ` justify-center gap-1.5 px-1.5 text-[12px] font-medium text-ink-2 hover:text-ink ${active ? 'disabled:opacity-100!' : ''}`}
-                  disabled={disabled || !!blocked} title={busy ? t('git.agentBusy') : active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')}
-                  onClick={() => void run({ kind })}>
+                  disabled={disabled || !!blocked} title={active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')}
+                  onClick={() => void run({ kind }).then((result) => {
+                    if (result.ok && kind === 'pull' && currentView.current === 'commits' && ref.current) void loadCommitLog()
+                  })}>
                   {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
                   <span className="min-w-0 truncate">{active ? t(progress) : label}</span>
                   {!active && count && <span className="shrink-0 text-[10px] tabular-nums text-ink-3">{count}</span>}
@@ -329,7 +331,6 @@ export function GitBranchMenu({ dir, status, disabled, busy, pending, run, onVie
               )
             })}
           </div>
-          {busy && <p className="px-2.5 py-1 text-[11px] text-ink-3">{t('git.agentBusy')}</p>}
           <div className="mx-1.5 my-1 h-px bg-hairline" />
           <button className={item} onClick={() => { close(); onViewChanges() }}>
             <IconFile size={14} className="shrink-0 text-ink-2" aria-hidden="true" />

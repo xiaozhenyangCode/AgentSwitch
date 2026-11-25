@@ -92,7 +92,7 @@ import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail } from './gitChanges'
-import { gitGraph, gitLog, gitMutate, gitStatus, gitWorktree } from './gitOps'
+import { gitGraph, gitLog, gitMutate, gitStatus } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
 import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -347,16 +347,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
   ipcMain.handle(IPC.gitGraph, (_e, dir: unknown, options?: unknown) => gitGraph(dir, options))
   ipcMain.handle(IPC.gitCommitDetail, (_e, dir: unknown, hash: unknown) => gitCommitDetail(dir, hash))
-  ipcMain.handle(IPC.gitMutate, async (_e, dir: unknown, op: unknown, threadId: unknown) => {
+  ipcMain.handle(IPC.gitMutate, async (_e, dir: unknown, op: unknown) => {
     let repoRoot: string | undefined
     const result = await gitMutate(dir, op, async (root) => {
       repoRoot = root
-      const projects = orchestrator.activeProjects()
-      const matches = await Promise.all(projects.map(async (project) => (await gitWorktree(project.dir))?.root === root))
-      const active = orchestrator.active()
-      return orchestrator.checkpoints.isRestoring(root) || active.some((turn) => turn.threadId === threadId)
-        || projects.some((project, i) => matches[i] && active.some((turn) => turn.threadId === project.threadId))
-    }, t('git.agentBusy'))
+      return orchestrator.checkpoints.isRestoring(root)
+    }, t('git.repoBusy'))
     if (result.ok && repoRoot) invalidateFileIndex(repoRoot)
     return result
   })

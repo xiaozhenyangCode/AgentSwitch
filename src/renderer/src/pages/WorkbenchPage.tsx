@@ -491,9 +491,9 @@ export function WorkbenchPage() {
   }
   const toggleChanges = () => setChangesVisible(!changesOpen)
   const openHistory = () => setHistoryDir(ctx.projectDir)
-  const gitBusy = isThreadBusy(thread)
-  const fc = useFileChanges(thread, ctx.projectDir, gitBusy, showGitTools && changesOpen)
-  const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, gitBusy, fc.refresh)
+  const agentRunning = isThreadBusy(thread)
+  const fc = useFileChanges(thread, ctx.projectDir, agentRunning, showGitTools && changesOpen)
+  const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, agentRunning, fc.refresh)
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
 
   const openRewind = useCallback(
@@ -759,7 +759,7 @@ export function WorkbenchPage() {
               onPick={() => void pickProject()}
               onNewHere={startThread}
               gitBranch={showGitTools && git.status && (
-                <GitBranchMenu key={ctx.projectDir} dir={ctx.projectDir!} status={git.status} disabled={git.disabled} busy={gitBusy} pending={git.pending}
+                <GitBranchMenu key={ctx.projectDir} dir={ctx.projectDir!} status={git.status} disabled={git.disabled} pending={git.pending}
                   run={git.run} onViewChanges={() => setChangesVisible(true)} onViewHistory={openHistory} />
               )}
             />
@@ -900,12 +900,12 @@ export function WorkbenchPage() {
       {changesOpen && (
         <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={showGitTools ? git.refreshAll : fc.refresh}
           onClose={toggleChanges} onViewHistory={openHistory} gitTools={showGitTools && git.status
-            ? { status: git.status, disabled: git.disabled || fc.loading, busy: gitBusy, run: git.run }
+            ? { status: git.status, disabled: git.disabled || fc.loading, run: git.run }
             : null} />
       )}
       {historyDir && historyDir === ctx.projectDir && (
         <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)}
-          remote={showGitTools ? { status: git.status, disabled: git.disabled, busy: gitBusy, pending: git.pending, run: git.run, refresh: git.refresh } : null}
+          remote={showGitTools ? { status: git.status, disabled: git.disabled, pending: git.pending, run: git.run, refresh: git.refresh } : null}
           onViewChanges={() => {
             setHistoryDir(null)
             setChangesVisible(true)

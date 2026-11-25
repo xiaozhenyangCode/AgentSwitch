@@ -880,10 +880,10 @@ export interface FileChanges {
   more?: number
 }
 
-export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode }
+export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode; files?: string[] }
 
 export type GitErrorCode = 'invalidBranch' | 'busy' | 'switchChanges' | 'diverged' | 'noUpstream' | 'auth' | 'pushRejected' | 'indexLocked'
-  | 'operationInProgress' | 'unmerged' | 'localChanges'
+  | 'operationInProgress' | 'unmerged' | 'localChanges' | 'pullConflict'
 
 export type GitOperation = 'merge' | 'rebase' | 'cherryPick' | 'revert'
 
@@ -903,6 +903,7 @@ export interface GitBranch {
 
 export type GitStatus = { repo: false } | {
   repo: true
+  repoPath: string
   branch: string | null
   detached: string | null
   upstream: string | null

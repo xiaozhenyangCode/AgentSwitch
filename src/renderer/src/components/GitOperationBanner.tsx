@@ -3,10 +3,9 @@ import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import type { RunGit } from '../state/useProjectGit'
 
-export function GitOperationBanner({ status, disabled, busy, run, onDone, onError }: {
+export function GitOperationBanner({ status, disabled, run, onDone, onError }: {
   status: Extract<GitStatus, { repo: true }>
   disabled: boolean
-  busy: boolean
   run: RunGit
   onDone?: () => void
   onError?: (result: Extract<GitMutationResult, { ok: false }>) => void
@@ -17,7 +16,7 @@ export function GitOperationBanner({ status, disabled, busy, run, onDone, onErro
   const op = operation ? t(`git.op.${operation}`) : ''
   const label = t('git.abortOp', { op })
   const abort = async () => {
-    if (!operation || disabled || busy) return
+    if (!operation || disabled) return
     const confirmed = await confirm({
       title: label, message: t('git.abortConfirm', { op }), confirmLabel: label, destructive: true, native: true
     })
@@ -34,12 +33,10 @@ export function GitOperationBanner({ status, disabled, busy, run, onDone, onErro
           : t('git.conflictsOnly', { n: conflicts })}
       </p>
       {operation && (
-        <span className="shrink-0" title={busy ? t('git.agentBusy') : undefined}>
-          <button type="button" disabled={disabled || busy} onClick={() => void abort()}
-            className="rounded-md border border-warn/30 px-2 py-1 text-[12px] font-medium hover:bg-warn/10 disabled:pointer-events-none disabled:opacity-45">
-            {label}
-          </button>
-        </span>
+        <button type="button" disabled={disabled} onClick={() => void abort()}
+          className="shrink-0 rounded-md border border-warn/30 px-2 py-1 text-[12px] font-medium hover:bg-warn/10 disabled:opacity-45">
+          {label}
+        </button>
       )}
     </div>
   )

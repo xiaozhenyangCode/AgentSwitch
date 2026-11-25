@@ -182,14 +182,24 @@ async function listRemotes(root: string): Promise<string[]> {
 }
 
 class InvalidBranch extends Error {}
-class AgentBusy extends Error {}
-class OperationInProgress extends Error {}
+class RepoBusy extends Error {}
+class OperationInProgress extends Error {
+  constructor() {
+    super('A Git operation is in progress. Finish or abort it first.')
+  }
+}
 class Unmerged extends Error {}
+class PullConflict extends Error {
+  constructor(readonly files: string[]) {
+    super('Pull canceled because incoming changes overlap local changes.')
+  }
+}
 
 export function gitFailure(error: unknown): Extract<GitResult, { ok: false }> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 4_000)
+  if (error instanceof PullConflict) return { ok: false, error: message, code: 'pullConflict', files: error.files }
   const code = error instanceof InvalidBranch ? 'invalidBranch'
-    : error instanceof AgentBusy ? 'busy'
+    : error instanceof RepoBusy ? 'busy'
     : error instanceof OperationInProgress ? 'operationInProgress'
     : error instanceof Unmerged ? 'unmerged' : classifyGitError(message)
   return { ok: false, error: message, ...(code ? { code } : {}) }
@@ -217,7 +227,7 @@ export async function gitStatus(dir: unknown): Promise<GitResult<GitStatus>> {
     const [ahead, behind] = counts.trim().split(/\s+/).map(Number)
     const files = parseStatus(status)
     return {
-      ok: true, repo: true, branch, detached: branch ? null : detached, upstream, ahead, behind, operation,
+      ok: true, repo: true, repoPath: root, branch, detached: branch ? null : detached, upstream, ahead, behind, operation,
       conflicts: files.filter((file) => file.conflicted).length,
       dirty: files.length > 0, staged: files.filter((file) => file.staged).length,
       unstaged: files.filter((file) => file.unstaged).length, atRoot: root === worktree.dir, branches
@@ -492,6 +502,78 @@ function head(root: string): Promise<string> {
   return git(root, ['rev-parse', '--verify', 'HEAD']).then((sha) => sha.trim(), () => '')
 }
 
+const fetchArgs = ['fetch', '--prune', '--no-recurse-submodules']
+
+function upstreamRef(root: string): Promise<string> {
+  return git(root, ['rev-parse', '--symbolic-full-name', '@{upstream}']).then((ref) => ref.trim(), () => '')
+}
+
+function pathParents(path: string): string[] {
+  const parents: string[] = []
+  for (let slash = path.indexOf('/'); slash !== -1; slash = path.indexOf('/', slash + 1)) {
+    parents.push(path.slice(0, slash))
+  }
+  return parents
+}
+
+async function overlappingPullPaths(root: string, base: string, target: string): Promise<string[]> {
+  const [remote, local, ignoreCase] = await Promise.all([
+    git(root, ['diff', '--name-only', '-z', '--no-renames', base, target, '--']),
+    git(root, porcelain),
+    git(root, ['config', '--bool', '--default', 'false', 'core.ignorecase'])
+  ])
+  const caseInsensitive = ignoreCase.trim() === 'true'
+  const normalize = (path: string) => caseInsensitive ? path.toLowerCase() : path
+  const remotePaths = new Set(remote.split('\0').filter(Boolean).map(normalize))
+  const remoteParents = new Set([...remotePaths].flatMap(pathParents))
+  const overlaps = new Set<string>()
+  for (const { path, oldPath } of parseStatus(local)) {
+    for (const localPath of [path, oldPath]) {
+      if (!localPath) continue
+      const key = normalize(localPath)
+      if (remotePaths.has(key) || remoteParents.has(key) || pathParents(key).some((parent) => remotePaths.has(parent))) {
+        overlaps.add(localPath)
+      }
+    }
+  }
+  return [...overlaps].sort()
+}
+
+async function pullBranch(root: string, checkBusy: () => Promise<void>) {
+  const [upstream, branch] = await Promise.all([upstreamRef(root), currentBranch(root)])
+  if (!upstream) throw new Error('There is no tracking information for the current branch.')
+  await checkBusy()
+  await git(root, fetchArgs, true)
+  const [target, before] = await Promise.all([
+    git(root, ['rev-parse', '--verify', '--end-of-options', `${upstream}^{commit}`]).then((sha) => sha.trim()),
+    head(root)
+  ])
+  if (target === before) return { kind: 'pull' as const, count: 0 }
+  if (before) {
+    const base = await git(root, ['merge-base', before, target]).then((sha) => sha.trim(), (error) => {
+      if (error.cause?.code === 1) return ''
+      throw error
+    })
+    // When the upstream is an ancestor of HEAD, there is nothing incoming.
+    if (base === target) return { kind: 'pull' as const, count: 0 }
+    if (base) {
+      const files = await overlappingPullPaths(root, base, target)
+      if (files.length) throw new PullConflict(files)
+    }
+  }
+  const [currentHead, checkedOut, currentUpstream, operation] = await Promise.all([
+    head(root), currentBranch(root), upstreamRef(root), currentOperation(root)
+  ])
+  if (operation) throw new OperationInProgress()
+  if (before !== currentHead || branch !== checkedOut || upstream !== currentUpstream) {
+    throw new Error('The checked-out branch or its upstream changed during Pull. Refresh and try again.')
+  }
+  await checkBusy()
+  // Use the SHA we inspected and disable submodule recursion for this merge only.
+  await git(root, ['-c', 'submodule.recurse=false', 'merge', '--ff-only', '--no-autostash', '--no-edit', '--no-overwrite-ignore', target], false, 60_000)
+  return { kind: 'pull' as const, count: await countCommits(root, before, target) }
+}
+
 async function commit(root: string, message: string) {
   await git(root, ['commit', '-m', message], false, 120_000)
   const metadata = await git(root, ['log', '-1', '--format=%h%x00%s', 'HEAD', '--']).catch(() => '')
@@ -532,7 +614,7 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
   const next = (writes.get(root) ?? Promise.resolve()).then(async (): Promise<GitMutationResult> => {
     try {
       const checkBusy = async () => {
-        if (await isBusy?.(root)) throw new AgentBusy(busyMessage ?? 'An Agent is running.')
+        if (await isBusy?.(root)) throw new RepoBusy(busyMessage ?? 'The repository is busy.')
       }
       await checkBusy()
       if (op.kind === 'switch' || op.kind === 'createBranch' || op.kind === 'pull' || op.kind === 'push'
@@ -540,7 +622,7 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
         const committing = op.kind === 'commit' || op.kind === 'stageAndCommit'
         const operation = await currentOperation(root)
         if (operation && (!committing || operation !== 'merge')) {
-          throw new OperationInProgress('A Git operation is in progress. Finish or abort it first.')
+          throw new OperationInProgress()
         }
         if (committing && parseStatus(await git(root, porcelain)).some((file) => file.conflicted)) {
           throw new Unmerged('Resolve and stage the unmerged files before committing.')
@@ -563,7 +645,7 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
           await git(root, ['switch', '--no-recurse-submodules', '-c', op.name])
           return { ok: true, outcome: { kind: 'createBranch', branch: op.name } }
         case 'fetch':
-          await git(root, ['fetch', '--prune', '--no-recurse-submodules'], true)
+          await git(root, fetchArgs, true)
           break
         case 'abortOperation': {
           if (await currentOperation(root) !== op.operation) throw new Error('The Git operation changed. Refresh and try again.')
@@ -571,14 +653,8 @@ export async function gitMutate(dir: unknown, op: unknown, isBusy?: (root: strin
           await git(root, [abortCommands[op.operation], '--abort'], false, 60_000)
           return { ok: true, outcome: { kind: 'abortOperation', operation: op.operation } }
         }
-        case 'pull': {
-          const before = await head(root)
-          await checkBusy()
-          await git(root, ['pull', '--ff-only', '--no-rebase', '--no-autostash', '--no-recurse-submodules'], true)
-          const after = await head(root)
-          const count = before === after ? 0 : after ? await countCommits(root, before, after) : null
-          return { ok: true, outcome: { kind: 'pull', count } }
-        }
+        case 'pull':
+          return { ok: true, outcome: await pullBranch(root, checkBusy) }
         case 'push':
           return { ok: true, outcome: await pushBranch(root, checkBusy) }
         case 'stage':

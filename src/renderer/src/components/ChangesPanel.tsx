@@ -141,13 +141,11 @@ export function ChangesPanel({
   gitTools: {
     status: Extract<GitStatus, { repo: true }>
     disabled: boolean
-    busy: boolean
     run: RunGit
   } | null
 }) {
   const { confirm } = useApp()
   const tools = changes?.repo && dir ? gitTools : null
-  const gitTitle = tools?.busy ? t('git.agentBusy') : undefined
   const discard = async (file: FileChange) => {
     if (tools && await confirm({
       title: t('git.discard'),
@@ -223,8 +221,8 @@ export function ChangesPanel({
           </button>
         </div>
       )}
-      {tools && <GitOperationBanner status={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
-      {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} busy={tools.busy} run={tools.run} />}
+      {tools && <GitOperationBanner status={tools.status} disabled={tools.disabled} run={tools.run} />}
+      {tools && <CommitSection key={dir + ':commit'} git={tools.status} disabled={tools.disabled} run={tools.run} />}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {!dir ? (
           <Empty text={t('chg.noProject')} />
@@ -235,9 +233,9 @@ export function ChangesPanel({
         ) : tools?.status.dirty ? (
           <>
             {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
-            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled} busy={gitTitle}
+            <ChangeGroup key={dir + ':staged'} name="staged" files={files} disabled={tools.disabled}
               count={tools.status.staged} run={tools.run} onDiscard={(file) => void discard(file)} />
-            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled} busy={gitTitle}
+            <ChangeGroup key={dir + ':unstaged'} name="unstaged" files={files} disabled={tools.disabled}
               count={tools.status.unstaged} run={tools.run} onDiscard={(file) => void discard(file)} />
           </>
         ) : files.length === 0 ? (
@@ -263,12 +261,11 @@ function Empty({ text }: { text: string }) {
 const gitButton = 'rounded-md px-2 py-1 text-[11.5px] text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-45'
 const rowAction = 'grid h-6 w-6 place-items-center rounded text-ink-3 hover:bg-black/[0.06] dark:hover:bg-white/[0.07] hover:text-ink disabled:opacity-45'
 
-function ChangeGroup({ name, files, count, disabled, busy, run, onDiscard }: {
+function ChangeGroup({ name, files, count, disabled, run, onDiscard }: {
   name: 'staged' | 'unstaged'
   files: FileChange[]
   count: number
   disabled: boolean
-  busy?: string
   run: RunGit
   onDiscard: (file: FileChange) => void
 }) {
@@ -290,18 +287,18 @@ function ChangeGroup({ name, files, count, disabled, busy, run, onDiscard }: {
           <IconChevronDown size={12} className={`shrink-0 text-ink-3 transition-transform ${expanded ? '' : '-rotate-90'}`} />
           <span className="truncate">{t(staged ? 'git.stagedGroup' : 'git.changesGroup', { n: group.length })}</span>
         </button>
-        <button className={gitButton + ' shrink-0'} disabled={disabled || !count} title={busy ?? bulkLabel}
+        <button className={gitButton + ' shrink-0'} disabled={disabled || !count} title={bulkLabel}
           onClick={() => void run({ kind: staged ? 'unstageAll' : 'stageAll' })}>{bulkLabel}</button>
       </div>
       {expanded && group.map((file) => (
         <FileRow key={file.abs + ':' + (file.status === 'U')} f={file}>
-          <button className={rowAction} disabled={disabled} aria-label={actionLabel} title={busy ?? actionLabel}
+          <button className={rowAction} disabled={disabled} aria-label={actionLabel} title={actionLabel}
             onClick={() => void run({ kind: staged ? 'unstage' : 'stage', path: file.path })}>
             {staged ? <IconMinus size={14} /> : <IconPlus size={14} />}
           </button>
           {!staged && (
             <button className={rowAction + ' enabled:hover:text-danger!'} disabled={disabled} aria-label={t('git.discard')}
-              title={busy ?? t('git.discard')} onClick={() => onDiscard(file)}><IconUndo size={14} /></button>
+              title={t('git.discard')} onClick={() => onDiscard(file)}><IconUndo size={14} /></button>
           )}
         </FileRow>
       ))}
@@ -360,15 +357,14 @@ export function FileRow({ f, children }: { f: FileChange | GitCommitFile; childr
   )
 }
 
-function CommitSection({ git, disabled, busy, run }: {
+function CommitSection({ git, disabled, run }: {
   git: Extract<GitStatus, { repo: true }>
   disabled: boolean
-  busy: boolean
   run: RunGit
 }) {
   const [message, setMessage] = useState('')
   if (!git.dirty && git.operation !== 'merge') return null
-  const blockedReason = busy ? t('git.agentBusy') : disabled ? t('git.waiting')
+  const blockedReason = disabled ? t('git.waiting')
     : git.conflicts > 0 ? t('git.resolveConflictsFirst', { n: git.conflicts })
     : git.operation && git.operation !== 'merge' ? t('git.blockedByOperation', { op: t(`git.op.${git.operation}`) })
     : !message.trim() ? t('git.enterMessage') : undefined

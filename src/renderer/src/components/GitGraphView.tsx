@@ -8,7 +8,7 @@ import {
 } from '../lib/gitGraph'
 import { useApp } from '../state/AppContext'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
-import { gitErrorTitle, type RunGit } from '../state/useProjectGit'
+import { gitErrorDetail, gitErrorTitle, type RunGit } from '../state/useProjectGit'
 import { Counts, FileRow } from './ChangesPanel'
 import { GitOperationBanner } from './GitOperationBanner'
 import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
@@ -17,7 +17,6 @@ type CommitDetail = { hash: string; commit?: GitCommitDetail; error?: string }
 type RemoteControls = {
   status: Extract<GitStatus, { repo: true }> | null
   disabled: boolean
-  busy: boolean
   pending: GitMutation['kind'] | null
   run: RunGit
   refresh: () => void
@@ -372,7 +371,7 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
             </button>
           </div>
         </header>
-        {remote?.status && <GitOperationBanner status={remote.status} disabled={remote.disabled} busy={remote.busy} run={remote.run}
+        {remote?.status && <GitOperationBanner status={remote.status} disabled={remote.disabled} run={remote.run}
           onDone={() => { if (mounted.current) { setRemoteError(null); void reload() } }}
           onError={(result) => { if (mounted.current) setRemoteError(result) }} />}
         {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
@@ -423,7 +422,7 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
 }
 
 function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind: RemoteAction) => void }) {
-  const { status, pending, disabled, busy } = remote
+  const { status, pending, disabled } = remote
   return (
     <>
       {syncActions.map(({ kind, Icon, progress }) => {
@@ -436,7 +435,7 @@ function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind
           unavailable = t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) })
         } else if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
         else if (status && kind === 'pull' && !status.upstream) unavailable = t('git.pullNoUpstream')
-        const title = busy ? t('git.agentBusy') : active ? t(progress) : unavailable || [label, count].filter(Boolean).join(' ')
+        const title = active ? t(progress) : unavailable || [label, count].filter(Boolean).join(' ')
         return (
           <span key={kind} className="inline-flex" title={title}>
             <button type="button" className={toolbarButton + ' disabled:pointer-events-none' + (active ? ' disabled:opacity-100!' : '')}
@@ -454,13 +453,14 @@ function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind
 }
 
 function RemoteError({ result, onClose }: { result: RemoteFailure; onClose: () => void }) {
-  const message = result.code === 'busy' ? '' : result.error.split(/\r?\n/)
+  const detail = gitErrorDetail(result)
+  const message = result.code === 'pullConflict' ? detail : detail?.split(/\r?\n/)
     .map((line) => line.trim()).filter((line) => line && !line.startsWith('hint:')).slice(0, 4).join('\n').slice(0, 400)
   return (
     <div role="alert" className="flex shrink-0 items-start justify-between gap-2 border-b border-hairline bg-danger/10 px-3 py-2 text-danger">
       <div className="min-w-0">
         <p className="text-[12px] font-medium">{gitErrorTitle(result)}</p>
-        {message && <p className="mt-0.5 select-text font-mono text-[11px] wrap-anywhere whitespace-pre-wrap">{message}</p>}
+        {message && <p className="mt-0.5 max-h-36 overflow-y-auto select-text font-mono text-[11px] wrap-anywhere whitespace-pre-wrap">{message}</p>}
       </div>
       <button type="button" className={iconButton} onClick={onClose} aria-label={t('common.close')} title={t('common.close')}>
         <IconX size={14} aria-hidden="true" />

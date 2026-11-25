@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { GitMutation, GitMutationResult, GitStatus } from '@shared/types'
 import { useApp } from './AppContext'
 import { t } from './i18n'
 import { getSettings } from './settings'
 
 export type RunGit = (op: GitMutation, options?: { errorToast?: boolean }) => Promise<GitMutationResult>
+
+const pendingByDir = new Map<string, GitMutation['kind']>()
+const pendingListeners = new Set<() => void>()
+const subscribePending = (listener: () => void) => {
+  pendingListeners.add(listener)
+  return () => { pendingListeners.delete(listener) }
+}
+const notifyPending = () => pendingListeners.forEach((listener) => listener())
+
+export function useGitPending(dir: string | null) {
+  return useSyncExternalStore(subscribePending, () => dir ? pendingByDir.get(dir) ?? null : null)
+}
 
 const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: true }>) => {
   const outcome = result.outcome
@@ -34,22 +46,33 @@ const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: t
 }
 
 const errorTitles = {
-  invalidBranch: 'git.invalidBranch', busy: 'git.agentBusy', switchChanges: 'git.errSwitchChanges',
+  invalidBranch: 'git.invalidBranch', busy: 'git.repoBusy', switchChanges: 'git.errSwitchChanges',
   diverged: 'git.errDiverged', noUpstream: 'git.errNoUpstream', auth: 'git.errAuth',
   pushRejected: 'git.errPushRejected', indexLocked: 'git.errIndexLocked',
-  operationInProgress: 'git.errOperationInProgress', unmerged: 'git.errUnmerged', localChanges: 'git.errLocalChanges'
+  operationInProgress: 'git.errOperationInProgress', unmerged: 'git.errUnmerged', localChanges: 'git.errLocalChanges',
+  pullConflict: 'git.errPullConflict'
 } as const
 
 export function gitErrorTitle(result: Extract<GitMutationResult, { ok: false }>): string {
   return t(result.code ? errorTitles[result.code] : 'git.failed')
 }
 
-export function useProjectGit(dir: string | null, threadId: string | null, busy: boolean, refreshFiles: () => void) {
+export function gitErrorDetail(result: Extract<GitMutationResult, { ok: false }>): string | undefined {
+  if (result.code === 'busy') return undefined
+  if (result.code !== 'pullConflict' || !result.files?.length) return result.error
+  const { files } = result
+  const visible = files.slice(0, 8).map((file) => file.replace(/\r/g, '\\r').replace(/\n/g, '\\n'))
+  const rest = files.length - visible.length
+  return [t('git.pullConflictHint', { n: files.length }), ...visible, ...(rest ? [t('git.moreFiles', { n: rest })] : [])].join('\n')
+}
+
+export function useProjectGit(dir: string | null, threadId: string | null, agentRunning: boolean, refreshFiles: () => void) {
   const { toast } = useApp()
   const [snapshot, setSnapshot] = useState<{ dir: string; status: GitStatus } | null>(null)
-  const [pending, setPending] = useState<{ dir: string; kind: GitMutation['kind'] } | null>(null)
-  const operation = useRef(false)
   const request = useRef(0)
+  const status = dir && snapshot?.dir === dir && snapshot.status.repo ? snapshot.status : null
+  const repoPath = status?.repoPath ?? dir
+  const pending = useGitPending(repoPath)
 
   const refresh = useCallback(() => {
     const id = ++request.current
@@ -73,28 +96,32 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
     }
   }, [dir, refresh])
 
-  const wasBusy = useRef(busy)
+  const wasRunning = useRef(agentRunning)
   useEffect(() => {
-    if (wasBusy.current && !busy) refresh()
-    wasBusy.current = busy
-  }, [busy, refresh])
+    if (wasRunning.current && !agentRunning) refresh()
+    wasRunning.current = agentRunning
+  }, [agentRunning, refresh])
 
   const refreshAll = () => {
     refresh()
     refreshFiles()
   }
-  const current = useRef({ dir, threadId, busy, refreshAll })
-  current.current = { dir, threadId, busy, refreshAll }
+  const current = useRef({ dir, threadId, repoPath, refreshAll })
+  current.current = { dir, threadId, repoPath, refreshAll }
 
   const run: RunGit = async (op, { errorToast = true } = {}) => {
     const context = current.current
     if (!getSettings().showGitTools) return { ok: false, error: t('git.failed') }
-    if (!dir || dir !== context.dir || threadId !== context.threadId || context.busy || operation.current) {
-      if (context.busy && errorToast) toast({ kind: 'error', title: t('git.agentBusy') })
-      return context.busy ? { ok: false, code: 'busy', error: t('git.agentBusy') } : { ok: false, error: t('git.failed') }
+    if (!dir || !repoPath || dir !== context.dir || threadId !== context.threadId || repoPath !== context.repoPath) {
+      return { ok: false, error: t('git.failed') }
     }
-    operation.current = true
-    setPending({ dir, kind: op.kind })
+    if (pendingByDir.has(repoPath)) {
+      const error = t('git.repoBusy')
+      if (errorToast) toast({ kind: 'error', title: error })
+      return { ok: false, code: 'busy', error }
+    }
+    pendingByDir.set(repoPath, op.kind)
+    notifyPending()
     try {
       const result = await window.agentswitch.git.mutate(dir, op, threadId)
       if (!getSettings().showGitTools) return result
@@ -102,7 +129,7 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
       else if (errorToast) toast({
         kind: 'error',
         title: gitErrorTitle(result),
-        desc: result.code === 'busy' ? undefined : result.error
+        desc: gitErrorDetail(result)
       })
       return result
     } catch (error) {
@@ -110,12 +137,11 @@ export function useProjectGit(dir: string | null, threadId: string | null, busy:
       if (errorToast && getSettings().showGitTools) toast({ kind: 'error', title: t('git.failed'), desc: detail })
       return { ok: false, error: detail }
     } finally {
-      operation.current = false
-      setPending(null)
-      current.current.refreshAll()
+      pendingByDir.delete(repoPath)
+      notifyPending()
+      if (current.current.repoPath === repoPath || current.current.dir === dir) current.current.refreshAll()
     }
   }
 
-  const status = dir && snapshot?.dir === dir && snapshot.status.repo ? snapshot.status : null
-  return { status, disabled: busy || pending !== null, pending: pending?.dir === dir ? pending.kind : null, run, refresh, refreshAll }
+  return { status, disabled: pending !== null, pending, run, refresh, refreshAll }
 }
