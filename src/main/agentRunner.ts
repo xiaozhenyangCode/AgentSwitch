@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, StepRef, Usage } from '@shared/types'
+import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, ResolvedRunAttachment, StepRef, Usage } from '@shared/types'
 import { splitSpec } from '@shared/modelSpec'
 import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
 import { agyModelId } from './models'
@@ -13,6 +13,7 @@ import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
 import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
 import { isThreadHistoryToolName } from './threadHistoryTools'
+import { prepareAdapterPrompt, promptIncludesPath } from './attachmentInline'
 import { agyTurnUsage, claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost, type AgyTotals } from './usageDelta'
 
 /**
@@ -38,8 +39,10 @@ export interface RunSpec {
   /** Extra instructions (claude: --append-system-prompt; others: prefixed to the prompt). */
   system: string | null
   cwd: string
-  /** Absolute image paths the model should see (codex: -i; others: listed in the prompt). */
+  /** Absolute image paths for Codex -i and Gemini ACP image blocks. */
   images: string[]
+  attachments?: ResolvedRunAttachment[]
+  supportsFileTools?: boolean
   /** Session to continue (claude --resume / codex exec resume / agy --conversation). */
   resume: string | null
   /** Where generated files must end up (codex built-in image gen is copied here). */
@@ -83,7 +86,7 @@ interface Adapter {
   result: () => { ok: boolean; error: string | null } | null
 }
 
-export const full = (s: RunSpec): string => (s.system ? `${s.system}\n\n---\n\n${s.prompt}` : s.prompt)
+export const full = (s: RunSpec, prompt = prepareAdapterPrompt(s)): string => (s.system ? `${s.system}\n\n---\n\n${prompt}` : prompt)
 
 // ---- payload helpers -----------------------------------------------------------------------
 
@@ -215,7 +218,7 @@ export function claudeAdapter(s: RunSpec): Adapter {
   let toolInput: { name: string; bytes: number; sent: number; at: number } | null = null
   return {
     args,
-    stdin: s.prompt,
+    stdin: prepareAdapterPrompt(s),
     sessionId: () => session,
     model: () => model,
     result: () => result,
@@ -683,8 +686,8 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
   const spec = splitSpec(s.model)
   if (spec.model) args.push('--model', agyModelId(s.cfg.id, spec.model, spec.effort))
   if (s.resume) args.push('--conversation', s.resume)
-  const prompt = s.promptWithoutThreadHistory?.() ?? s.prompt
-  args.push('-p', full({ ...s, prompt })) // last, whether -p takes a value or is a bool + positional prompt
+  const prompt = prepareAdapterPrompt({ ...s, prompt: s.promptWithoutThreadHistory?.() ?? s.prompt })
+  args.push('-p', full(s, prompt)) // last, whether -p takes a value or is a bool + positional prompt
   return {
     args,
     stdin: null,
@@ -858,6 +861,12 @@ export function reasonixAdapter(s: RunSpec): Adapter {
   if (s.cfg.autoApprove === 'full') args.push('--permission-mode', 'bypassPermissions')
   if (s.resume) args.push('--resume', s.resume)
 
+  const prompt = full(s)
+  const missingImages = s.images.filter((path) => {
+    const label = s.attachments?.find((a) => a.absPath === path)?.promptPath ?? path
+    return !promptIncludesPath(prompt, label) && !promptIncludesPath(prompt, path)
+  })
+
   const rememberSession = (id: unknown, emit: Emit): void => {
     if (typeof id !== 'string' || !id) return
     if (!session) emit({ t: 'session', id, model })
@@ -866,7 +875,7 @@ export function reasonixAdapter(s: RunSpec): Adapter {
 
   return {
     args,
-    stdin: full(s) + (s.images.length ? '\n\n' + s.images.map((path) => `- ${path}`).join('\n') : ''),
+    stdin: prompt + (missingImages.length ? '\n\n' + missingImages.map((path) => `- ${path}`).join('\n') : ''),
     sessionId: () => session,
     model: () => model,
     result: () => result,

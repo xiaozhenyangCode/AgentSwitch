@@ -3,10 +3,12 @@ import { constants, realpathSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve, sep } from 'node:path'
 import { cleanTitle } from '@shared/markers'
+import { formatInlineCodePath } from '@shared/fileReferences'
 import { joinSpec, splitSpec } from '@shared/modelSpec'
 import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption, Usage } from '@shared/types'
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
+import { prepareAdapterPrompt, promptIncludesPath } from '../attachmentInline'
 import { t } from '../i18n'
 import { isThreadHistoryToolName, threadTools } from '../threadHistoryTools'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
@@ -265,12 +267,14 @@ async function imageBlock(path: string, enabled: boolean): Promise<PromptBlock |
 async function promptBlocks(spec: RunSpec, appendSystem: boolean, imagesEnabled: boolean, stopped: () => boolean): Promise<PromptBlock[]> {
   const blocks: PromptBlock[] = []
   const paths: string[] = []
-  let text = appendSystem ? spec.prompt : full(spec)
+  const prompt = prepareAdapterPrompt(spec)
+  let text = appendSystem ? prompt : full(spec, prompt)
   for (const path of spec.images) {
     if (stopped()) break
+    const label = spec.attachments?.find((a) => a.absPath === path)?.promptPath ?? path
     const block = await imageBlock(path, imagesEnabled)
-    if (block) blocks.push(block)
-    else if (!text.split('\n').includes(`- ${path}`)) paths.push(`- ${path}`)
+    if (block) blocks.push({ type: 'text', text: t('main.acpAttachmentImage', { path: formatInlineCodePath(label) }) }, block)
+    else if (!promptIncludesPath(text, label) && !promptIncludesPath(text, path)) paths.push('- ' + formatInlineCodePath(label))
   }
   if (paths.length) text += `\n\n${t('main.acpAttachmentPaths')}\n${paths.join('\n')}`
   return [{ type: 'text', text }, ...blocks]

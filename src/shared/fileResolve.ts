@@ -21,7 +21,7 @@ function appendSegments(parts: string[], path: string): boolean {
 }
 
 function absolutePath(path: string): string | null {
-  const posix = toPosixPath(path)
+  const posix = /^\/(?!\/)/.test(path) ? path : toPosixPath(path)
   const root = absoluteRoot(posix)
   const parts: string[] = []
   if (!root || posix.includes('\0') || !appendSegments(parts, posix.slice(root.length))) return null
@@ -30,6 +30,10 @@ function absolutePath(path: string): string | null {
 
 const windowsPath = (path: string): boolean => /^[a-z]:\/|^\/\//i.test(path)
 const pathKey = (path: string): string => windowsPath(path) ? path.toLowerCase() : path
+
+export function normalizedFilePathKey(path: string): string {
+  return pathKey(absolutePath(path) ?? path)
+}
 
 export function deriveRelativePath(absPath: string, projectDir: string | null | undefined): string | null {
   if (!projectDir) return null
@@ -40,9 +44,9 @@ export function deriveRelativePath(absPath: string, projectDir: string | null | 
   return pathKey(target).startsWith(pathKey(prefix)) ? target.slice(prefix.length) || null : null
 }
 
-export function joinPosixRelative(rootDir: string, relativePath: string): string | null {
+export function joinPosixRelative(rootDir: string, relativePath: string, { literalPosix = false } = {}): string | null {
   const root = absolutePath(rootDir)
-  const rel = toPosixPath(relativePath)
+  const rel = literalPosix && root && !windowsPath(root) ? relativePath : toPosixPath(relativePath)
   const parts: string[] = []
   if (!root || rel.startsWith('/') || /^[a-z]:/i.test(rel) || rel.includes('\0') ||
       !appendSegments(parts, rel) || !parts.length) return null

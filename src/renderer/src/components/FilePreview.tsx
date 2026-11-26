@@ -6,7 +6,7 @@ import { t } from '../state/i18n'
 import { IconFile } from './icons'
 
 export function attachmentPaths(a: Attachment, projectDir?: string | null): string[] {
-  const mapped = projectDir && a.relativePath ? joinPosixRelative(projectDir, a.relativePath) : null
+  const mapped = projectDir && a.relativePath ? joinPosixRelative(projectDir, a.relativePath, { literalPosix: true }) : null
   const ordered = a.source === 'workspace-file'
     ? [mapped, a.fallbackPath, a.path]
     : [a.path, a.fallbackPath, mapped]

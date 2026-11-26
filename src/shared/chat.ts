@@ -35,6 +35,7 @@ export interface Attachment {
   thumb: string | null
   source?: AttachmentSource
   relativePath?: string
+  refLabel?: string
   mimeType?: string
   bundlePath?: string
   fallbackPath?: string

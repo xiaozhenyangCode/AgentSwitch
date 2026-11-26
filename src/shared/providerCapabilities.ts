@@ -31,6 +31,7 @@ export interface ProviderCapabilities {
   // ---- Input, skills & permissions ----
   /** Accepts image inputs (CLI image flag, ACP content block, or prompt file path). */
   supportsImageInput: boolean
+  supportsFileTools: boolean
   /** Prompt token prefix that invokes a skill (`'/'`, `'$'`, or `null` when skills are unsupported). */
   skillTriggerPrefix: SkillTriggerPrefix
   /** Supports extensions discovery (skills, rules, MCP, agents, hooks) and editable rule files. */
@@ -89,6 +90,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<ProfileKind, ProviderCapabil
     supportsSteer: false,
     supportsLocalHistory: true,
     supportsImageInput: true,
+    supportsFileTools: true,
     skillTriggerPrefix: '/',
     supportsExtensions: true,
     permissionModes: STANDARD_PERMISSION_MODES,
@@ -116,6 +118,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<ProfileKind, ProviderCapabil
     supportsSteer: false,
     supportsLocalHistory: true,
     supportsImageInput: true,
+    supportsFileTools: true,
     skillTriggerPrefix: '$',
     supportsExtensions: true,
     permissionModes: STANDARD_PERMISSION_MODES,
@@ -143,6 +146,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<ProfileKind, ProviderCapabil
     supportsSteer: false,
     supportsLocalHistory: true,
     supportsImageInput: true,
+    supportsFileTools: true,
     skillTriggerPrefix: '/',
     supportsExtensions: true,
     permissionModes: STANDARD_PERMISSION_MODES,
@@ -170,6 +174,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<ProfileKind, ProviderCapabil
     supportsSteer: false,
     supportsLocalHistory: false,
     supportsImageInput: true,
+    supportsFileTools: true,
     skillTriggerPrefix: null,
     supportsExtensions: false,
     permissionModes: STANDARD_PERMISSION_MODES,

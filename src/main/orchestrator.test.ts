@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { estimateTokens } from '@shared/contextBudget'
+import { formatComposerFileRef, formatInlineCodePath } from '@shared/fileReferences'
 import type { TranscriptEntry } from '@shared/transcript'
 import type { AgentEvent, ChatEvent, RunRequest } from '@shared/types'
 import type { RunSpec } from './agentRunner'
@@ -67,6 +68,52 @@ beforeEach(() => {
 afterEach(() => {
   cleanupAllPersistentThreadHistory()
   rmSync(data, { recursive: true, force: true })
+})
+
+it('serializes workspace and staged attachment paths and forwards the image payloads', async () => {
+  const projectDir = join(data, 'project')
+  const staging = join(data, 'staging')
+  mkdirSync(join(projectDir, 'docs'), { recursive: true })
+  mkdirSync(staging)
+  const label = 'docs/my @review `spec`.md'
+  const workspace = join(projectDir, label)
+  const layout = join(projectDir, 'layout.png')
+  const screenshot = join(staging, 'unique-clipboard.png')
+  const external = join(data, 'outside notes.txt')
+  for (const path of [workspace, screenshot, layout, external]) writeFileSync(path, path === screenshot ? 'clipboard fixture' : 'file')
+  const raw = 'Compare ' + formatComposerFileRef(label) + ' against #capture.png'
+  const req: RunRequest = { ...request([]), projectDir, text: raw, attachments: [
+    { name: 'my @review `spec`.md', path: workspace, isImage: false, source: 'workspace-file', relativePath: label },
+    { name: 'capture.png', path: screenshot, isImage: true, source: 'chat-attachment', refLabel: 'capture.png' },
+    { name: 'layout.png', path: layout, isImage: true, source: 'workspace-file', relativePath: 'layout.png' },
+    { name: 'outside notes.txt', path: external, isImage: false }
+  ] }
+  runAgent.mockReturnValue({ done: Promise.resolve({ ok: true, sessionId: 'fixture-session' }), kill: vi.fn() })
+  const events: ChatEvent[] = []
+  await start(req, (event) => events.push(event))
+  const runDir = join(projectDir, '.agentswitch', 'runs', req.turnId)
+  const archived = join(runDir, 'attachments', 'capture.png')
+  const spec: RunSpec = runAgent.mock.calls[0][0]
+  const text = 'Compare ' + formatInlineCodePath(label) + ' against ' + formatInlineCodePath(archived) +
+    '\n\n附带文件：\n- `layout.png`\n- ' + formatInlineCodePath(realpathSync(external))
+  expect(spec.prompt).toContain(text)
+  expect(spec.prompt).not.toContain('#capture.png')
+  expect(spec.prompt).not.toContain('## 用户附件')
+  expect(spec.images).toEqual([archived, realpathSync(layout)])
+  expect(spec.attachments?.map(({ scope, absPath }) => [scope, absPath])).toEqual([
+    ['workspace', realpathSync(workspace)], ['external', archived], ['workspace', realpathSync(layout)], ['external', realpathSync(external)]
+  ])
+  expect(readFileSync(archived, 'utf8')).toBe('clipboard fixture')
+  expect(events.find((event) => event.kind === 'turn-start')).toMatchObject({ archivedAttachments: [{ from: screenshot, to: archived }] })
+  const task = JSON.parse(readFileSync(join(runDir, 'task.json'), 'utf8'))
+  expect(task.userText).toBe(text)
+  expect(task.attachments).toEqual(spec.attachments?.map((item) => item.absPath))
+
+  rmSync(screenshot)
+  await start({ ...req, turnId: 'resent', text: '#capture.png', attachments: [{ ...req.attachments[1], path: archived }] })
+  const resend: RunSpec = runAgent.mock.calls[1][0]
+  expect(resend.attachments?.[0]).toMatchObject({ scope: 'external', absPath: realpathSync(archived) })
+  expect(resend.prompt).toContain(formatInlineCodePath(realpathSync(archived)))
 })
 
 it('filters CLI output events and disk-discovered files without excluding the current output directory', async () => {

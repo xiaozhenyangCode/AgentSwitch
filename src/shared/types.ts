@@ -140,6 +140,20 @@ export interface RunAttachment {
   /** Absolute path on disk (dropped files, or staged copies of pasted images). */
   path: string
   isImage: boolean
+  source?: 'chat-attachment' | 'workspace-file'
+  relativePath?: string
+  refLabel?: string
+  fallbackPath?: string
+}
+
+export interface ResolvedRunAttachment {
+  name: string
+  absPath: string
+  promptPath: string
+  scope: 'workspace' | 'external'
+  relativePath?: string
+  refLabel: string
+  isImage: boolean
 }
 
 export interface RunRequest {
@@ -435,7 +449,7 @@ export interface HistoryThread {
 export type StepStatus = 'done' | 'error' | 'stopped'
 
 export type ChatEvent =
-  | { kind: 'turn-start'; threadId: string; turnId: string; cwd: string }
+  | { kind: 'turn-start'; threadId: string; turnId: string; cwd: string; archivedAttachments?: { from: string; to: string }[] }
   | { kind: 'step-add'; threadId: string; turnId: string; stepId: string; profileId: ProfileId; name: string; profileKind: ProfileKind; model: string | null; dispatchedBy: { profileId: ProfileId; name: string; profileKind: ProfileKind } | null; retry: number; review: boolean; after: string | null }
   | { kind: 'step-start'; threadId: string; turnId: string; stepId: string }
   | { kind: 'agent'; threadId: string; turnId: string; stepId: string; event: AgentEvent }
@@ -599,6 +613,7 @@ export const IPC = {
   onboardingSet: 'onboarding:set',
   modelsList: 'models:list',
   attachStage: 'attach:stage',
+  attachRegister: 'attach:register',
   attachRead: 'attach:read',
   chatStoreOpen: 'chat:storeOpen',
   chatStoreSave: 'chat:storeSave',

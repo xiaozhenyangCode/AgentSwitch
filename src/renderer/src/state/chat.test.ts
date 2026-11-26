@@ -269,6 +269,23 @@ describe('chat task summary', () => {
 })
 
 describe('chat rewind, archive, and quote', () => {
+  it('keeps the archived clipboard path and editable file token on rewind', async () => {
+    await open()
+    const staged = { id: 'clip', name: 'image.png', refLabel: 'image-2.png', source: 'chat-attachment' as const,
+      isImage: true, path: '/tmp/staging/image.png', thumb: null, size: 10 }
+    const text = 'Inspect #image-2.png in the middle'
+    await chat.send(fixture.id, { ...input, text, attachments: [staged] })
+    const { threadId, turnId, attachments } = api.send.mock.lastCall![0]
+    expect(attachments[0]).toMatchObject({ path: staged.path, source: staged.source, refLabel: staged.refLabel })
+    const archive = input.projectDir + '/.agentswitch/runs/' + turnId + '/attachments/image.png'
+    emit({ kind: 'turn-start', threadId, turnId, cwd: input.projectDir!, archivedAttachments: [{ from: staged.path, to: archive }] })
+    finish()
+    const message = chat.getThread(fixture.id)!.messages.find((m) => m.role === 'user')!
+    api.rewind.mockResolvedValueOnce({ kind: 'ok', restored: 0, skipped: 0, clearedSessions: true })
+    const rewind = await chat.rewindThread(fixture.id, message.id, false)
+    expect(rewind.message).toMatchObject({ text, attachments: [{ ...staged, path: archive }] })
+  })
+
   it('validates before rewinding, preserves thread on backend failure, and truncates + returns original message on success', async () => {
     await open()
     const quote = { messageId: 'q1', role: 'assistant' as const, author: 'Claude', excerpt: 'quoted answer' }

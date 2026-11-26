@@ -378,7 +378,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   const chatStore = new ChatStore(app.getPath('userData'))
   ipcMain.handle(IPC.chatStoreOpen, (_e, legacy: unknown, aliasOnly: unknown) => {
     if ((legacy !== null && typeof legacy !== 'string') || typeof aliasOnly !== 'boolean') throw new Error('bad request')
-    return chatStore.open(legacy, aliasOnly)
+    const opened = chatStore.open(legacy, aliasOnly)
+    for (const dir of new Set(opened.threads.map((thread) => thread.projectDir))) {
+      if (typeof dir === 'string' && isAbsolute(dir) && cwdExists(dir)) allowRoot(dir)
+    }
+    return opened
   })
   ipcMain.handle(IPC.chatStoreSave, (_e, session: unknown, revision: unknown, changes: unknown) => chatStore.save(session, revision, changes))
   ipcMain.on(IPC.chatStoreFlush, (e, session: unknown, revision: unknown, changes: unknown) => {
@@ -386,14 +390,25 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.chatSend, (_e, req: RunRequest) => {
     if (!req || typeof req.threadId !== 'string' || typeof req.turnId !== 'string' || typeof req.text !== 'string') throw new Error('bad request')
-    // files the user attached stay previewable in the chat (only those exact files)
-    if (Array.isArray(req.attachments)) for (const a of req.attachments) if (a && typeof a.path === 'string') allowFile(a.path)
+    const attachments = Array.isArray(req.attachments) ? req.attachments.flatMap((a) => {
+      if (typeof a?.path !== 'string' || !isAbsolute(a.path) || a.path.includes('\0')) return []
+      return [{
+        path: a.path,
+        name: typeof a.name === 'string' ? a.name : basename(a.path),
+        isImage: a.isImage === true,
+        source: a.source === 'workspace-file' || a.source === 'chat-attachment' ? a.source : undefined,
+        relativePath: typeof a.relativePath === 'string' ? a.relativePath : undefined,
+        refLabel: typeof a.refLabel === 'string' ? a.refLabel : undefined,
+        fallbackPath: typeof a.fallbackPath === 'string' && isAllowedPath(a.fallbackPath) ? a.fallbackPath : undefined
+      }]
+    }) : []
+    for (const { path } of attachments) allowFile(path)
     orchestrator.start({
       threadId: req.threadId,
       turnId: req.turnId,
       projectDir: typeof req.projectDir === 'string' ? req.projectDir : null,
       text: req.text,
-      attachments: Array.isArray(req.attachments) ? req.attachments.filter((a) => a && typeof a.path === 'string') : [],
+      attachments,
       driver: { profileId: assertId(req.driver?.profileId), model: req.driver?.model || null },
       mentions: (Array.isArray(req.mentions) ? req.mentions : []).filter((m) => hasProfile(m?.profileId)).map((m) => ({ profileId: m.profileId, model: m.model || null })),
       participants: (Array.isArray(req.participants) ? req.participants : []).filter((p) => hasProfile(p)),
@@ -536,6 +551,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     writeFileSync(p, buf)
     allowFile(p)
     return p
+  })
+  ipcMain.handle(IPC.attachRegister, (_e, path: unknown): string | null => {
+    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) return null
+    try {
+      if (!statSync(path).isFile()) return null
+      allowFile(path)
+      return path
+    } catch {
+      return null
+    }
   })
   /** Text preview of an attached file: allow-listed paths only, 64 KB, binary detected. */
   ipcMain.handle(IPC.attachRead, (_e, p: unknown): AttachmentText => {

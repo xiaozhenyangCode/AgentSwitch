@@ -1,3 +1,5 @@
+import { formatComposerFileRef } from '@shared/fileReferences'
+
 export interface FileTrigger {
   start: number
   query: string
@@ -15,11 +17,16 @@ export function matchFileTrigger(value: string, caret: number): FileTrigger | nu
   return { start: caret - query.length - 1, query }
 }
 
-export function applyFileReference(value: string, start: number, caret: number, relPath: string) {
-  // Quote ambiguous paths. Inline code also keeps any @ in the name out of account routing.
-  const path = /[\s#@＠"'`\\\x00-\x1f\x7f]/u.test(relPath)
-    ? '`' + JSON.stringify(relPath).replace(/`/g, '\\u0060') + '`'
-    : relPath
-  const reference = '#' + path + ' '
+export function applyFileReference(value: string, start: number, caret: number, label: string) {
+  const reference = formatComposerFileRef(label) + ' '
   return { value: value.slice(0, start) + reference + value.slice(caret), caret: start + reference.length }
+}
+
+export function insertFileReferenceAtCaret(value: string, start: number, end: number, label: string) {
+  const before = value.slice(0, start)
+  const after = value.slice(end)
+  const lead = before && !/\s$/u.test(before) ? ' ' : ''
+  const tail = /^\s/u.test(after) ? '' : ' '
+  const reference = lead + formatComposerFileRef(label) + tail
+  return { value: before + reference + after, caret: start + reference.length }
 }

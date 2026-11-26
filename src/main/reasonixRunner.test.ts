@@ -61,6 +61,16 @@ function replay(file: string, options = spec) {
 }
 
 describe('Reasonix stream adapter', () => {
+  it('keeps workspace image references in place and appends only missing legacy paths', () => {
+    const draw = { name: 'image.png', promptPath: 'src/image.png', absPath: '/tmp/x/src/image.png',
+      refLabel: 'src/image.png', scope: 'workspace' as const, isImage: true }
+    const prompt = 'See `src/image.png` here.'
+    const result = reasonixAdapter({ ...spec, prompt, attachments: [draw], images: [draw.absPath, '/tmp/b.png'] })
+    expect(result.stdin).toBe(prompt + '\n\n- /tmp/b.png')
+    expect(reasonixAdapter({ ...spec, prompt: 'Look at /tmp/b.png now', images: ['/tmp/b.png'] }).stdin)
+      .toBe('Look at /tmp/b.png now')
+  })
+
   it('streams thinking and final text exactly once and records the model and session', () => {
     const { adapter, events } = replay('thinking')
     expect(adapter.result()).toEqual({ ok: true, error: null })

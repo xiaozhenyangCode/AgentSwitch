@@ -1,20 +1,21 @@
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import type { OutputFileRef } from '@shared/chat'
-import { extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
+import { deriveRelativePath, extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, joinPosixRelative, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
-import type { FileSearchItem, ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { FileSearchMenu } from '../components/FileSearchMenu'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
-import { useFileSearch } from '../state/useFileSearch'
+import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp } from '../state/AppContext'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
-import { attachmentImages, attachmentPaths, MissingFile, useImageCandidate, usePathsExist, type PathExistence } from '../components/FilePreview'
+import { attachmentPaths, MissingFile, usePathsExist, type PathExistence } from '../components/FilePreview'
+import { AttachmentBar, attachmentTitle } from '../components/AttachmentBar'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
@@ -31,7 +32,8 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { escLayers, useEscape } from '../lib/escStack'
 import { COMPOSER_MAX_HEIGHT, composerEscapeAction, nextComposerExpanded, showComposerExpand } from '../lib/composerExpand'
-import { applyFileReference, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
+import { applyFileReference, insertFileReferenceAtCaret, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
+import { attachmentRefLabel, COMPOSER_ATTACHMENT_LIMIT, mergeAttachments, removeFileReferences, scanFileReferences, type FileReferenceSpan } from '@shared/fileReferences'
 import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
@@ -47,7 +49,6 @@ import {
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, OutputImage } from '../components/Markdown'
 import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconMaximize, IconMinimize, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
-import { fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
@@ -153,15 +154,15 @@ function useSortedAccounts(): ProfileState[] {
 }
 
 /** `@Name` or `@Name(model)` tokens for the given accounts, in text order (code blocks / inline code skipped). */
-function parseMentions(text: string, accounts: ProfileState[]): { p: ProfileState; model: string | null; index: number; length: number }[] {
+function parseMentions(text: string, accounts: ProfileState[], files: FileReferenceSpan[]): { p: ProfileState; model: string | null; index: number; length: number }[] {
   const out: { p: ProfileState; model: string | null; index: number; length: number }[] = []
-  const taken: [number, number][] = []
+  const taken: [number, number][] = files.map(({ start, end }) => [start, end])
   const plain = maskCode(text)
   for (const p of [...accounts].sort((a, b) => b.name.length - a.name.length)) {
     const re = new RegExp('@' + escapeRe(p.name) + '(?:\\(([^)\\s]+)\\))?', 'g')
     for (const m of plain.matchAll(re)) {
       const s = m.index!
-      if (taken.some(([a, b]) => s >= a && s < b)) continue
+      if (taken.some(([a, b]) => s < b && s + m[0].length > a)) continue
       taken.push([s, s + m[0].length])
       out.push({ p, model: m[1] ?? null, index: s, length: m[0].length })
     }
@@ -274,7 +275,7 @@ export function WorkbenchPage() {
   }, [])
   const messages = useMemo(() => threadMessages(thread), [thread])
   const filePaths = useMemo(() => messages.flatMap((msg) => {
-    if (msg.role === 'user') return msg.attachments.flatMap((a) => a.isImage ? [] : attachmentPaths(a, projectDir))
+    if (msg.role === 'user') return msg.attachments.flatMap((a) => attachmentPaths(a, projectDir))
     if (msg.role !== 'assistant') return []
     return outputRefsForMessage(msg, projectDir, sourceProjectDir)
       .filter((file) => !file.inlineOnly && !isOutputImage(file)).slice(0, 12)
@@ -483,7 +484,7 @@ export function WorkbenchPage() {
 
   const onSend = (text: string, attachments: Attachment[], quote: MessageQuote | null) => {
     if (!driverP) return
-    const found = parseMentions(text, profiles)
+    const found = parseMentions(text, profiles, scanFileReferences(text, attachments))
     const seen = new Set<string>()
     const mentions = found.filter((m) => !seen.has(m.p.id) && seen.add(m.p.id)).map((m) => ref(m.p, m.model))
     const joined = [...new Set([...participants, driverP.id, ...mentions.map((m) => m.profileId)])]
@@ -790,6 +791,8 @@ export function WorkbenchPage() {
           busy={isThreadBusy(thread)}
           threadId={thread?.id ?? null}
           projectDir={ctx.projectDir}
+          previewRevision={previewRevision}
+          onRebindProject={onRebindProject}
           onHeight={setComposerH}
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
@@ -1189,17 +1192,34 @@ function MentionChip({ a }: { a: AgentRef }) {
   )
 }
 
-/** User text with @mentions rendered as chips. */
-function renderWithMentions(text: string, mentions: AgentRef[]): ReactNode[] {
-  if (!mentions.length) return [text]
-  const re = new RegExp('@(' + [...mentions].sort((a, b) => b.name.length - a.name.length).map((m) => escapeRe(m.name)).join('|') + ')(?:\\(([^)\\s]+)\\))?', 'g')
+/** Replaces recognized references for display while retaining the editable message text. */
+function renderUserText({ text, mentions, attachments }: UserMessage, onOpen: (a: Attachment) => void): ReactNode[] {
+  const refs = scanFileReferences(text, attachments)
+  const chips = refs.map(({ start, end, index }): { start: number; end: number; node: ReactNode } => {
+    const a = attachments[index]
+    return { start, end, node: (
+      <button key={start} type="button" title={attachmentTitle(a)} onClick={() => onOpen(a)}
+        className="inline-flex max-w-full items-center gap-1 rounded-md bg-white/25 px-1.5 align-baseline text-white hover:bg-white/35">
+        <IconFile size={12} className="shrink-0" aria-hidden="true" /> <span className="truncate">{a.refLabel || a.name}</span>
+      </button>
+    ) }
+  })
+  if (mentions.length) {
+    const names = [...mentions].sort((a, b) => b.name.length - a.name.length).map((m) => escapeRe(m.name))
+    const re = new RegExp('@(' + names.join('|') + ')(?:\\(([^)\\s]+)\\))?', 'g')
+    for (const m of maskCode(text).matchAll(re)) {
+      const start = m.index
+      const end = start + m[0].length
+      if (refs.some((ref) => ref.start < end && ref.end > start)) continue
+      const ref = mentions.find((x) => x.name === m[1])!
+      chips.push({ start, end, node: <MentionChip key={start} a={{ ...ref, model: m[2] ?? ref.model }} /> })
+    }
+  }
   const out: ReactNode[] = []
   let last = 0
-  for (const m of text.matchAll(re)) {
-    out.push(text.slice(last, m.index))
-    const ref = mentions.find((x) => x.name === m[1])!
-    out.push(<MentionChip key={m.index} a={{ ...ref, model: m[2] ?? ref.model }} />)
-    last = m.index! + m[0].length
+  for (const { start, end, node } of chips.sort((a, b) => a.start - b.start)) {
+    out.push(text.slice(last, start), node)
+    last = end
   }
   out.push(text.slice(last))
   return out
@@ -1208,7 +1228,7 @@ function renderWithMentions(text: string, mentions: AgentRef[]): ReactNode[] {
 /** Long user messages start folded (≈6 lines); short ones never show the toggle. */
 const FOLD_PX = 140
 
-function UserText({ msg }: { msg: UserMessage }) {
+function UserText({ msg, onOpen }: { msg: UserMessage; onOpen: (a: Attachment) => void }) {
   return (
     <div className="max-w-full rounded-[20px] rounded-br-md bg-accent text-[15px] leading-[1.7] text-white">
       {msg.quote?.excerpt && (
@@ -1218,7 +1238,7 @@ function UserText({ msg }: { msg: UserMessage }) {
         </div>
       )}
       <CollapsibleBody threshold={FOLD_PX + 40} collapsedHeight={FOLD_PX} tone="bubble" className="overflow-clip rounded-[inherit]">
-        <div className="px-4 py-2.5 whitespace-pre-wrap select-text">{renderWithMentions(msg.text, msg.mentions)}</div>
+        <div className="px-4 py-2.5 whitespace-pre-wrap select-text">{renderUserText(msg, onOpen)}</div>
       </CollapsibleBody>
     </div>
   )
@@ -1271,8 +1291,6 @@ function UserBubble({
   onRewind?: () => void
   rewindDisabled?: boolean
 }) {
-  const images = msg.attachments.filter((a) => a.isImage)
-  const files = msg.attachments.filter((a) => !a.isImage)
   const [viewingId, setViewing] = useState<string | null>(null)
   const viewing = msg.attachments.find((a) => a.id === viewingId)
   const { projectDir, onRebindProject, revision } = useContext(MarkdownBase)
@@ -1280,27 +1298,15 @@ function UserBubble({
   return (
     <div className="flex flex-col items-end gap-1.5 pl-24">
       {viewing && <AttachmentViewer a={viewing} projectDir={projectDir} onRebindProject={rebindFor(viewing)} revision={revision} onClose={() => setViewing(null)} />}
-      {images.length > 0 && (
-        <div className="flex flex-wrap justify-end gap-2">
-          {images.map((a) => (
-            <BubbleThumb key={a.id} a={a} projectDir={projectDir} onRebindProject={rebindFor(a)} revision={revision} onOpen={() => setViewing(a.id)} />
-          ))}
-        </div>
-      )}
-      {files.length > 0 && (
-        <div className="flex flex-wrap justify-end gap-2">
-          {files.map((a) => (
-            <FileChip key={a.id} a={a} projectDir={projectDir} fileExists={fileExists} onRebindProject={rebindFor(a)} onOpen={() => setViewing(a.id)} />
-          ))}
-        </div>
-      )}
+      <AttachmentBar items={msg.attachments} projectDir={projectDir} revision={revision} fileExists={fileExists}
+        alignEnd onRebindProject={onRebindProject} onOpen={(a) => setViewing(a.id)} />
       {msg.text && msg.kind === 'handoff' ? (
         <div className="flex items-center gap-1.5 rounded-full bg-black/[0.05] px-3 py-1 text-[12.5px] text-ink-2">
           <IconArrowRight size={13} className="text-accent" />
           {msg.text}
         </div>
       ) : (
-        (msg.text || msg.quote) && <UserText msg={msg} />
+        (msg.text || msg.quote) && <UserText msg={msg} onOpen={(a) => setViewing(a.id)} />
       )}
       {msg.note && (
         <div className="flex items-center gap-1 text-[11px] text-info">
@@ -1341,58 +1347,6 @@ function UserBubble({
         <span title={fullTime(msg.createdAt)}>{msgTime(msg.createdAt)}</span>
       </div>
     </div>
-  )
-}
-
-function BubbleThumb({ a, projectDir, revision, onOpen, onRebindProject }: {
-  a: Attachment
-  projectDir?: string | null
-  revision?: number
-  onOpen: () => void
-  onRebindProject?: () => void
-}) {
-  const { candidate, imageKey, fail } = useImageCandidate(attachmentImages(a, projectDir), revision)
-  if (!candidate) {
-    return <MissingFile name={a.name} relativePath={a.relativePath} path={a.path ?? a.fallbackPath}
-      skippedReason={a.skippedReason} onRebindProject={onRebindProject} />
-  }
-  return (
-    <button type="button" onClick={onOpen} title={(candidate.path ?? a.path ?? a.name) + '\n' + t(candidate.path ? 'md.clickZoom' : 'att.missingThumb')}
-      className="cursor-zoom-in rounded-2xl">
-      <img key={imageKey} src={candidate.src} alt={a.name} decoding="async" onError={fail}
-        className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
-    </button>
-  )
-}
-
-function FileChip({ a, onRemove, onOpen, projectDir, fileExists, onRebindProject }: {
-  a: Attachment
-  onRemove?: () => void
-  onOpen?: () => void
-  projectDir?: string | null
-  fileExists?: PathExistence
-  onRebindProject?: () => void
-}) {
-  const paths = attachmentPaths(a, projectDir)
-  if (fileExists && paths.every((path) => fileExists[path] === false)) {
-    return <MissingFile name={a.name} relativePath={a.relativePath} path={a.path ?? a.fallbackPath}
-      skippedReason={a.skippedReason} onRebindProject={onRebindProject} />
-  }
-  const path = paths.find((candidate) => fileExists?.[candidate]) ?? paths[0] ?? a.name
-  const content = <><IconFile size={16} className="shrink-0 text-ink-2" /><span className="min-w-0 truncate">{a.name}</span></>
-  const chip = 'flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)]'
-  if (onOpen) {
-    return <button type="button" onClick={onOpen} className={chip + ' hover:bg-surface-2'} title={path + '\n' + t('att.clickPreview')}>{content}</button>
-  }
-  return (
-    <span className={chip} title={path}>
-      {content}
-      {onRemove && (
-        <button onClick={onRemove} className="rounded-full p-0.5 text-ink-3 hover:bg-fill hover:text-ink">
-          <IconX size={12} />
-        </button>
-      )}
-    </span>
   )
 }
 
@@ -1935,6 +1889,8 @@ function Composer({
   busy,
   threadId,
   projectDir,
+  previewRevision,
+  onRebindProject,
   onHeight,
   onSend,
   onStop,
@@ -1959,6 +1915,8 @@ function Composer({
   threadId: string | null
   /** Project folder: decides which project-level skills / MCP servers apply. */
   projectDir: string | null
+  previewRevision: number
+  onRebindProject?: () => void
   onHeight: (h: number) => void
   /** Resolves false when the user declined to send (the draft comes back). */
   onSend: (text: string, attachments: Attachment[], quote: MessageQuote | null) => Promise<boolean> | void
@@ -1988,6 +1946,8 @@ function Composer({
   const draftKey = threadId ?? NEW_DRAFT
   const [text, setText] = useState(() => composerDraft(draftKey)?.text ?? '')
   const [atts, setAtts] = useState<Attachment[]>(() => composerDraft(draftKey)?.atts ?? [])
+  const [viewingId, setViewing] = useState<string | null>(null)
+  const viewing = atts.find((a) => a.id === viewingId)
   const [quote, setQuote] = useState<MessageQuote | null>(() => composerDraft(draftKey)?.quote ?? null)
   const [expanded, changeExpansion] = useReducer(nextComposerExpanded, false)
   const [compactMetrics, setCompactMetrics] = useState({ scrollHeight: 46, padding: 24, lineHeight: 22 })
@@ -2012,7 +1972,7 @@ function Composer({
   /** Extensions panel (skills, agents, plugins, MCP, rules & hooks), read-only. */
   const [extOpen, setExtOpen] = useState(false)
   const fileOpen = !extOpen && !mention && !slash && !!file
-  const fileSearch = useFileSearch(projectDir, fileOpen ? file.trigger : null)
+  const fileSearch = useFileSearch(projectDir, fileOpen ? file.trigger : null, atts)
   const fileActive = Math.min(file?.index ?? 0, Math.max(0, fileSearch.items.length - 1))
   const overview = useOverview(driver?.id ?? null, projectDir, true)
   const closeExt = useCallback(() => setExtOpen(false), [])
@@ -2030,6 +1990,7 @@ function Composer({
   const histRef = useRef<HistoryCursor | null>(null)
   // per-conversation drafts: park the leaving chat's input, bring back the target's
   const live = useRef({ key: draftKey, text, atts, quote })
+  const priorProject = useRef({ key: draftKey, dir: projectDir })
   live.current.text = text
   live.current.atts = atts
   live.current.quote = quote
@@ -2046,10 +2007,22 @@ function Composer({
     setMention(null)
     setSlash(null)
     setFile(null)
+    setViewing(null)
     setExtOpen(false)
     dismissed.current = null
     changeExpansion('thread')
   }, [draftKey])
+  useLayoutEffect(() => {
+    const prior = priorProject.current
+    priorProject.current = { key: draftKey, dir: projectDir }
+    if (prior.key !== draftKey || prior.dir === projectDir) return
+    setAtts((items) => items.map((a) => {
+      if (!a.path) return a
+      const relativePath = deriveRelativePath(a.path, projectDir) ?? undefined
+      if (a.relativePath === relativePath) return a
+      return { ...a, relativePath, source: relativePath ? 'workspace-file' : 'chat-attachment', refLabel: attachmentRefLabel(a) }
+    }))
+  }, [draftKey, projectDir])
   useEffect(() => () => saveComposerDraft(live.current.key, live.current.text, live.current.atts, live.current.quote), [])
   useEffect(() => {
     if (!seed) return
@@ -2060,6 +2033,7 @@ function Composer({
     setMention(null)
     setSlash(null)
     setFile(null)
+    setViewing(null)
     requestAnimationFrame(() => {
       const el = ta.current
       if (!el) return
@@ -2072,8 +2046,12 @@ function Composer({
     setQuote(quoteSeed.quote)
     requestAnimationFrame(() => ta.current?.focus())
   }, [quoteSeed])
-  // mention capsules drawn in a mirror under the (transparent-text) textarea
-  const mentionSpans = useMemo(() => parseMentions(text, accounts), [text, accounts])
+  const fileSpans = useMemo(() => scanFileReferences(text, atts), [text, atts])
+  // Reference capsules drawn in a mirror under the transparent textarea.
+  const mentionSpans = useMemo(() => [
+    ...parseMentions(text, accounts, fileSpans),
+    ...fileSpans.map(({ start, end }) => ({ index: start, length: end - start }))
+  ].sort((a, b) => a.index - b.index), [text, accounts, fileSpans])
   const syncMirror = useCallback(() => {
     const el = ta.current
     const m = mirror.current
@@ -2325,19 +2303,51 @@ function Composer({
     })
   }
 
-  const insertFile = (item: FileSearchItem) => {
-    const el = ta.current
-    if (!el || !file || !fileOpen || fileSearch.loading || el.selectionStart !== el.selectionEnd) return
-    const match = matchFileTrigger(el.value, el.selectionStart)
-    if (!match || match.start !== file.trigger.start || match.query !== file.trigger.query) return
-    const next = applyFileReference(el.value, match.start, el.selectionStart, item.relPath)
+  const applyReferenceEdit = (el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
+    histRef.current = null
     setText(next.value)
     setFile(null)
+    setMention(null)
+    setSlash(null)
     requestAnimationFrame(() => {
       if (ta.current !== el || el.value !== next.value) return
       el.focus({ preventScroll: true })
       el.setSelectionRange(next.caret, next.caret)
     })
+  }
+
+  const insertFile = (item: ComposerFileCandidate) => {
+    const el = ta.current
+    if (!el || !file || !fileOpen || el.selectionStart !== el.selectionEnd) return
+    const match = matchFileTrigger(el.value, el.selectionStart)
+    if (!match || match.start !== file.trigger.start || match.query !== file.trigger.query) return
+    let attachment: Attachment
+    if (item.kind === 'added') attachment = item.attachment
+    else {
+      const path = projectDir && joinPosixRelative(projectDir, item.relPath, { literalPosix: true })
+      if (!path) return
+      const merged = mergeAttachments(atts, [{
+        id: fileMenuId + ':' + path, path, name: item.name, source: 'workspace-file', relativePath: item.relPath,
+        isImage: isPreviewableImagePath(item.relPath), size: 0, thumb: null
+      }], projectDir)
+      if (!merged.resolved.length) return toast({ kind: 'warn', title: t('att.limit', { n: COMPOSER_ATTACHMENT_LIMIT }) })
+      attachment = merged.resolved[0]
+      setAtts(merged.next)
+    }
+    applyReferenceEdit(el, applyFileReference(el.value, match.start, el.selectionStart, attachmentRefLabel(attachment)))
+  }
+
+  const insertAttachment = (a: Attachment) => {
+    const el = ta.current
+    if (!el || composingRef.current) return
+    applyReferenceEdit(el, insertFileReferenceAtCaret(el.value, el.selectionStart, el.selectionEnd, attachmentRefLabel(a)))
+  }
+
+  const removeAttachment = (a: Attachment) => {
+    setAtts((items) => items.filter((item) => item.id !== a.id))
+    setText((value) => removeFileReferences(value, a, atts))
+    setFile(null)
+    histRef.current = null
   }
 
   /** Inserts a token at the caret (space-separated from what is around it) and focuses the box. */
@@ -2361,8 +2371,16 @@ function Composer({
 
   const addFiles = async (files: File[]) => {
     if (!files.length) return
-    const next = await Promise.all(files.map(toAttachment))
-    setAtts((a) => [...a, ...next].slice(0, 12))
+    const added = await Promise.allSettled(files.slice(0, COMPOSER_ATTACHMENT_LIMIT).map((f) => toAttachment(f, projectDir)))
+    const ready = added.flatMap((result) => result.status === 'fulfilled' && result.value.path ? [result.value] : [])
+    if (ready.length !== added.length) toast({ kind: 'warn', title: t('att.addFailed') })
+    if (!ready.length) return
+    if (live.current.key !== draftKey) {
+      const draft = composerDraft(draftKey)
+      saveComposerDraft(draftKey, draft?.text ?? '', mergeAttachments(draft?.atts ?? [], ready, projectDir).next, draft?.quote ?? null)
+      return
+    }
+    setAtts((items) => mergeAttachments(items, ready, projectDir).next)
   }
 
   const canSend = !!driver && (text.trim().length > 0 || atts.length > 0)
@@ -2450,7 +2468,7 @@ function Composer({
         return insertSkill(slashMatches[Math.min(slash.index, n - 1)], e.key === 'Tab' ? 'tab' : 'enter')
       }
     }
-    if (fileOpen && !composing && !fileSearch.loading && fileSearch.items.length && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (fileOpen && !composing && fileSearch.items.length && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const n = fileSearch.items.length
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
@@ -2546,7 +2564,8 @@ function Composer({
               id={fileMenuId}
               {...fileSearch}
               active={fileActive}
-              hasProject={!!projectDir}
+              projectDir={projectDir}
+              hasAttachments={!!atts.length}
               onPick={insertFile}
               onHover={(index) => setFile((x) => x && { ...x, index })}
             />
@@ -2650,29 +2669,14 @@ function Composer({
               </button>
             </div>
           )}
+          {viewing && (
+            <AttachmentViewer a={viewing} projectDir={projectDir} revision={previewRevision}
+              onRebindProject={viewing.source === 'workspace-file' ? onRebindProject : undefined} onClose={() => setViewing(null)} />
+          )}
           {atts.length > 0 && (
-            <div className={`flex shrink-0 flex-wrap gap-2 px-4 pt-4 ${expanded ? 'max-h-[96px] overflow-y-auto' : ''}`}>
-              {atts.map((a) =>
-                a.isImage && a.thumb ? (
-                  <span key={a.id} className="group relative" title={a.path ?? a.name}>
-                    <img
-                      src={a.path ? fileUrl(a.path) : a.thumb}
-                      decoding="async"
-                      onError={(e) => a.thumb && e.currentTarget.src !== a.thumb && (e.currentTarget.src = a.thumb)}
-                      className="h-16 w-16 rounded-xl object-cover shadow-[0_0_0_1px_var(--ring)]"
-                    />
-                    <button
-                      onClick={() => setAtts((x) => x.filter((y) => y.id !== a.id))}
-                      className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-canvas opacity-0 shadow transition-opacity group-hover:opacity-100"
-                      title={t('common.remove')}
-                    >
-                      <IconX size={11} strokeWidth={2.4} />
-                    </button>
-                  </span>
-                ) : (
-                  <FileChip key={a.id} a={a} onRemove={() => setAtts((x) => x.filter((y) => y.id !== a.id))} />
-                )
-              )}
+            <div className="max-h-[96px] shrink-0 overflow-y-auto px-4 pt-4">
+              <AttachmentBar items={atts} projectDir={projectDir} revision={previewRevision}
+                onOpen={(a) => setViewing(a.id)} onInsert={insertAttachment} onRemove={removeAttachment} />
             </div>
           )}
 
@@ -2709,7 +2713,7 @@ function Composer({
               value={text}
               aria-autocomplete={fileOpen ? 'list' : undefined}
               aria-controls={fileOpen ? fileMenuId : undefined}
-              aria-activedescendant={fileOpen && !fileSearch.loading && fileSearch.items.length ? `${fileMenuId}-${fileActive}` : undefined}
+              aria-activedescendant={fileOpen && fileSearch.items.length ? `${fileMenuId}-${fileActive}` : undefined}
               onChange={(e) => {
                 histRef.current = null
                 // the suggestion only hides while there is text (ghost needs an empty box): typing,

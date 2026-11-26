@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyFileReference, matchFileTrigger } from './fileMention'
+import { applyFileReference, insertFileReferenceAtCaret, matchFileTrigger } from './fileMention'
 
 describe('project file references', () => {
   it('matches after whitespace or at a line start using textarea offsets', () => {
@@ -31,7 +31,12 @@ describe('project file references', () => {
 
   it('quotes filenames containing whitespace or account mentions', () => {
     const path = 'docs/@Codex notes.md'
-    const reference = '#' + String.fromCharCode(96) + JSON.stringify(path) + String.fromCharCode(96) + ' '
+    const reference = '#`docs/@Codex notes.md` '
     expect(applyFileReference('#notes', 0, 6, path)).toEqual({ value: reference, caret: reference.length })
+  })
+
+  it('inserts an attachment into an existing sentence and preserves the suffix and caret', () => {
+    const next = insertFileReferenceAtCaret('compare this with next', 8, 12, 'my screenshot.png')
+    expect(next).toEqual({ value: 'compare #`my screenshot.png` with next', caret: 28 })
   })
 })

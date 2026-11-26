@@ -211,7 +211,7 @@ export function exportThreadsArchive(bundle: ThreadBundle, destPath: string, opt
         const attachments = msg.attachments.filter(validAttachment).map((a): Attachment => {
           const path = typeof a.path === 'string' ? a.path : null
           const ref = withoutAssetPaths({
-            ...a, path, source: 'chat-attachment',
+            ...a, path, source: a.source === 'workspace-file' ? 'workspace-file' : 'chat-attachment',
             relativePath: validRelative(a.relativePath) ?? deriveRelativePath(path ?? '', project) ?? undefined,
             mimeType: typeof a.mimeType === 'string' ? a.mimeType : mimeTypeForPath(a.name)
           } satisfies Attachment)

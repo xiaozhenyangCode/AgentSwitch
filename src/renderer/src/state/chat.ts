@@ -519,7 +519,11 @@ function sendNow(threadId: string, input: SendInput, remaining?: QueuedMessage[]
     ...(mode === 'chat' ? { handoffSkip: [] } : {}),
     updatedAt: now()
   }))
-  const attachments: RunAttachment[] = input.attachments.filter((a) => a.path).map((a) => ({ name: a.name, path: a.path!, isImage: a.isImage }))
+  const attachments: RunAttachment[] = input.attachments.flatMap(({ name, path, isImage, source, relativePath, refLabel, fallbackPath }) => {
+    const mapped = input.projectDir && relativePath ? joinPosixRelative(input.projectDir, relativePath, { literalPosix: true }) : null
+    const primary = path ?? fallbackPath ?? mapped
+    return primary ? [{ name, path: primary, isImage, source, relativePath, refLabel, fallbackPath }] : []
+  })
   ready
     .then(() =>
       window.agentswitch.chat.send({
@@ -584,8 +588,18 @@ export function resolvePause(threadId: string, action: 'retry' | 'skip' | 'stop'
 function onEvent(e: ChatEvent) {
   if (!state.threads.some((t) => t.id === e.threadId)) return
   switch (e.kind) {
-    case 'turn-start':
-      return patchThread(e.threadId, (t) => ({ ...t, workdir: e.cwd }))
+    case 'turn-start': {
+      const archived = new Map(e.archivedAttachments?.map(({ from, to }) => [from, to]))
+      return patchThread(e.threadId, (t) => ({
+        ...t, workdir: e.cwd,
+        ...(archived.size && { messages: t.messages.map((message) => message.role === 'user' && message.turnId === e.turnId
+          ? { ...message, attachments: message.attachments.map((a) => {
+              const path = a.path && archived.get(a.path)
+              return path ? { ...a, path } : a
+            }) }
+          : message) })
+      }))
+    }
     case 'step-add': {
       const msg: AssistantMessage = {
         role: 'assistant',
@@ -879,14 +893,18 @@ function thumbnail(file: File): Promise<string | null> {
   })
 }
 
-export async function toAttachment(file: File): Promise<Attachment> {
+export async function toAttachment(file: File, projectDir?: string | null): Promise<Attachment> {
   const isImage = file.type.startsWith('image/') || IMAGE_RE.test(file.name)
   const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
   const name = file.name || `pasted-${Date.now()}.${ext}`
-  let path = window.agentswitch.sys.pathForFile(file) || null
+  let path = await window.agentswitch.attach.registerFile(file).catch(() => null) || window.agentswitch.sys.pathForFile(file) || null
   // pasted images live only in memory: stage a real file so the CLIs can read it
   if (!path) path = await window.agentswitch.attach.stage(name, await file.arrayBuffer()).catch(() => null)
-  return { id: uid(), name, path, size: file.size, isImage, thumb: isImage ? await thumbnail(file) : null }
+  const relativePath = path ? deriveRelativePath(path, projectDir) ?? undefined : undefined
+  return {
+    id: uid(), name, path, size: file.size, isImage, thumb: isImage ? await thumbnail(file) : null,
+    source: relativePath ? 'workspace-file' : 'chat-attachment', relativePath
+  }
 }
 
 // ---- handoff ---------------------------------------------------------------------------------
@@ -1103,7 +1121,7 @@ export function rebindThreadProject(threadId: string, newProjectDir: string): bo
     relativePath ?? (path ? deriveRelativePath(path, previousDir) ?? deriveRelativePath(path, sourceProjectDir) ?? undefined : undefined)
   const rebindAttachment = (attachment: Attachment): Attachment => {
     if (attachment.source !== 'workspace-file' || !attachment.relativePath) return attachment
-    const path = joinPosixRelative(newProjectDir, attachment.relativePath)
+    const path = joinPosixRelative(newProjectDir, attachment.relativePath, { literalPosix: true })
     return path ? { ...attachment, path } : attachment
   }
   const rebindMessage = (message: Message): Message => {

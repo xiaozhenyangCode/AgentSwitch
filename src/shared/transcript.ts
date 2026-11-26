@@ -1,4 +1,5 @@
 import type { AssistantMessage, Message, UserMessage } from './chat'
+import { attachmentRefLabel, serializePromptWithAttachments } from './fileReferences'
 import { splitSpec } from './modelSpec'
 import type { ProfileId, ProfileKind } from './types'
 
@@ -23,8 +24,17 @@ export function transcriptEntry(message: UserMessage | AssistantMessage): Transc
     const quoteLine = message.quote?.excerpt ? `引用（${message.quote.author}）：${message.quote.excerpt}` : ''
     const attLine = message.attachments.length ? `附件：${message.attachments.map((a) => a.name).join('、')}` : ''
     const details = [quoteLine, attLine].filter(Boolean).join('\n')
+    const text = message.text.includes('#') ? serializePromptWithAttachments(message.text, message.attachments.flatMap((att) => {
+      const absPath = att.path ?? att.fallbackPath
+      const workspace = att.source === 'workspace-file' && !!att.relativePath
+      const promptPath = workspace ? att.relativePath : absPath
+      return promptPath ? [{
+        name: att.name, absPath: absPath ?? promptPath, promptPath, refLabel: attachmentRefLabel(att), relativePath: att.relativePath,
+        scope: workspace ? 'workspace' : 'external', isImage: att.isImage
+      }] : []
+    })).body : message.text
     return {
-      id, turnId, profileId: null, speaker: '用户', time: message.createdAt, text: message.text,
+      id, turnId, profileId: null, speaker: '用户', time: message.createdAt, text,
       driverId: message.kind === 'handoff' ? undefined : message.driver.profileId,
       details: details || undefined
     }

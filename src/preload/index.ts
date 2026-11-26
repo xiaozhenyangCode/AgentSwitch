@@ -156,6 +156,11 @@ const api = {
     trash: (key: string): Promise<DeleteThreadResult> => ipcRenderer.invoke(IPC.historyTrash, key)
   },
   attach: {
+    /** Only Electron's native path for a dropped or uploaded File can be registered here. */
+    registerFile: (file: File): Promise<string | null> => {
+      const path = webUtils.getPathForFile(file)
+      return path ? ipcRenderer.invoke(IPC.attachRegister, path) : Promise.resolve(null)
+    },
     /** Writes an in-memory file (e.g. pasted image) to disk; returns its absolute path. */
     stage: (name: string, data: ArrayBuffer): Promise<string> => ipcRenderer.invoke(IPC.attachStage, name, data),
     /** Text preview of an attached file (allow-listed, 64 KB). */

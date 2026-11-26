@@ -1,9 +1,9 @@
 import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, isAbsolute, join, relative } from 'node:path'
+import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { LEGACY_USER_DATA } from './legacy'
-import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
+import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, ResolvedRunAttachment, RunAgentRef, RunRequest, StepStatus } from '@shared/types'
 import { runAgent, type RunHandle } from './agentRunner'
 import { agyAcpPool } from './acp/pool'
 import { FileBaseline } from './fileBaseline'
@@ -13,6 +13,7 @@ import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
 import { readMarks, splitReplyText, stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
+import { attachmentRefLabel, serializePromptWithAttachments } from '@shared/fileReferences'
 import { historyModel, numberTranscript, reportedContextWindow, unseenTranscript } from '@shared/transcript'
 import { budgetedHandoff, contextBudgetFor } from '@shared/contextBudget'
 import {
@@ -99,7 +100,8 @@ interface Turn {
   cwd: string
   runDir: string
   outDir: string
-  attachments: string[]
+  attachments: ResolvedRunAttachment[]
+  serializedText: string
   steps: Step[]
   idx: number
   current: RunHandle | null
@@ -285,7 +287,7 @@ function mentionMarks(req: RunRequest): { ref: RunAgentRef; i: number; end: numb
  */
 function startsWithMention(req: RunRequest): boolean {
   const marks = mentionMarks(req)
-  return marks.length > 0 && marks[0].i === maskCode(req.text).search(/\S/)
+  return marks.length > 0 && marks[0].i === req.text.search(/\S/)
 }
 
 /** Splits "@A 写提示词，然后让 @B 出图" into per-mention tasks, in text order. */
@@ -364,30 +366,18 @@ export class Orchestrator {
     mkdirSync(join(runDir, 'attachments'), { recursive: true })
     mkdirSync(outDir, { recursive: true })
 
-    // attachments -> runs/<turn>/attachments/
-    const attachments: string[] = []
-    for (const a of req.attachments) {
-      try {
-        if (!isAbsolute(a.path) || !statSync(a.path).isFile()) continue
-        let name = basename(a.name || a.path).replace(/[/\\]/g, '_') || 'file'
-        while (existsSync(join(runDir, 'attachments', name))) name = `${basename(name, extname(name))}-${uid().slice(0, 4)}${extname(name)}`
-        const dst = join(runDir, 'attachments', name)
-        copyFileSync(a.path, dst)
-        attachments.push(dst)
-      } catch (e) {
-        this.log(req.driver.profileId, `[attachments] skip ${a.path}: ${String(e)}\n`)
-      }
-    }
+    const { attachments, archivedAttachments, serializedText, body } = this.resolveAttachments(req, cwd, runDir)
 
     let resolveDone!: () => void
     const done = new Promise<void>((resolve) => { resolveDone = resolve })
     const checkpoint = this.checkpoints.begin(req.threadId, req.turnId, cwd).catch(() => {})
     const turn: Turn = {
-      req, cwd, runDir, outDir, attachments, done, resolveDone, checkpoint,
+      req, cwd, runDir, outDir, attachments, serializedText, done, resolveDone, checkpoint,
       steps: [], idx: 0, current: null, stopped: false, paused: null, retryBudget: MAX_RETRIES, counter: 0, named: []
     }
     this.turns.set(req.threadId, turn)
-    this.emit({ kind: 'turn-start', threadId: req.threadId, turnId: req.turnId, cwd })
+    this.emit({ kind: 'turn-start', threadId: req.threadId, turnId: req.turnId, cwd,
+      ...(archivedAttachments.length && { archivedAttachments }) })
 
     const driver = req.driver
     if (req.mode === 'handoff') {
@@ -396,13 +386,14 @@ export class Orchestrator {
       void checkpoint.then(() => this.next(turn))
       return
     }
-    const tasks = mentionTasks(req)
+    const routed = { ...req, text: body }
+    const tasks = mentionTasks(routed)
     const others = tasks.filter((t) => t.ref.profileId !== driver.profileId)
-    if (!others.length || !startsWithMention(req)) {
+    if (!others.length || !startsWithMention(routed)) {
       // the driver goes first; accounts named mid-sentence are its collaborators for this turn
       turn.named = others.map((t) => t.ref).filter((r, i, a) => a.findIndex((x) => x.profileId === r.profileId) === i)
       const multi = turn.named.length > 0 || req.participants.filter((p) => p !== driver.profileId && hasProfile(p)).length > 0
-      this.add(turn, { profileId: driver.profileId, model: driver.model, task: req.text, kind: 'own', dispatchedBy: null, allowDispatch: multi })
+      this.add(turn, { profileId: driver.profileId, model: driver.model, task: serializedText, kind: 'own', dispatchedBy: null, allowDispatch: multi })
     } else {
       // the user named who does what, in order: nobody "dispatched" these steps
       for (const t of tasks)
@@ -418,6 +409,66 @@ export class Orchestrator {
     }
     this.writeTask(turn)
     void checkpoint.then(() => this.next(turn))
+  }
+
+  private resolveAttachments(req: RunRequest, cwd: string, runDir: string) {
+    const archivedAttachments: { from: string; to: string }[] = []
+    const files = new Map<string, ResolvedRunAttachment>()
+    const references: ResolvedRunAttachment[] = []
+    const realFile = (path: string | undefined): string | null => {
+      if (!path || !isAbsolute(path)) return null
+      try {
+        const real = realpathSync(path)
+        return statSync(real).isFile() ? real : null
+      } catch {
+        return null
+      }
+    }
+    if (!req.attachments.length) return { attachments: [], archivedAttachments, serializedText: req.text, body: req.text }
+    const realCwd = realpathSync(cwd)
+    const stageDir = join(app.getPath('userData'), 'staging')
+    let staging = stageDir
+    try { staging = realpathSync(stageDir) } catch { /* No in-memory uploads have been staged yet. */ }
+
+    for (const input of req.attachments) {
+      if (!isAbsolute(input.path) || input.path.includes('\0')) continue
+      const real = realFile(input.path) ?? realFile(input.fallbackPath)
+      const key = real ?? resolve(input.path)
+      const label = attachmentRefLabel(input)
+      let attachment = files.get(key)
+      if (!attachment) {
+        let absPath = key
+        const staged = !!real && isInside(staging, real)
+        const root = real ? realCwd : cwd
+        const localPath = isInside(root, key) ? relative(root, key).split(sep).join('/') : undefined
+        // Re-sending a staged upload uses the retained archive as an external attachment.
+        const archived = localPath && /^\.agentswitch\/runs\/[^/]+\/attachments\//.test(localPath)
+        const relativePath = staged || archived ? undefined : localPath
+        if (staged) {
+          try {
+            let name = basename(input.name || key).replace(/[/\\\x00-\x1f]/g, '_') || 'file'
+            if (name === '.' || name === '..') name = 'file'
+            let target = join(runDir, 'attachments', name)
+            while (existsSync(target)) {
+              target = join(runDir, 'attachments', `${basename(name, extname(name))}-${uid().slice(0, 4)}${extname(name)}`)
+            }
+            copyFileSync(key, target, constants.COPYFILE_EXCL)
+            absPath = target
+          } catch (error) {
+            this.log(req.driver.profileId, `[attachments] archive ${input.path}: ${String(error)}\n`)
+          }
+        }
+        attachment = {
+          name: input.name, absPath, promptPath: relativePath || absPath, scope: relativePath ? 'workspace' : 'external',
+          relativePath, refLabel: label, isImage: !!real && input.isImage
+        }
+        files.set(key, attachment)
+      }
+      if (attachment.absPath !== key) archivedAttachments.push({ from: input.path, to: attachment.absPath })
+      references.push({ ...attachment, name: input.name, refLabel: label, relativePath: input.relativePath ?? attachment.relativePath })
+    }
+    const { text: serializedText, body } = serializePromptWithAttachments(req.text, references)
+    return { attachments: [...files.values()], archivedAttachments, serializedText, body }
   }
 
   /** Turns still in flight (a reloaded window re-attaches to them instead of marking them stopped). */
@@ -514,8 +565,8 @@ export class Orchestrator {
       turnId: turn.req.turnId,
       threadId: turn.req.threadId,
       cwd: turn.cwd,
-      userText: turn.req.text,
-      attachments: turn.attachments,
+      userText: turn.serializedText,
+      attachments: turn.attachments.map((a) => a.absPath),
       outputsDir: turn.outDir,
       steps: turn.steps.map((s) => ({
         n: s.n,
@@ -622,7 +673,7 @@ export class Orchestrator {
     if (recap) parts.push(resuming ? '## 你上次回复之后的对话（节选）' : '## 之前的对话（节选）', recap, '')
     if (turn.req.mode === 'handoff') {
       const to = turn.req.handoffTo && hasProfile(turn.req.handoffTo) ? getConfig(turn.req.handoffTo).name : '另一个模型'
-      parts.push('## 用户消息', turn.req.text, '', '## 你的任务', handoffPrompt(to))
+      parts.push('## 用户消息', turn.serializedText, '', '## 你的任务', handoffPrompt(to))
       return stepPrompt(parts, sys, turnLines)
     }
     if (turn.req.handoffDoc) {
@@ -635,7 +686,6 @@ export class Orchestrator {
       if (doc.length > HANDOFF_DOC_CHARS) doc = doc.slice(0, HANDOFF_DOC_CHARS) + '\n…（已截断，完整内容见文件）'
       parts.push(`## 交接文档（前一个模型写给你的，文件：${turn.req.handoffDoc}）`, doc || '（文件读取失败，请自行打开上面的路径）', '', '请先阅读交接文档，在此基础上继续。', '')
     }
-    if (turn.attachments.length) parts.push('## 用户附件（绝对路径，可直接读取查看）', ...turn.attachments.map((p) => `- ${p}`), '')
     const prev = turn.steps.slice(0, turn.steps.indexOf(step)).filter((s) => s.status === 'done')
     if (prev.length) {
       parts.push('## 本轮前序步骤的结果')
@@ -656,7 +706,7 @@ export class Orchestrator {
       parts.push(`## 引用的消息（来自 ${turn.req.quote.author}）`, quoted, '')
     }
     if (step.kind === 'own') {
-      parts.push('## 用户消息', turn.req.text)
+      parts.push('## 用户消息', turn.serializedText)
       if (step.allowDispatch && turn.named.length)
         parts.push(
           '',
@@ -670,12 +720,12 @@ export class Orchestrator {
     } else if (step.kind === 'summary')
       parts.push(
         '## 用户原始消息',
-        turn.req.text,
+        turn.serializedText,
         '',
         '## 你的任务',
         '以上是本轮其他模型的结果，现在轮到你收尾。如果用户的要求里还有由你负责的后续步骤（例如审核产出、修改文件、导入或落盘到项目中），请先实际完成这些操作（可以读写文件、按授权执行命令）；产出不合格时可以自己修正。完成后用简短几行向用户汇总结论和最终文件位置；不要重复全文，不要再调度。'
       )
-    else parts.push('## 用户原始消息', turn.req.text, '', '## 你的任务', step.task)
+    else parts.push('## 用户原始消息', turn.serializedText, '', '## 你的任务', step.task)
     if (step.feedback) parts.push('', `## 验收打回意见（第 ${step.retry} 次重做）`, step.feedback, '请据此修改你的产出。')
     // Replies the user reads as the answer can also carry hidden title, suggestion and progress.
     if (step.kind === 'own' || step.kind === 'summary')
@@ -823,7 +873,8 @@ export class Orchestrator {
         } : undefined,
         system,
         cwd: turn.cwd,
-        images: caps.supportsImageInput ? turn.attachments.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [],
+        attachments: turn.attachments,
+        images: caps.supportsImageInput ? turn.attachments.filter((a) => a.isImage && /\.(png|jpe?g|gif|webp)$/i.test(a.absPath)).map((a) => a.absPath) : [],
         resume,
         outDir: turn.outDir,
         threadHistory

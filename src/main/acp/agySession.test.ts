@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -80,7 +80,7 @@ describe('agy ACP cache diagnostics', () => {
 
 type Message = { id?: number; method?: string; params?: any; result?: unknown; error?: { code: number; message: string } }
 
-function fakeAgy(opts: Parameters<typeof startAcpProcess>[0], stdio?: boolean) {
+function fakeAgy(opts: Parameters<typeof startAcpProcess>[0], stdio?: boolean, image = false) {
   const stdin = new PassThrough()
   const stdout = new PassThrough()
   const sent: Message[] = []
@@ -108,6 +108,7 @@ function fakeAgy(opts: Parameters<typeof startAcpProcess>[0], stdio?: boolean) {
     rpc, exited, terminate, get alive() { return alive },
     initializeResult: { protocolVersion: 1, agentCapabilities: {
       _meta: { antigravity: { systemPrompt: { append: true } } },
+      promptCapabilities: { image },
       ...(stdio === undefined ? {} : { mcpCapabilities: { stdio } })
     } }
   }
@@ -153,6 +154,44 @@ describe('agy ACP runs', () => {
     cli.send({ id: create.id, result: { sessionId } })
     return cli.request('session/prompt')
   }
+
+  it.each([true, false])('pairs accepted images with their prompt paths (image capability %s)', async (image) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agentswitch-acp-images-'))
+    try {
+      const one = join(cwd, 'first image.png')
+      const two = join(cwd, 'other.png')
+      const oversized = join(cwd, 'big.png')
+      writeFileSync(one, Buffer.from([1, 2, 3]))
+      writeFileSync(two, Buffer.from([4, 5, 6]))
+      writeFileSync(oversized, '')
+      truncateSync(oversized, 5 * 1024 * 1024 + 1)
+      vi.mocked(startAcpProcess).mockImplementation(async (opts) => {
+        server = fakeAgy(opts, undefined, image)
+        return server.process
+      })
+      const images = [one, two, oversized]
+      const paths = ['first image.png', two, 'big.png']
+      const text = 'Compare `first image.png` to `' + two + '`.\n\n附带文件：\n- `big.png`'
+      const { run, cli } = await begin({ cwd, prompt: text, images, attachments: images.map((absPath, i) => ({
+        absPath, name: paths[i], promptPath: paths[i], refLabel: paths[i], scope: i === 1 ? 'external' : 'workspace', isImage: true
+      })) })
+      const prompt = await sendPrompt(cli)
+      const blocks = prompt.params.prompt
+      expect(blocks[0]).toEqual({ type: 'text', text })
+      if (image) {
+        expect(blocks.slice(1)).toEqual([
+          { type: 'text', text: '[Image attachment: `first image.png`]' },
+          { type: 'image', mimeType: 'image/png', data: 'AQID' },
+          { type: 'text', text: '[Image attachment: `' + two + '`]' },
+          { type: 'image', mimeType: 'image/png', data: 'BAUG' }
+        ])
+      } else expect(blocks).toHaveLength(1)
+      cli.send({ id: prompt.id, result })
+      await run.done
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  })
 
   const options = [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }, {
     optionId: 'always', name: 'Always allow', kind: 'allow_always',

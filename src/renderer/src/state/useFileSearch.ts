@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react'
-import type { FileSearchResponse } from '@shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import fuzzysort from 'fuzzysort'
+import type { Attachment } from '@shared/chat'
+import { attachmentDedupKey, attachmentRefLabel, COMPOSER_ATTACHMENT_LIMIT } from '@shared/fileReferences'
+import { joinPosixRelative } from '@shared/fileResolve'
+import type { FileSearchItem, FileSearchResponse } from '@shared/types'
 import type { FileTrigger } from '../lib/fileMention'
 
 interface Search {
@@ -12,7 +16,11 @@ interface SearchResult extends Search {
   data: FileSearchResponse | null
 }
 
-export function useFileSearch(cwd: string | null, trigger: FileTrigger | null) {
+export type ComposerFileCandidate =
+  | (FileSearchItem & { kind: 'workspace' })
+  | { kind: 'added'; attachment: Attachment; name: string; indexes: number[]; dir: string; aliasIndexes: number[] }
+
+export function useFileSearch(cwd: string | null, trigger: FileTrigger | null, attachments: readonly Attachment[]) {
   const [result, setResult] = useState<SearchResult | null>(null)
   const [refresh, setRefresh] = useState<Search | null>(null)
   useEffect(() => {
@@ -23,7 +31,7 @@ export function useFileSearch(cwd: string | null, trigger: FileTrigger | null) {
     const force = refresh?.cwd === cwd && refresh.trigger === trigger
     let cancelled = false
     const run = () => {
-      void window.agentswitch.files.search({ cwd, query: trigger.query, refresh: force }).then(
+      void window.agentswitch.files.search({ cwd, query: trigger.query, limit: 20 + COMPOSER_ATTACHMENT_LIMIT, refresh: force }).then(
         (data) => { if (!cancelled) setResult({ cwd, trigger, refresh, data }) },
         () => { if (!cancelled) setResult({ cwd, trigger, refresh, data: null }) }
       )
@@ -37,10 +45,34 @@ export function useFileSearch(cwd: string | null, trigger: FileTrigger | null) {
     }
   }, [cwd, trigger, refresh])
 
-  const visible = trigger && result?.cwd === cwd && result.trigger.start === trigger.start ? result : null
-  const current = visible?.trigger === trigger && visible?.refresh === refresh ? visible : null
+  const current = result?.cwd === cwd && result?.trigger === trigger && result.refresh === refresh ? result : null
+  const query = trigger?.query
+  const items = useMemo<ComposerFileCandidate[]>(() => {
+    if (query === undefined) return []
+    const indexed = attachments.filter((a) => a.path || a.fallbackPath || (cwd && a.relativePath))
+      .map((attachment) => ({ attachment, name: attachment.name, label: attachmentRefLabel(attachment) }))
+    const added = query
+      ? fuzzysort.go(query, indexed, { keys: ['name', 'label'], threshold: 0, limit: 0 }).map((match) => ({
+          ...match.obj, indexes: [...match[0].indexes], aliasIndexes: [...match[1].indexes]
+        }))
+      : indexed.map((item) => ({ ...item, indexes: [], aliasIndexes: [] }))
+    const candidates: ComposerFileCandidate[] = added.map(({ attachment, name, label, indexes, aliasIndexes }) => ({
+      kind: 'added', attachment, name, indexes, dir: label === name ? attachment.path ?? '' : label,
+      aliasIndexes: label === name ? [] : aliasIndexes
+    }))
+    if (!cwd || !current?.data) return candidates
+    const maxVisible = candidates.length + 20
+    const keys = new Set(attachments.map((att) => attachmentDedupKey(att, cwd)))
+    for (const item of current.data.items) {
+      const path = joinPosixRelative(cwd, item.relPath, { literalPosix: true })
+      if (!path || keys.has(attachmentDedupKey({ id: '', path }, cwd))) continue
+      candidates.push({ ...item, kind: 'workspace' })
+      if (candidates.length === maxVisible) break
+    }
+    return candidates
+  }, [query, attachments, current, cwd])
   return {
-    items: visible?.data?.items ?? [],
+    items,
     loading: !!cwd && !!trigger && !current,
     failed: current?.data === null,
     truncated: !!current?.data?.truncated,
