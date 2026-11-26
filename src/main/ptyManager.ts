@@ -84,8 +84,8 @@ export class PtyManager {
   }
 
   /** Kill and drop all scrollback for a session (account deleted). */
-  forget(id: SessionId): void {
-    this.kill(id)
+  forget(id: SessionId, signal?: string): void {
+    this.kill(id, signal)
     const b = this.buffers.get(id)
     if (b?.scanTimer) clearTimeout(b.scanTimer)
     this.buffers.delete(id)
@@ -184,14 +184,14 @@ export class PtyManager {
     }
   }
 
-  kill(id: SessionId): void {
+  kill(id: SessionId, signal?: string): void {
     const s = this.sessions.get(id)
     if (!s) return
     this.sessions.delete(id)
     if (s.alive) {
       s.alive = false
       try {
-        s.proc.kill()
+        s.proc.kill(signal)
       } catch {
         /* already gone */
       }

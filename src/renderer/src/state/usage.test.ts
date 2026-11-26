@@ -28,6 +28,8 @@ function makeProfile(id: string, status: ProfileState['status'], kind: ProfileSt
     status,
     binaryPath: '/usr/local/bin/cli',
     loggedIn: status !== 'not_logged_in' && status !== 'uninstalled',
+    isManagedDir: true,
+    isGlobalDir: false,
     resolvedConfigDir: `/tmp/${id}`,
     sessionStoreKey: `${kind}:/tmp/${id}`,
     sessionMode: null,
@@ -138,5 +140,68 @@ describe('account quota card list and rate-limit state', () => {
     const idlest = idlestAccounts([p1, p2, p3], snap)
     expect(idlest.has('claude-1')).toBe(false)
     expect(idlest.has('claude-2')).toBe(true)
+  })
+})
+
+function quotaSnapshot(accounts: UsageSnapshot['accounts']): UsageSnapshot {
+  return {
+    accounts, backfill: 'done', claudeDays: 30, daily: [], models: {}, customPrices: {},
+    pricesAt: '', pricesLive: false, pricesSyncedAt: null, updatedAt: Date.now()
+  }
+}
+
+function withWindows(five: number, seven: number, fiveReset: number | null = null, sevenReset: number | null = null): AccountUsage {
+  return makeAccountUsage({
+    quota: {
+      fiveHour: { percent: five, resetsAt: fiveReset, minutes: 300 },
+      sevenDay: { percent: seven, resetsAt: sevenReset, minutes: 10080 },
+      limited: false, source: 'claude-oauth', fetchedAt: Date.now(), plan: null
+    }
+  })
+}
+
+describe('idlest subscription account', () => {
+  it.each(['claude', 'codex', 'gemini'] as const)('filters exhausted and expired %s accounts', async (kind) => {
+    stubUsageBridge()
+    const { idlestAccounts, quotaLevel, recommendSwitch } = await import('./usage')
+    const a = makeProfile('a', 'idle', kind)
+    const b = makeProfile('b', 'idle', kind)
+    expect(idlestAccounts([a, b], quotaSnapshot({ a: withWindows(59, 100), b: withWindows(100, 25) }))).toEqual(new Set())
+    const good = withWindows(40, 70)
+    expect(idlestAccounts([a, b], quotaSnapshot({ a: withWindows(59, 100), b: good }))).toEqual(new Set(['b']))
+    const expired = { ...withWindows(2, 5), quotaErrorKind: 'auth_expired' as const }
+    const snap = quotaSnapshot({ a: expired, b: good })
+    expect(idlestAccounts([a, b], snap)).toEqual(new Set(['b']))
+    expect(quotaLevel(a, expired)).toEqual({ level: 'warn', reason: 'usage.authExpiredBadge' })
+    expect(recommendSwitch(b, [a, b], snap)).toBeNull()
+  })
+
+  it('sorts by bottleneck, five-hour use, then bottleneck reset', async () => {
+    stubUsageBridge()
+    const { idlestAccounts } = await import('./usage')
+    const profiles = [makeProfile('a', 'idle'), makeProfile('b', 'idle')]
+    const pick = (a: AccountUsage, b: AccountUsage) => idlestAccounts(profiles, quotaSnapshot({ a, b }))
+    const now = Date.now()
+    expect(pick(withWindows(5, 80), withWindows(40, 60))).toEqual(new Set(['b']))
+    expect(pick(withWindows(40, 60), withWindows(30, 60))).toEqual(new Set(['b']))
+    expect(pick(withWindows(40, 60, now + 1000, now + 10_000), withWindows(40, 60, now + 10_000, now + 5000)))
+      .toEqual(new Set(['b']))
+    expect(pick(withWindows(40, 60), withWindows(40, 60, null, now + 5000))).toEqual(new Set(['b']))
+  })
+
+  it('requires multiple subscription profiles and at least one live quota window for the winner', async () => {
+    stubUsageBridge()
+    const { idlestAccounts, quotaUse } = await import('./usage')
+    const a = makeProfile('a', 'idle')
+    const b = makeProfile('b', 'idle')
+    const expired = withWindows(5, 10, Date.now() - 1000, Date.now() - 1000)
+    const good = withWindows(70, 80)
+    const snap = quotaSnapshot({ a: expired, b: good })
+    expect(quotaUse(expired)).toBeNull()
+    expect(idlestAccounts([a, b], snap)).toEqual(new Set(['b']))
+    expect(idlestAccounts([b], snap)).toEqual(new Set())
+    expect(idlestAccounts([{ ...a, apiKey: { provider: 'official' } }, b], snap)).toEqual(new Set())
+    const error = { ...good, quotaErrorKind: 'error' as const }
+    expect(idlestAccounts([a, b], quotaSnapshot({ a: expired, b: error }))).toEqual(new Set())
   })
 })

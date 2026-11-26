@@ -12,6 +12,7 @@ import {
 import { KIND_META } from '../lib/ui'
 import { canUseOAuthLogin } from '@shared/providerCapabilities'
 import { t } from './i18n'
+import { forgetAccountModels, loadModels } from './models'
 
 export type Page = 'workbench' | 'engines' | 'usage'
 export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'developer' | 'shortcuts' | 'about'
@@ -146,11 +147,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSnap(s)
       void window.agentswitch.sys.info().then(setInfo) // shell env may have refreshed
     })
+    const offLogin = window.agentswitch.profiles.onLoginSuccess(({ profileId }) => {
+      forgetAccountModels(profileId)
+      void loadModels(profileId)
+    })
     // Logins/installs happen out-of-band (CLIs write files) -> re-check on focus.
     const onFocus = () => void refresh()
     window.addEventListener('focus', onFocus)
     return () => {
       off()
+      offLogin()
       window.removeEventListener('focus', onFocus)
     }
   }, [refresh])
@@ -217,9 +223,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!p) return
       const ok = await confirm({
         title: t('acct.removeTitle', { name: p.name }),
-        message: p.imported
-          ? t('acct.removeImported', { dir: p.configDir })
-          : t(canUseOAuthLogin(p.kind) ? 'acct.removeOwn' : 'reasonix.removeManaged'),
+        message: p.kind === 'reasonix' && !p.imported
+          ? t('reasonix.removeManaged')
+          : p.isManagedDir ? t('acct.removeOwn') : t('acct.removeImported', { dir: p.resolvedConfigDir }),
         confirmLabel: t('acct.removeConfirm'),
         destructive: true
       })
@@ -227,7 +233,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (loginId === id) setLoginId(null)
       if (configId === id) setConfigId(null)
       await window.agentswitch.profiles.remove(id)
-      toast({ kind: 'success', title: t('acct.removed', { name: p.name }) })
+      forgetAccountModels(id)
+      toast({
+        kind: 'success',
+        title: t('acct.removed', { name: p.name }),
+        desc: canUseOAuthLogin(p.kind) && !p.isManagedDir ? t('acct.removedGlobalHint') : undefined
+      })
     },
     [profiles, confirm, toast, loginId, configId]
   )

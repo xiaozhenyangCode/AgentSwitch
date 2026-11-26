@@ -3,6 +3,7 @@ import { JsonRpc, type RpcNotificationHandler, type RpcRequestHandler } from './
 import { sanitize, StderrTail } from './stderr'
 
 export const ACP_SETUP_TIMEOUT = 90_000
+export const ACP_FORCE_TERMINATION = Symbol()
 
 interface InitializeResult {
   protocolVersion?: number
@@ -30,7 +31,7 @@ export interface AcpProcess {
   rpc: JsonRpc
   initializeResult: InitializeResult
   exited: Promise<string>
-  terminate: () => void
+  terminate: (force?: boolean) => void
   readonly alive: boolean
 }
 
@@ -42,25 +43,28 @@ export async function startAcpProcess(opts: StartOptions): Promise<AcpProcess> {
   const rpc = new JsonRpc(child.stdin, child.stdout, log, opts.onRequest, opts.onNotification)
 
   let alive = true
-  let terminating = false
+  let terminating: NodeJS.Signals | undefined
   let finished = false
   let exitReason = ''
   let drainTimer: NodeJS.Timeout | undefined
   let resolveExit!: (reason: string) => void
   const exited = new Promise<string>((resolve) => { resolveExit = resolve })
 
-  const terminate = (): void => {
-    if (terminating) return
-    terminating = true
+  const terminate = (force = false): void => {
+    const signal = force ? 'SIGKILL' : 'SIGTERM'
+    if (terminating && (!force || terminating === signal)) return
+    terminating = signal
     alive = false
     const pid = child.pid
     if (!pid) return
     try {
-      process.kill(-pid, 'SIGTERM')
+      process.kill(-pid, signal)
     } catch {
       return
     }
+    if (force) return
     setTimeout(() => {
+      if (terminating === 'SIGKILL') return
       try {
         process.kill(-pid, 'SIGKILL')
       } catch {
@@ -68,6 +72,8 @@ export async function startAcpProcess(opts: StartOptions): Promise<AcpProcess> {
       }
     }, 1000).unref()
   }
+
+  const terminateOnAbort = () => terminate(opts.signal?.reason === ACP_FORCE_TERMINATION)
 
   const finish = (): void => {
     if (finished) return
@@ -79,7 +85,7 @@ export async function startAcpProcess(opts: StartOptions): Promise<AcpProcess> {
     log(`── ${exitReason}\n`)
     rpc.close(new Error(reason))
     resolveExit(reason)
-    opts.signal?.removeEventListener('abort', terminate)
+    opts.signal?.removeEventListener('abort', terminateOnAbort)
   }
 
   const exit = (reason: string): void => {
@@ -99,7 +105,7 @@ export async function startAcpProcess(opts: StartOptions): Promise<AcpProcess> {
     exit(`ACP exited (code ${code}${signal ? `, ${signal}` : ''})`)
     finish()
   })
-  opts.signal?.addEventListener('abort', terminate, { once: true })
+  opts.signal?.addEventListener('abort', terminateOnAbort, { once: true })
 
   try {
     const initializeResult = await rpc.request<InitializeResult>('initialize', {

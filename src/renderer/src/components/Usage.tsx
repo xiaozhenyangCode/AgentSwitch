@@ -226,16 +226,18 @@ const SectionTitle = ({ children }: { children: string }) => <h2 className="mt-8
 
 /** One account in the quota grid: 5h / 7d bars (or local stats when the CLI reports no quota). */
 function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
+  const { openLogin } = useApp()
   const snap = useUsage()
   const u = snap?.accounts[p.id]
   const level = quotaLevel(p, u)
+  const authExpired = u?.quotaErrorKind === 'auth_expired'
   const isErrorRateLimited = u?.quotaErrorKind === 'rate_limited'
   const isRateLimited = p.status === 'rate_limited' || isErrorRateLimited
   const limited = isRateLimited || level.level === 'danger'
   const notReadyBadge = p.status === 'uninstalled' || p.status === 'not_logged_in' ? accountBadge(p) : null
   const resetAt = u?.quotaErrorResetAt && u.quotaErrorResetAt > Date.now() ? u.quotaErrorResetAt : null
   const resetHint = resetAt ? t('usage.retryAfter', { time: fmtReset(resetAt) }) : null
-  const errText = [resetHint, u?.quotaError].filter(Boolean).join(' · ') || (p.status === 'rate_limited' ? t('usage.limited') : null)
+  const errText = authExpired ? null : [resetHint, u?.quotaError].filter(Boolean).join(' · ') || (p.status === 'rate_limited' ? t('usage.limited') : null)
   const errTone = isRateLimited ? 'bg-danger-soft/80 text-danger' : 'bg-warn-soft/70 text-warn'
   const limitedLabel =
     p.status === 'rate_limited'
@@ -248,18 +250,21 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
       <div className="flex min-w-0 items-center gap-2">
         <ProfileAvatar profile={p} size={22} />
         <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
-        {idlest && (
+        {idlest && !authExpired && (
           <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
             {t('usage.idlest')}
           </span>
         )}
-        {notReadyBadge ? (
+        {authExpired ? null : notReadyBadge ? (
           <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
         ) : limited ? (
           <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
         ) : null}
         <span className="flex-1" />
         <QuotaGroupChip u={u} model={p.defaultModel} />
+        {authExpired && (
+          <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-px text-[11px] font-medium text-warn">{t('usage.authExpiredBadge')}</span>
+        )}
       </div>
       {u?.quota ? (
         <>
@@ -268,6 +273,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
           </div>
           <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
             {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}
+            {authExpired && <> · {t('usage.localWeek')} {fmtTokens(tokenSum(u.week))}{u.week.costUsd > 0 && ` · ${fmtCost(u.week.costUsd)}`}</>}
           </div>
           {errText && (
             <div className={`mt-1.5 truncate rounded-md px-2 py-1 text-[11px] select-text ${errTone}`} title={errText}>
@@ -293,7 +299,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
               </div>
             </div>
           </div>
-          {errText ? (
+          {authExpired ? null : errText ? (
             <div className={`mt-2 rounded-lg px-2.5 py-1.5 text-[11.5px] leading-[17px] break-words select-text ${errTone}`}>
               {errText}
             </div>
@@ -301,6 +307,16 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
             <div className="mt-2 text-[11px] text-ink-3">{t(canUseSubscriptionQuota(p.kind, !!p.apiKey) ? 'usage.noQuotaNote' : 'apikey.noQuota')}</div>
           )}
         </>
+      )}
+      {authExpired && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-warn-soft px-2 py-1 text-[11px] text-warn" title={u?.quotaError ?? undefined}>
+          <span>{t('usage.authExpiredMsg')}</span>
+          {canUseSubscriptionQuota(p.kind, !!p.apiKey) && (
+            <button type="button" className="font-semibold underline underline-offset-2" onClick={() => openLogin(p.id)}>
+              {t('usage.reauth')}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )

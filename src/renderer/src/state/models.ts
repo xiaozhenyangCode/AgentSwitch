@@ -29,6 +29,12 @@ export function loadModels(id: ProfileId, refresh = false): Promise<ModelList | 
   return request
 }
 
+export function forgetAccountModels(id: ProfileId): void {
+  const hadList = lists.delete(id)
+  const wasLoading = loading.delete(id)
+  if (hadList || wasLoading) notify()
+}
+
 export function useModels(id: ProfileId | null | undefined): { list: ModelList | null; loading: boolean; refresh: () => void } {
   useSyncExternalStore(
     (cb) => {

@@ -66,7 +66,7 @@ export interface RunResult {
 
 export interface RunHandle {
   done: Promise<RunResult>
-  kill: () => void
+  kill: (force?: boolean) => void
 }
 
 export const RATE_LIMIT_RE = /rate[ _-]?limit(ed)?|usage limit|too many requests|quota exceeded|RESOURCE_EXHAUSTED/i
@@ -1341,14 +1341,25 @@ export function runAgent(spec: RunSpec, emit: Emit, onLog: (text: string) => voi
     if (stopped) active.kill()
     return active.done
   })
-  return { done, kill: () => { stopped = true; active.kill() } }
+  return { done, kill: (force) => { stopped = true; active.kill(force) } }
 }
 
 function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (text: string) => void): RunHandle {
   const bin = kindBinaryPath(cfg.kind)
   const reasonix = cfg.kind === 'reasonix'
   const managedHome = reasonix ? reasonixManagedProfilePath(cfg) : null
-  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, !reasonix && !spec.ephemeralProbe)
+  let env: NodeJS.ProcessEnv
+  try {
+    env = buildSpawnSpec(cfg.id, 'run', undefined, !reasonix && !spec.ephemeralProbe).env
+  } catch (err) {
+    return {
+      done: Promise.resolve({
+        ok: false, stopped: false, text: '', sessionId: spec.resume, model: spec.model,
+        error: err instanceof Error ? err.message : String(err), rateLimited: false
+      }),
+      kill: () => {}
+    }
+  }
   const startedAt = Date.now()
   const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =
@@ -1449,15 +1460,17 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
     else child.stdin!.end()
   })
 
-  const kill = (): void => {
+  const kill = (force = false): void => {
     stopped = true
     const c = child as ChildProcess | null
     if (!c?.pid || c.exitCode !== null) return
+    const signal = force ? 'SIGKILL' : 'SIGTERM'
     try {
-      process.kill(-c.pid, 'SIGTERM')
+      process.kill(-c.pid, signal)
     } catch {
-      c.kill('SIGTERM')
+      c.kill(signal)
     }
+    if (force) return
     killTimer = setTimeout(() => {
       try {
         process.kill(-c.pid!, 'SIGKILL')

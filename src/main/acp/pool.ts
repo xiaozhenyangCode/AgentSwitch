@@ -4,7 +4,7 @@ import type { ProfileId } from '@shared/types'
 import { t } from '../i18n'
 import { buildSpawnSpec, kindBinaryPath } from '../profiles'
 import { realHome } from '../shellEnv'
-import { startAcpProcess, type AcpProcess } from './acpProcess'
+import { ACP_FORCE_TERMINATION, startAcpProcess, type AcpProcess } from './acpProcess'
 import { JsonRpcError } from './jsonrpc'
 import { cancelledPermission, permissions, type PermissionReply } from './permissions'
 
@@ -162,14 +162,14 @@ class AcpPool {
     }
   }
 
-  retire(id: ProfileId, expected?: AcpConnection): void {
+  retire(id: ProfileId, expected?: AcpConnection, force = false): void {
     const entry = this.entries.get(id)
     if (!entry || (expected && entry.connection !== expected)) return
     this.entries.delete(id)
     clearTimeout(entry.timer)
     if (entry.connection) permissions.cancelAll((request) => request.connection === entry.connection)
-    entry.abort.abort()
-    entry.connection?.process.terminate()
+    entry.abort.abort(force ? ACP_FORCE_TERMINATION : undefined)
+    entry.connection?.process.terminate(force)
   }
 
   /** Like retire(), but never interrupts a running turn: an active process is restarted after it goes idle. */

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { AccountUsage, PriceRate, ProfileId, ProfileState, QuotaGroup, QuotaWindow, Usage, UsageSnapshot } from '@shared/types'
-import { getProviderCapabilities } from '@shared/providerCapabilities'
+import { canUseSubscriptionQuota, getProviderCapabilities } from '@shared/providerCapabilities'
 import { EFFORT_SUFFIX_RE, splitSpec } from '@shared/modelSpec'
 import { isReady } from '../lib/ui'
 import { getSettings } from './settings'
@@ -110,6 +110,7 @@ export type QuotaLevel = 'ok' | 'warn' | 'danger'
 export function quotaLevel(p: ProfileState | undefined, u: AccountUsage | undefined, model?: string | null): { level: QuotaLevel; reason: string | null } {
   if (!p) return { level: 'ok', reason: null }
   if (!getProviderCapabilities(p.kind).supportsUsageQuota) return p.status === 'rate_limited' ? { level: 'danger', reason: t('usage.limited') } : { level: 'ok', reason: null }
+  if (u?.quotaErrorKind === 'auth_expired') return { level: 'warn', reason: t('usage.authExpiredBadge') }
   const q = u?.quota
   const eff = effectiveQuota(u, model ?? p.defaultModel)
   const limited =
@@ -136,6 +137,7 @@ export function recommendSwitch(current: ProfileState, profiles: ProfileState[],
     .filter((p) => p.id !== current.id && p.kind === current.kind && isReady(p) && p.status !== 'rate_limited')
     .map((p) => {
       const u = snap?.accounts[p.id]
+      if (u?.quotaErrorKind === 'rate_limited' || u?.quotaErrorKind === 'auth_expired') return null
       const q = u?.quota
       // same model group as what the user is running now (agy), else the account's windows
       const eff = effectiveQuota(u, model ?? p.defaultModel)
@@ -178,27 +180,44 @@ export const tokenSum = (t: { input: number; output: number; cacheRead: number; 
 
 export const usageOf = (snap: UsageSnapshot | null, id: ProfileId): AccountUsage | undefined => snap?.accounts[id]
 
-/** Highest quota use across the live 5h / 7d windows (null: account reports no quota). */
+/** Highest quota use across the live 5h / 7d windows. */
 export function quotaUse(u: AccountUsage | undefined, model?: string | null): number | null {
-  if (!u?.quota) return null
   const eff = effectiveQuota(u, model)
-  return Math.max(liveWindow(eff.fiveHour)?.percent ?? 0, liveWindow(eff.sevenDay)?.percent ?? 0)
+  const five = liveWindow(eff.fiveHour)
+  const seven = liveWindow(eff.sevenDay)
+  return five || seven ? Math.max(five?.percent ?? 0, seven?.percent ?? 0) : null
 }
 
-/**
- * Per vendor, the ready account with the most headroom (lowest quota use, not rate limited).
- * Only marked when the vendor has at least two ready accounts with quota data.
- */
+export function isAccountQuotaAvailable(p: ProfileState, u: AccountUsage | undefined, model: string | null = p.defaultModel): boolean {
+  if (!isReady(p) || !canUseSubscriptionQuota(p.kind, !!p.apiKey) || !u?.quota || u.quotaErrorKind) return false
+  const eff = effectiveQuota(u, model)
+  if (u.quota.limited && !eff.group && Date.now() - u.quota.fetchedAt < 6 * 3600_000) return false
+  const use = quotaUse(u, model)
+  return use !== null && use < 100
+}
+
+/** Per vendor with multiple subscription accounts, choose the available account with the most headroom. */
 export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | null): Set<ProfileId> {
   const out = new Set<ProfileId>()
-  for (const kind of new Set(profiles.map((p) => p.kind))) {
-    const cands = profiles
-      .filter((p) => p.kind === kind && isReady(p) && p.status !== 'rate_limited' && snap?.accounts[p.id]?.quotaErrorKind !== 'rate_limited')
-      .map((p) => ({ p, use: quotaUse(snap?.accounts[p.id], p.defaultModel) }))
-      .filter((x): x is { p: ProfileState; use: number } => x.use !== null)
-    if (cands.length < 2) continue
-    cands.sort((a, b) => a.use - b.use)
-    out.add(cands[0].p.id)
+  const subscriptions = profiles.filter((p) => canUseSubscriptionQuota(p.kind, !!p.apiKey))
+  for (const kind of new Set(subscriptions.map((p) => p.kind))) {
+    const accounts = subscriptions.filter((p) => p.kind === kind)
+    if (accounts.length < 2) continue
+    const candidates = accounts.flatMap((p) => {
+      const u = snap?.accounts[p.id]
+      if (!isAccountQuotaAvailable(p, u)) return []
+      const eff = effectiveQuota(u, p.defaultModel)
+      const five = liveWindow(eff.fiveHour)
+      const seven = liveWindow(eff.sevenDay)
+      const fiveUse = five?.percent ?? 0
+      const sevenUse = seven?.percent ?? 0
+      const fiveReset = five?.resetsAt ?? Infinity
+      const sevenReset = seven?.resetsAt ?? Infinity
+      const reset = fiveUse === sevenUse ? Math.min(fiveReset, sevenReset) : fiveUse > sevenUse ? fiveReset : sevenReset
+      return [{ id: p.id, use: Math.max(fiveUse, sevenUse), fiveUse, reset }]
+    })
+    candidates.sort((a, b) => a.use - b.use || a.fiveUse - b.fiveUse || a.reset - b.reset)
+    if (candidates[0]) out.add(candidates[0].id)
   }
   return out
 }

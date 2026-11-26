@@ -21,6 +21,8 @@ function makeProfile(status: ProfileStatus): ProfileState {
     status,
     binaryPath: status === 'uninstalled' ? null : '/usr/local/bin/claude',
     loggedIn: status !== 'uninstalled' && status !== 'not_logged_in',
+    isManagedDir: true,
+    isGlobalDir: false,
     resolvedConfigDir: '/tmp/.claude',
     sessionStoreKey: '/tmp/.claude',
     sessionMode: status === 'running' ? 'run' : null,

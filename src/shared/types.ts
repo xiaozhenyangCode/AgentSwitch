@@ -293,7 +293,7 @@ export interface DailyUsage extends UsageTotals {
   model: string
 }
 
-export type QuotaErrorKind = 'rate_limited' | 'error'
+export type QuotaErrorKind = 'rate_limited' | 'auth_expired' | 'error'
 
 export interface AccountUsage {
   today: UsageTotals
@@ -545,8 +545,10 @@ export interface ProfileState extends ProfileConfig {
   status: ProfileStatus
   binaryPath: string | null
   loggedIn: boolean
-  /** configDir with `~` expanded. */
+  /** Effective directory after applying the account environment and expanding `~`. */
   resolvedConfigDir: string
+  isManagedDir: boolean
+  isGlobalDir: boolean
   /** Canonical key (`${kind}:${realpath(sessionsDir)}`) for detecting accounts that share native CLI sessions. */
   sessionStoreKey: string
   /** Mode of the live pty session, if any. */

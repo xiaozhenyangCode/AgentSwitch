@@ -1,10 +1,9 @@
 import { app, net } from 'electron'
-import { createHash } from 'node:crypto'
-import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, OnlinePriceSource, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaErrorKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { codexRolloutEventModel, runAgent } from './agentRunner'
 import { codexConfigDir, codexDefaultModel, readCodexConfig, resolveRunModel } from './models'
@@ -13,9 +12,10 @@ import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHisto
 import builtinPrices from './prices.builtin.json'
 import { cleanRate, costOf, findRate, isLong, mergePriceTables, parseLiteLLM, PRICE_SOURCES, refreshPriceCache, type Match, type PriceCache, type PriceCacheEntry, type PriceFetch, type PriceTable, type PriceTables } from './pricing'
 import { claudeSessionLog } from './usageDelta'
-import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
+import { buildSpawnSpec, claudeCredentialService, clearProfileKeychainCache, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs, resolveProfileDir, safeRealpath } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
-import { getBaseEnv, realHome } from './shellEnv'
+import { getBaseEnv } from './shellEnv'
+import { authExpired, oauthCredentialFile, OAUTH_AUTH_ERROR_RE, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type OAuthCredentialStore, type QuotaAttempt, type RefreshResult } from './oauthQuotaAuth'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
@@ -440,7 +440,15 @@ export function classifyQuotaError(input: {
     .filter((v) => v !== undefined && v !== null)
     .map((v) => String(v))
     .join(' ')
-  const isRateLimited = input.status === 429 || RATE_LIMIT_RE.test(message) || RATE_LIMIT_RE.test(codeHints)
+  const statusHint = /\b(?:HTTP(?:\/[\d.]+)?|status(?: code)?)[:\s]+([45]\d{2})\b/i.exec(rawMsg)?.[1]
+  const bodyStatus = [bodyErr?.code, bodyErr?.status, bodyObj?.code, bodyObj?.status, bodyData?.code]
+    .map(Number).find((value) => value >= 400 && value < 600)
+  const status = input.status ?? bodyStatus ?? (statusHint ? Number(statusHint) : 0)
+  const serverError = status >= 500
+  const isAuth = status === 401 || !serverError &&
+    OAUTH_AUTH_ERROR_RE.test([rawMsg, codeHints, bodyObj?.error, bodyErr?.message, bodyData?.message].join(' '))
+  const isRateLimited = status === 429 || /\b429\b/.test(codeHints) ||
+    (!isAuth && !serverError && (RATE_LIMIT_RE.test(rawMsg) || RATE_LIMIT_RE.test(codeHints)))
 
   let resetAt: number | null = null
   const hdrs: Record<string, string> = {}
@@ -506,7 +514,7 @@ export function classifyQuotaError(input: {
     }
   }
 
-  return { kind: isRateLimited ? 'rate_limited' : 'error', message, resetAt }
+  return { kind: isRateLimited ? 'rate_limited' : isAuth ? 'auth_expired' : 'error', message, resetAt }
 }
 
 const quotaErrors: Record<ProfileId, QuotaErrorInfo> = {}
@@ -691,7 +699,7 @@ export function recordQuota(
   const prev = quotas[profileId]
   if (prev && prev.fetchedAt >= at) return
   quotas[profileId] = { ...q, fetchedAt: at, source }
-  if (!opts?.preserveError) delete quotaErrors[profileId]
+  if (!opts?.preserveError && quotaErrors[profileId]?.kind !== 'auth_expired') delete quotaErrors[profileId]
   if (q.limited) stats.limitedAt[profileId] = at
   changed()
 }
@@ -745,8 +753,8 @@ function codexWindow(w: any): QuotaWindow | null {
 
 /** Latest rate_limits any rollout of this CODEX_HOME recorded (zero API calls). */
 export function refreshCodexQuota(profileId: ProfileId, preserveError = false): boolean {
-  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId))) return false
-  const home = expandHome(getConfig(profileId).configDir)
+  if (!hasProfile(profileId) || quotaPaused.has(profileId) || !hasSubscriptionQuota(getConfig(profileId))) return false
+  const home = resolveProfileDir(getConfig(profileId))
   let best: { at: number; rl: any } | null = null
   for (const f of newestRollouts(home, 8)) {
     let text = ''
@@ -771,7 +779,7 @@ export function refreshCodexQuota(profileId: ProfileId, preserveError = false): 
       }
     }
   }
-  if (!best) return false
+  if (!best || best.at < (codexRolloutCutoff.get(profileId) ?? 0)) return false
   const wins = [codexWindow(best.rl.primary), codexWindow(best.rl.secondary)].filter((w): w is QuotaWindow => !!w)
   const five = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
   const seven = wins.find((w) => w.minutes >= 1440) ?? null
@@ -814,95 +822,160 @@ export const CODEX_APP_SERVER_PROBE_ARGS = [
   'check_for_update_on_startup=false'
 ] as const
 
-const codexPending = new Map<ProfileId, Promise<boolean>>()
+type QuotaData = { report: QuotaReport & { groups?: QuotaGroup[] }; source: AccountQuota['source'] } | 'api-key' | null
 
-export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
-  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId)) || !isLoggedIn(profileId)) return Promise.resolve(false)
-  const running = codexPending.get(profileId)
-  if (running) return running
-  const p = new Promise<boolean>((resolve) => {
-    const bin = kindBinaryPath('codex')
-    if (!bin || !hasProfile(profileId)) return resolve(false)
-    const authFile = join(expandHome(getConfig(profileId).configDir), 'auth.json')
-    if (!existsSync(authFile)) return resolve(false)
-    let probeHome: string | null = null
-    let cleaned = false
-    const cleanup = () => {
-      if (cleaned || !probeHome) return
-      cleaned = true
-      try {
-        rmSync(probeHome, { recursive: true, force: true })
-      } catch {
-        /* best effort */
+const quotaPending = new Map<ProfileId, { controller: AbortController; request: Promise<boolean> }>()
+const claudeProbes = new Map<ProfileId, ReturnType<typeof runAgent>>()
+const quotaPaused = new Set<ProfileId>()
+export function pauseAccountQuota(id: ProfileId, paused: boolean): void {
+  if (paused) quotaPaused.add(id)
+  else quotaPaused.delete(id)
+}
+const codexRolloutCutoff = new Map<ProfileId, number>()
+
+export function clearAccountUsageCache(id: ProfileId, opts?: { keepStats?: boolean }): void {
+  quotaPending.get(id)?.controller.abort()
+  quotaPending.delete(id)
+  claudeProbes.get(id)?.kill(true)
+  claudeProbes.delete(id)
+  delete quotas[id]
+  delete quotaErrors[id]
+  delete stats.limitedAt[id]
+  if (opts?.keepStats) {
+    if (hasProfile(id) && getConfig(id).kind === 'codex') codexRolloutCutoff.set(id, Date.now())
+  } else {
+    codexRolloutCutoff.delete(id)
+    delete stats.runs[id]
+    if (old?.runs) delete old.runs[id]
+    for (const files of [stats.files, stats.legacy, old?.files ?? {}]) {
+      for (const [path, entry] of Object.entries(files)) if (entry.profileId === id) delete files[path]
+    }
+  }
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  writeFileSync(quotaFile(), JSON.stringify(quotas, null, 2))
+  // Convert legacy stats before writing the current format.
+  migrate()
+  writeFileSync(statsFile(), JSON.stringify(stats))
+  changed()
+}
+
+function refreshOAuthQuota(id: ProfileId, kind: ProfileKind, run: (cfg: ProfileConfig, signal: AbortSignal) => Promise<QuotaAttempt<QuotaData>>): Promise<boolean> {
+  if (!hasProfile(id) || quotaPaused.has(id)) return Promise.resolve(false)
+  const cfg = getConfig(id)
+  if (cfg.kind !== kind || !hasSubscriptionQuota(cfg)) return Promise.resolve(false)
+  const pending = quotaPending.get(id)
+  if (pending) return pending.request
+  const controller = new AbortController()
+  const request = Promise.resolve().then(async () => {
+    const { signal } = controller
+    if (signal.aborted) return false
+    const result = await run(cfg, signal)
+    if (signal.aborted || !hasProfile(id)) return false
+    const current = getConfig(id)
+    if (!hasSubscriptionQuota(current) || resolveProfileDir(current) !== resolveProfileDir(cfg)) return false
+    if ('error' in result) {
+      setQuotaError(id, result.error)
+      return false
+    }
+    if (!result.value) return false
+    if (result.value === 'api-key') {
+      setQuotaError(id, null)
+      if (quotas[id]?.source === 'agy-usage') {
+        delete quotas[id]
+        changed()
       }
+      return false
     }
-    const startProc = () => {
-      const env = buildSpawnSpec(profileId, 'run', undefined, false).env
-      // Ephemeral CODEX_HOME with only auth.json linked keeps the user's real CODEX_HOME untouched
-      // (no SQLite writes/locks, no config.toml MCP servers, no hooks.json, no plugin sync).
-      probeHome = mkdtempSync(join(tmpdir(), 'agentswitch-codex-probe-'))
-      symlinkSync(authFile, join(probeHome, 'auth.json'))
-      return spawn(bin, [...CODEX_APP_SERVER_PROBE_ARGS], {
-        env: { ...env, CODEX_HOME: probeHome },
-        cwd: probeHome,
-        stdio: ['pipe', 'pipe', 'ignore']
-      })
-    }
-    let proc: ReturnType<typeof startProc>
+    const { report, source } = result.value
+    recordQuota(id, report, source)
+    setQuotaError(id, null)
+    return true
+  }).finally(() => {
+    if (quotaPending.get(id)?.controller === controller) quotaPending.delete(id)
+  })
+  quotaPending.set(id, { controller, request })
+  return request
+}
+
+function stopQuotaProcess(proc: ChildProcess): void {
+  if (proc.exitCode != null) return
+  if (proc.pid) {
     try {
-      proc = startProc()
+      process.kill(-proc.pid, 'SIGKILL')
+      return
     } catch {
-      cleanup()
-      return resolve(false)
+      // The process group may have exited already.
     }
+  }
+  proc.kill('SIGKILL')
+}
+
+const quotaError = (input: Parameters<typeof classifyQuotaError>[0]) =>
+  ({ error: classifyQuotaError(input) ?? quotaFailure('Quota request failed') })
+
+export function refreshCodexLive(id: ProfileId): Promise<boolean> {
+  return refreshOAuthQuota(id, 'codex', (cfg, signal) => {
+    const dir = resolveProfileDir(cfg)
+    const store = oauthCredentialFile(safeRealpath(join(dir, 'auth.json')))
+    let rejectedToken: string | undefined
+    return runWithOAuth401Recovery(id, {
+      signal,
+      request: async (reload) => {
+        const { env } = buildSpawnSpec(id, 'run', undefined, false)
+        const credentials = await store.read()
+        signal.throwIfAborted()
+        if (!credentials) return reload ? { error: authExpired() } : { value: null }
+        rejectedToken = credentials.tokens?.access_token
+        return requestCodexQuota(dir, env, signal)
+      },
+      refresh: () => refreshOAuthCredentials('codex', store, oauthPost(id, signal), signal, rejectedToken)
+    })
+  })
+}
+
+function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<QuotaAttempt<QuotaData>> {
+  return new Promise((resolve) => {
+    const bin = kindBinaryPath('codex')
+    if (!bin) return resolve({ value: null })
+    const proc = spawn(bin, [...CODEX_APP_SERVER_PROBE_ARGS, '-c', 'cli_auth_credentials_store="file"'], {
+      env, cwd: dir, detached: true, stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stderr = ''
+    proc.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8192) })
     let done = false
-    const finish = (ok: boolean) => {
+    const finish = (result: QuotaAttempt<QuotaData>) => {
       if (done) return
       done = true
       clearTimeout(timer)
-      try {
-        proc.kill()
-      } catch {
-        /* already exited */
-      }
-      resolve(ok)
+      signal.removeEventListener('abort', abort)
+      stopQuotaProcess(proc)
+      resolve(result)
     }
-    const timer = setTimeout(() => finish(false), 15_000)
-    proc.on('error', () => {
-      finish(false)
-      cleanup()
-    })
-    proc.on('close', () => {
-      finish(false)
-      cleanup()
-    })
+    const abort = () => finish({ value: null })
+    const timer = setTimeout(() => finish(quotaError({ message: 'Codex quota request timed out' })), 15_000)
+    signal.addEventListener('abort', abort, { once: true })
+    proc.on('error', (err) => finish(quotaError({ message: err.message })))
+    proc.stdin.on('error', () => { /* The child close event supplies its error. */ })
+    proc.on('close', () => finish(quotaError({ message: stderr.trim() || 'Codex quota process exited' })))
 
     const rl = createInterface({ input: proc.stdout })
     rl.on('line', (line) => {
+      if (done) return
       let msg: any
-      try {
-        msg = JSON.parse(line)
-      } catch {
-        return
+      try { msg = JSON.parse(line) } catch { return }
+      if (msg.id !== 1 && msg.id !== 2) return
+      if (msg.error) {
+        const code = msg.error.data?.status ?? msg.error.data?.statusCode ?? msg.error.code
+        const status = Number(code) >= 100 && Number(code) < 600 ? Number(code) : undefined
+        return finish(quotaError({ status, message: String(msg.error.message ?? msg.error), body: msg.error }))
       }
       if (msg.id === 1) {
-        try {
-          proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n')
-          proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n')
-        } catch {
-          finish(false)
-        }
+        proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n')
+        proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n')
         return
       }
-      if (msg.id !== 2) return
-      if (msg.error) {
-        const status = typeof msg.error.code === 'number' && msg.error.code === 429 ? 429 : undefined
-        const message = String(msg.error.message ?? msg.error)
-        setQuotaError(profileId, classifyQuotaError({ status, message, body: msg.error }))
-        return finish(false)
-      }
       const r = msg.result?.rateLimits
-      if (!r || typeof r !== 'object') return finish(false)
+      if (!r || typeof r !== 'object') return finish({ value: null })
       const parseWin = (w: any): QuotaWindow | null => {
         if (!w || typeof w.usedPercent !== 'number') return null
         return {
@@ -912,67 +985,48 @@ export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
         }
       }
       const wins = [parseWin(r.primary), parseWin(r.secondary)].filter((w): w is QuotaWindow => !!w)
-      if (!wins.length) return finish(false)
-      const five = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
-      const seven = wins.find((w) => w.minutes >= 1440) ?? null
+      if (!wins.length) return finish({ value: null })
+      const fiveHour = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
+      const sevenDay = wins.find((w) => w.minutes >= 1440) ?? null
       const limited = !!r.rateLimitReachedType || wins.some((w) => w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-      recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: typeof r.planType === 'string' ? r.planType : null }, 'codex-rpc')
-      finish(true)
+      finish({ value: { source: 'codex-rpc', report: { fiveHour, sevenDay, limited, plan: typeof r.planType === 'string' ? r.planType : null } } })
     })
-
-    try {
-      proc.stdin.write(
-        JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'agentswitch', version: '0.1.0' } } }) + '\n'
-      )
-    } catch {
-      finish(false)
-    }
-  }).finally(() => codexPending.delete(profileId))
-  codexPending.set(profileId, p)
-  return p
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'agentswitch', version: '0.1.0' } } }) + '\n')
+  })
 }
 
-// ---- claude live quota (OAuth `/api/oauth/usage` via local credentials, zero tokens) -----------
-
-const claudePending = new Map<ProfileId, Promise<boolean>>()
-
-function safeRealpath(p: string): string {
-  try {
-    return realpathSync(p)
-  } catch {
-    return p
-  }
-}
-
-function readClaudeOauthToken(configDir: string): Promise<string | null> {
-  const dir = safeRealpath(expandHome(configDir))
-  const parseToken = (raw: string): string | null => {
-    try {
-      const tok = JSON.parse(raw)?.claudeAiOauth?.accessToken
-      return typeof tok === 'string' && tok.length > 0 ? tok : null
-    } catch {
-      return null
-    }
-  }
-  const credFile = join(dir, '.credentials.json')
-  if (existsSync(credFile)) {
-    try {
-      const tok = parseToken(readFileSync(credFile, 'utf8'))
-      if (tok) return Promise.resolve(tok)
-    } catch {
-      /* fall through to keychain */
-    }
-  }
-  if (process.platform !== 'darwin') return Promise.resolve(null)
-  const defaultDir = safeRealpath(join(realHome, '.claude'))
-  const service =
-    dir === defaultDir ? 'Claude Code-credentials' : `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`
-  return new Promise((resolve) => {
-    execFile('/usr/bin/security', ['find-generic-password', '-s', service, '-w'], { timeout: 5000 }, (err, stdout) => {
-      if (err) return resolve(null)
-      resolve(parseToken(String(stdout).trim()))
+function claudeKeychainStore(dir: string, signal: AbortSignal): OAuthCredentialStore {
+  const service = claudeCredentialService(dir)
+  const security = (args: string[], missingIsNull = false): Promise<string | null> => new Promise((resolve, reject) => {
+    execFile('/usr/bin/security', args, { timeout: 5000, signal }, (err, stdout, stderr) => {
+      if (!err) resolve(stdout)
+      else if (missingIsNull && (err.code === 44 || /could not be found/i.test(stderr))) resolve(null)
+      else reject(new Error('Could not access Claude OAuth Keychain credentials'))
     })
   })
+  return {
+    async read() {
+      const secret = await security(['find-generic-password', '-s', service, '-w'], true)
+      return secret === null ? null : JSON.parse(secret)
+    },
+    async write(data) {
+      const item = await security(['find-generic-password', '-s', service])
+      const account = /"acct"<[^>]+>="([^"]*)"/.exec(item ?? '')?.[1]
+      const keychain = /^keychain: "([^"]+)"/m.exec(item ?? '')?.[1]
+      if (!account || !keychain) throw new Error('Could not identify Claude OAuth Keychain item')
+      await security(['add-generic-password', '-U', '-s', service, '-a', account, '-w', JSON.stringify(data), keychain])
+    }
+  }
+}
+
+async function readClaudeCredentials(dir: string, signal: AbortSignal) {
+  const file = oauthCredentialFile(safeRealpath(join(dir, '.credentials.json')))
+  const data = await file.read()
+  if (data?.claudeAiOauth?.accessToken || data?.claudeAiOauth?.refreshToken || process.platform !== 'darwin') {
+    return { store: file, data }
+  }
+  const store = claudeKeychainStore(dir, signal)
+  return { store, data: await store.read() }
 }
 
 function parseCurlHeaderBlock(raw: string): Record<string, string> {
@@ -989,33 +1043,26 @@ function parseCurlHeaderBlock(raw: string): Record<string, string> {
   return out
 }
 
-function fetchClaudeUsageJson(
-  token: string,
-  env: NodeJS.ProcessEnv
+function oauthHttp(
+  url: string, headers: Record<string, string>, env: NodeJS.ProcessEnv, signal: AbortSignal, body?: string
 ): Promise<{ status: number; text: string; headers: Record<string, string> }> {
-  const url = 'https://api.anthropic.com/api/oauth/usage'
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'anthropic-beta': 'oauth-2025-04-20',
-    'User-Agent': 'claude-code/2.1.0',
-    Accept: 'application/json'
-  }
   const hasEnvProxy = !!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy)
   if (hasEnvProxy && process.platform !== 'win32') {
     return new Promise((resolve, reject) => {
       const hdrFile = join(tmpdir(), `agentswitch-claude-hdr-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
       const args = [
-        '-sS',
+        '-q', '-sS',
+        '--proto', '=https',
         '--max-time',
         '12',
         '-D',
         hdrFile,
         '-w',
         '\n%{http_code}',
-        ...Object.entries(headers).flatMap(([k, v]) => ['-H', `${k}: ${v}`]),
+        '--config', '-',
         url
       ]
-      execFile('/usr/bin/curl', args, { env, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const child = execFile('/usr/bin/curl', args, { env, signal, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
         let respHeaders: Record<string, string> = {}
         try {
           if (existsSync(hdrFile)) respHeaders = parseCurlHeaderBlock(readFileSync(hdrFile, 'utf8'))
@@ -1028,17 +1075,21 @@ function fetchClaudeUsageJson(
             /* best effort */
           }
         }
-        if (err) return reject(new Error(String(stderr || err.message).trim()))
+        if (err) return reject(new Error('OAuth HTTP request through proxy failed'))
         const s = String(stdout)
         const idx = s.lastIndexOf('\n')
         const status = Number(idx >= 0 ? s.slice(idx + 1).trim() : '') || 0
         const text = idx >= 0 ? s.slice(0, idx) : s
         resolve({ status, text, headers: respHeaders })
       })
+      const config = Object.entries(headers).map(([k, v]) => `header = ${JSON.stringify(`${k}: ${v}`)}`)
+      if (body) config.push('request = "POST"', `data-binary = ${JSON.stringify(body)}`)
+      child.stdin?.on('error', () => { /* The exit callback reports request failures. */ })
+      child.stdin?.end(config.join('\n') + '\n')
     })
   }
   // No explicit proxy env: use Electron's net.fetch so macOS system proxy settings are honoured.
-  return net.fetch(url, { headers, signal: AbortSignal.timeout(12_000) }).then(async (res) => {
+  return net.fetch(url, { headers, method: body ? 'POST' : 'GET', body, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(12_000)]) }).then(async (res) => {
     const respHeaders: Record<string, string> = {}
     res.headers?.forEach((v, k) => {
       respHeaders[k.toLowerCase()] = v
@@ -1047,137 +1098,82 @@ function fetchClaudeUsageJson(
   })
 }
 
-export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
-  if (hasProfile(profileId) && !hasSubscriptionQuota(getConfig(profileId))) return Promise.resolve(false)
-  const running = claudePending.get(profileId)
-  if (running) return running
-  const p = (async (): Promise<boolean> => {
-    if (!hasProfile(profileId)) return false
-    const cfg = getConfig(profileId)
-    const token = await readClaudeOauthToken(cfg.configDir)
-    if (!token) return false
-    let env: NodeJS.ProcessEnv = process.env
-    try {
-      env = buildSpawnSpec(profileId, 'run', undefined, false).env
-    } catch {
-      /* fallback to process.env */
-    }
-    try {
-      const res = await fetchClaudeUsageJson(token, env)
-      if (res.status < 200 || res.status >= 300) {
-        let detail = `HTTP ${res.status}`
-        let body: any = null
-        try {
-          body = JSON.parse(res.text)
-          const m = body?.error?.message || body?.message
-          if (typeof m === 'string' && m.trim()) detail = `${detail}: ${m.trim()}`
-        } catch {
-          /* keep HTTP status */
+function oauthPost(id: ProfileId, signal: AbortSignal) {
+  return (url: string, body: Record<string, string>) => oauthHttp(url, { 'Content-Type': 'application/json' },
+    buildSpawnSpec(id, 'run', undefined, false).env, signal, JSON.stringify(body))
+}
+
+export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
+  return refreshOAuthQuota(id, 'claude', (cfg, signal) => {
+    const dir = resolveProfileDir(cfg)
+    let store: OAuthCredentialStore | undefined
+    let rejectedToken: string | undefined
+    return runWithOAuth401Recovery(id, {
+      signal,
+      request: async (reload) => {
+        const { env } = buildSpawnSpec(id, 'run', undefined, false)
+        const credentials = await readClaudeCredentials(dir, signal)
+        store = credentials.store
+        const token = credentials.data?.claudeAiOauth?.accessToken
+        if (typeof token !== 'string' || !token) {
+          return reload || credentials.data?.claudeAiOauth?.refreshToken || isLoggedIn(id) ? { error: authExpired() } : { value: null }
         }
-        setQuotaError(profileId, classifyQuotaError({ status: res.status, message: detail, body, headers: res.headers }))
-        return false
-      }
-      const d: any = JSON.parse(res.text)
-      const parseWin = (w: any, minutes: number): QuotaWindow | null => {
-        if (!w || typeof w.utilization !== 'number') return null
-        const t = w.resets_at ? Date.parse(String(w.resets_at)) : NaN
-        return { percent: Math.round(w.utilization * 10) / 10, resetsAt: isNaN(t) ? null : t, minutes }
-      }
-      const five = parseWin(d?.five_hour, 300)
-      const seven = parseWin(d?.seven_day, 10080)
-      if (!five && !seven) return false
-      const limited = [five, seven].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-      recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: null }, 'claude-oauth')
-      return true
-    } catch (e) {
-      setQuotaError(profileId, classifyQuotaError({ message: e instanceof Error ? e.message : String(e) }))
-      return false
-    }
-  })().finally(() => claudePending.delete(profileId))
-  claudePending.set(profileId, p)
-  return p
+        rejectedToken = token
+        const res = await oauthHttp('https://api.anthropic.com/api/oauth/usage', {
+          Authorization: `Bearer ${token}`,
+          'anthropic-beta': 'oauth-2025-04-20',
+          'User-Agent': 'claude-code/2.1.0',
+          Accept: 'application/json'
+        }, env, signal)
+        if (res.status < 200 || res.status >= 300) {
+          let body: any
+          try { body = JSON.parse(res.text) } catch { /* Keep HTTP status. */ }
+          const message = body?.error?.message ?? body?.message
+          return quotaError({ status: res.status, message: `HTTP ${res.status}${typeof message === 'string' ? ': ' + message : ''}`, body, headers: res.headers })
+        }
+        const d = JSON.parse(res.text)
+        const parseWin = (w: any, minutes: number): QuotaWindow | null => {
+          if (!w || typeof w.utilization !== 'number') return null
+          const t = w.resets_at ? Date.parse(String(w.resets_at)) : NaN
+          return { percent: Math.round(w.utilization * 10) / 10, resetsAt: isNaN(t) ? null : t, minutes }
+        }
+        const fiveHour = parseWin(d?.five_hour, 300)
+        const sevenDay = parseWin(d?.seven_day, 10080)
+        if (!fiveHour && !sevenDay) return { value: null }
+        const limited = [fiveHour, sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
+        return { value: { source: 'claude-oauth', report: { fiveHour, sevenDay, limited, plan: null } } }
+      },
+      refresh: () => store ? refreshOAuthCredentials('claude', store, oauthPost(id, signal), signal, rejectedToken) : Promise.resolve(authExpired())
+    })
+  })
 }
 
 // ---- agy quota (`agy -p "/usage" --output-format json`: local command, no model call) -----------
 
 export const AGY_AUTH_PROMPT_RE = /Authentication required|Please visit the URL to log in|Waiting for authentication/i
-
-const agyPending = new Map<ProfileId, Promise<boolean>>()
+const hasAgyAuthPrompt = (output: string): boolean => output.split(/\r?\n/).some((line) =>
+  !line.trimStart().startsWith('{') && AGY_AUTH_PROMPT_RE.test(line) && !/\b(?:HTTP|status(?: code)?)[:\s]+5\d{2}\b/i.test(line))
 const AGY_QUOTA_MAX_BYTES = 4 * 1024 * 1024
 
-/** false: no data (API-key login exits 2, not logged in, older agy, parse failure). */
-export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
-  if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId)) || !isLoggedIn(profileId)) return Promise.resolve(false)
-  const running = agyPending.get(profileId)
-  if (running) return running
-  const p = new Promise<boolean>((resolve) => {
-    const bin = kindBinaryPath('gemini')
-    if (!bin || !hasProfile(profileId)) return resolve(false)
-    let env: NodeJS.ProcessEnv
-    try {
-      env = buildSpawnSpec(profileId, 'run', undefined, false).env
-    } catch {
-      return resolve(false)
-    }
-    const proc = spawn(bin, ['-p', '/usage', '--output-format', 'json', '--log-file', '/dev/null'], {
-      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '1', SSH_TTY: '1' },
-      cwd: tmpdir(),
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-    let stdout = ''
-    let stderr = ''
-    let done = false
-    const finish = (ok: boolean) => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      try {
-        proc.kill()
-      } catch {
-        /* already exited */
-      }
-      resolve(ok)
-    }
-    const timer = setTimeout(() => {
-      setQuotaError(profileId, 'agy /usage timed out')
-      finish(false)
-    }, 30_000)
-
-    proc.stdout?.setEncoding('utf8')
-    proc.stderr?.setEncoding('utf8')
-    proc.stdout?.on('data', (chunk: string) => {
-      if (stdout.length < AGY_QUOTA_MAX_BYTES) stdout += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stdout.length)
-    })
-    proc.stderr?.on('data', (chunk: string) => {
-      if (stderr.length < AGY_QUOTA_MAX_BYTES) stderr += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stderr.length)
-      if (AGY_AUTH_PROMPT_RE.test(stderr)) {
-        setQuotaError(profileId, 'Authentication required')
-        finish(false)
-      }
-    })
-    proc.on('error', (err) => {
-      setQuotaError(profileId, err.message)
-      finish(false)
-    })
-    proc.on('close', (code) => {
-      if (done) return
-      clearTimeout(timer)
-      if (code === 2) {
-        // GEMINI_API_KEY: no account quota exists; keep local stats only
-        setQuotaError(profileId, null)
-        if (quotas[profileId]?.source === 'agy-usage') {
-          delete quotas[profileId]
-          changed()
-        }
-        return finish(false)
-      }
+export function refreshAgyQuota(id: ProfileId): Promise<boolean> {
+  return refreshOAuthQuota(id, 'gemini', (cfg, signal) => runWithOAuth401Recovery<QuotaData>(id, {
+    signal,
+    request: async (reload) => {
+      const bin = kindBinaryPath('gemini')
+      if (!bin) return { value: null }
+      clearProfileKeychainCache(resolveProfileDir(cfg))
+      if (!reload && !isLoggedIn(id)) return { value: null }
+      const { env } = buildSpawnSpec(id, 'run', undefined, true)
+      const result = await runAgyQuotaCommand(bin, env, false, signal)
+      if ('error' in result) return result
+      if (!result.value) return { value: null }
+      const { stdout, stderr, code } = result.value
       try {
         const jsonLine = stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop()
         const d = jsonLine ? JSON.parse(jsonLine) : null
         if (d?.error) {
-          const errMsg = typeof d.error === 'string' ? d.error : String(d.error.message ?? JSON.stringify(d.error))
-          setQuotaError(profileId, classifyQuotaError({ message: errMsg, body: d }))
-          return finish(false)
+          const message = typeof d.error === 'string' ? d.error : String(d.error.message ?? JSON.stringify(d.error))
+          return quotaError({ message, body: d })
         }
         const groups: QuotaGroup[] = (d?.command?.data?.groups ?? []).map((g: any): QuotaGroup => {
           const buckets: any[] = Array.isArray(g.buckets) ? g.buckets : []
@@ -1198,23 +1194,63 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
           }
         })
         if (!groups.length) {
-          const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (code ? `exit code ${code}` : null)
-          if (fallback) setQuotaError(profileId, classifyQuotaError({ message: fallback, body: d }))
-          return finish(false)
+          if (stderr.trim()) return quotaError({ message: stderr.trim(), body: d })
+          if (code === 2) return { value: 'api-key' } // agy with external API-key auth has no OAuth subscription.
+          return code ? quotaError({ message: `exit code ${code}`, body: d }) : { value: null }
         }
         const main = groups.find((g) => g.key === 'gemini') ?? groups[0]
         const limited = [main.fiveHour, main.sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-        recordQuota(profileId, { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan: null, groups }, 'agy-usage')
-        finish(true)
-      } catch (e) {
-        const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (e instanceof Error ? e.message : String(e))
-        if (fallback) setQuotaError(profileId, classifyQuotaError({ message: fallback }))
-        finish(false)
+        return { value: { source: 'agy-usage', report: { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan: null, groups } } }
+      } catch (err) {
+        return quotaError({ message: stderr.trim() || String(err) })
       }
+    },
+    refresh: async (): Promise<RefreshResult> => {
+      const bin = kindBinaryPath('gemini')
+      if (!bin) return quotaFailure('agy is unavailable')
+      const { env } = buildSpawnSpec(id, 'run', undefined, true)
+      const result = await runAgyQuotaCommand(bin, env, true, signal)
+      if ('error' in result) return result.error
+      if (result.value?.code === 0) return 'refreshed'
+      return quotaError({ message: result.value?.stderr.trim() || 'agy models failed' }).error
+    }
+  }))
+}
+
+function runAgyQuotaCommand(bin: string, env: NodeJS.ProcessEnv, refresh: boolean, signal: AbortSignal): Promise<QuotaAttempt<{ stdout: string; stderr: string; code: number | null } | null>> {
+  return new Promise((resolve) => {
+    const args = refresh ? ['models'] : ['-p', '/usage', '--output-format', 'json', '--log-file', '/dev/null']
+    const proc = spawn(bin, args, {
+      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '1', SSH_TTY: '1' },
+      cwd: tmpdir(), detached: true, stdio: ['ignore', 'pipe', 'pipe']
     })
-  }).finally(() => agyPending.delete(profileId))
-  agyPending.set(profileId, p)
-  return p
+    let stdout = ''
+    let stderr = ''
+    let done = false
+    const finish = (result: QuotaAttempt<{ stdout: string; stderr: string; code: number | null } | null>) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      stopQuotaProcess(proc)
+      resolve(result)
+    }
+    const abort = () => finish({ value: null })
+    const timer = setTimeout(() => finish(quotaError({ message: `agy ${refresh ? 'models' : '/usage'} timed out` })), refresh ? 15_000 : 30_000)
+    signal.addEventListener('abort', abort, { once: true })
+    proc.stdout?.setEncoding('utf8')
+    proc.stderr?.setEncoding('utf8')
+    proc.stdout?.on('data', (chunk: string) => {
+      stdout += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stdout.length)
+      if (hasAgyAuthPrompt(stdout)) finish({ error: authExpired() })
+    })
+    proc.stderr?.on('data', (chunk: string) => {
+      stderr += chunk.slice(0, AGY_QUOTA_MAX_BYTES - stderr.length)
+      if (hasAgyAuthPrompt(stderr)) finish({ error: authExpired() })
+    })
+    proc.on('error', (err) => finish(quotaError({ message: err.message })))
+    proc.on('close', (code) => finish({ value: { stdout, stderr, code } }))
+  })
 }
 
 // ---- history backfill ---------------------------------------------------------------------------
@@ -1368,8 +1404,7 @@ function ownSessionFiles(): { path: string; profileId: ProfileId; kind: string; 
       let path: string | null = null
       try {
         if (cfg.kind === 'claude') {
-          const home = expandHome(cfg.configDir)
-          path = claudeSessionLog(cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home, sid)
+          path = claudeSessionLog(resolveProfileDir(cfg), sid)
         } else if (cfg.kind === 'codex') path = codexRollout(cfg, sid)
         else if (cfg.kind === 'gemini') path = agyConversationDb(cfg, sid)
       } catch {
@@ -1405,6 +1440,7 @@ async function readLegacy(): Promise<void> {
           : f.kind === 'codex'
             ? await codexFileDays(f.path, f.since, stats.legacyUntil)
             : agyFileDays(f.path, f.since, stats.legacyUntil, st.mtimeMs)
+      if (!hasProfile(f.profileId)) continue
       stats.legacy[f.path] = { mtime: st.mtimeMs, size: st.size, profileId: f.profileId, days, ...(f.kind === 'codex' ? { modelAttribution: CODEX_MODEL_ATTRIBUTION } : {}) }
       changed()
     } catch {
@@ -1468,6 +1504,7 @@ export function runBackfill(): Promise<void> {
         const cut = cuts.get(e.nativeId) ?? 0
         try {
           const days = e.kind === 'claude' ? await claudeFileDays(path, since, cut) : e.kind === 'codex' ? await codexFileDays(path, 0, cut) : agyFileDays(path, 0, cut, e.updatedAt || st.mtimeMs)
+          if (!hasProfile(e.profileId)) continue
           stats.files[path] = { mtime: st.mtimeMs, size: st.size, profileId: e.profileId, days, ...(e.kind === 'codex' ? { modelAttribution: CODEX_MODEL_ATTRIBUTION } : {}) }
           changed()
         } catch {
@@ -1493,13 +1530,23 @@ export function runBackfill(): Promise<void> {
  * Live zero-token refresh for all three CLIs:
  *  - codex:  `codex app-server` `account/rateLimits/read` (falls back to local rollout logs)
  *  - gemini: `agy -p "/usage" --output-format json`
- *  - claude: OAuth `/api/oauth/usage` via local credentials; when probe=true, accounts whose
- *            OAuth token expired or is unavailable fall back to a tiny haiku message.
+ *  - claude: OAuth `/api/oauth/usage` via local credentials. Unclassified failures can use the
+ *            optional Haiku probe. Rate limits and expired logins do not trigger the probe.
  */
 /** Trigger provider-specific post-run quota refresh (kept inside the usage/quota adapter layer). */
 export function refreshPostRunQuota(cfg: { id: ProfileId; kind: ProfileKind }, ok: boolean): void {
   if (cfg.kind === 'codex') refreshCodexQuota(cfg.id)
   else if (cfg.kind === 'gemini' && ok) void refreshAgyQuota(cfg.id)
+}
+
+export function refreshAccountQuota(id: ProfileId): Promise<boolean> {
+  if (!hasProfile(id)) return Promise.resolve(false)
+  switch (getConfig(id).kind) {
+    case 'claude': return refreshClaudeOauth(id)
+    case 'codex': return refreshCodexLive(id)
+    case 'gemini': return refreshAgyQuota(id)
+    default: return Promise.resolve(false)
+  }
 }
 
 export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
@@ -1510,21 +1557,24 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
       .filter((c) => c.kind === 'codex')
       .map(async (c) => {
         const ok = isLoggedIn(c.id) ? await refreshCodexLive(c.id) : false
-        if (!ok) refreshCodexQuota(c.id, !!quotaErrors[c.id])
+        if (!ok && quotaErrors[c.id]?.kind !== 'auth_expired') refreshCodexQuota(c.id, !!quotaErrors[c.id])
       })
   )
-  const agyTask = Promise.all(configs.filter((c) => c.kind === 'gemini' && isLoggedIn(c.id)).map((c) => refreshAgyQuota(c.id)))
+  const agyTask = Promise.all(configs.filter((c) => c.kind === 'gemini').map((c) => refreshAgyQuota(c.id)))
   const claudeTask = Promise.all(
     configs
-      .filter((c) => c.kind === 'claude' && isLoggedIn(c.id))
+      .filter((c) => c.kind === 'claude')
       .map(async (c) => {
         const ok = await refreshClaudeOauth(c.id)
-        if (ok || !probe || quotaErrors[c.id]?.kind === 'rate_limited') return
+        if (ok || !probe || !hasProfile(c.id) || quotaPaused.has(c.id) || !isLoggedIn(c.id) || claudeProbes.has(c.id) ||
+          quotaErrors[c.id]?.kind === 'rate_limited' || quotaErrors[c.id]?.kind === 'auth_expired') return
         const dir = tmpdir()
         let usage: Usage | null = null
-        const h = runAgent(
+        let h: ReturnType<typeof runAgent> | undefined
+        h = runAgent(
           { cfg: { ...c, autoApprove: 'edits' }, model: 'haiku', prompt: 'Reply with exactly: OK', system: null, cwd: dir, images: [], resume: null, outDir: dir, ephemeralProbe: true },
           (e) => {
+            if (h && claudeProbes.get(c.id) !== h) return
             if (e.t === 'quota') recordQuota(c.id, e.quota, 'claude-stream')
             if (e.t === 'usage') usage = { ...(usage ?? {}), ...e.usage }
             if (e.t === 'rate_limited') {
@@ -1534,8 +1584,13 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
           },
           () => {}
         )
-        const r = await h.done
-        recordRun(c.id, r.model ?? 'haiku', usage)
+        claudeProbes.set(c.id, h)
+        try {
+          const r = await h.done
+          if (claudeProbes.get(c.id) === h) recordRun(c.id, r.model ?? 'haiku', usage)
+        } finally {
+          if (claudeProbes.get(c.id) === h) claudeProbes.delete(c.id)
+        }
       })
   )
   void syncPrices()
@@ -1550,9 +1605,9 @@ export function startUsage(): void {
   for (const c of listConfigs()) if (c.kind === 'codex') refreshCodexQuota(c.id)
   setTimeout(() => {
     for (const c of listConfigs()) {
-      if (!hasSubscriptionQuota(c) || !isLoggedIn(c.id)) continue
+      if (!hasSubscriptionQuota(c)) continue
       // Skip `agy -p /usage` on startup: agy boots its full language server and user MCPs.
-      if (c.kind === 'codex') void refreshCodexLive(c.id)
+      if (c.kind === 'codex' && isLoggedIn(c.id)) void refreshCodexLive(c.id)
       else if (c.kind === 'claude') void refreshClaudeOauth(c.id)
     }
   }, 4000)

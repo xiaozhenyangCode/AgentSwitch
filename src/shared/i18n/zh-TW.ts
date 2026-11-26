@@ -115,8 +115,9 @@ export const zhTW: Dict = {
 
   // ---- accounts / install (app context)
   'acct.removeTitle': '刪除「{name}」？',
-  'acct.removeImported': '只會從 AgentSwitch 中移除這個帳號，{dir} 裡的設定和登入資訊會原樣保留，命令列中仍可繼續使用。',
-  'acct.removeOwn': '只會從 AgentSwitch 中移除這個帳號。它的獨立設定資料夾會保留在磁碟上，不會被刪除。',
+  'acct.removeImported': '將從 AgentSwitch 移除此帳號。本機資料夾 {dir} 的設定和 CLI 登入狀態會保留。',
+  'acct.removeOwn': '將從 AgentSwitch 移除此帳號，並刪除它的獨立設定資料夾及憑證。',
+  'acct.removedGlobalHint': '已從 AgentSwitch 移除。全域 CLI 登入狀態仍保留，如需切換請先登出。',
   'acct.removeConfirm': '刪除帳號',
   'acct.removed': '已刪除「{name}」',
   'acct.defaultName': '{kind} 帳號 {n}',
@@ -301,6 +302,9 @@ export const zhTW: Dict = {
   'usage.retryAfter': '預計 {time} 恢復',
   'usage.noReady': '還沒有就緒的帳號，去「模型引擎」新增並登入。',
   'usage.limited': '已觸發限流',
+  'usage.authExpiredBadge': '登入已過期',
+  'usage.authExpiredMsg': '登入憑證已過期，請重新授權',
+  'usage.reauth': '重新授權',
   'usage.used': '{which} 額度已用 {pct}%',
   'usage.remaining': '{which} 剩餘 {pct}%',
   'usage.remainingReset': ' · {time} 重置',

@@ -1,15 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProfileConfig } from '@shared/types'
 
-const { state, mockProfiles, dirs, fetchMock, runAgentMock } = vi.hoisted(() => ({
+const { state, mockProfiles, dirs, fetchMock, runAgentMock, spawnMock } = vi.hoisted(() => ({
   state: { userDataDir: '/tmp/agentswitch-quota-rl-init' },
   mockProfiles: [] as ProfileConfig[],
   dirs: [] as string[],
   fetchMock: vi.fn(),
-  runAgentMock: vi.fn()
+  runAgentMock: vi.fn(),
+  spawnMock: vi.fn()
 }))
 
 function tempDir(prefix: string): string {
@@ -26,6 +29,11 @@ vi.mock('electron', () => ({
   safeStorage: {}
 }))
 
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  spawn: (...args: unknown[]) => spawnMock(...args)
+}))
+
 vi.mock('./profiles', async (importOriginal) => {
   const orig = await importOriginal<typeof import('./profiles')>()
   return {
@@ -38,7 +46,12 @@ vi.mock('./profiles', async (importOriginal) => {
       return found
     },
     isLoggedIn: (id: string) => mockProfiles.some((p) => p.id === id),
-    buildSpawnSpec: () => ({ env: {} as NodeJS.ProcessEnv })
+    kindBinaryPath: (kind: string) => '/test/' + kind,
+    buildSpawnSpec: (id: string) => {
+      const cfg = mockProfiles.find((p) => p.id === id)!
+      const dir = orig.resolveProfileDir(cfg)
+      return { env: { [cfg.kind === 'claude' ? 'CLAUDE_CONFIG_DIR' : cfg.kind === 'codex' ? 'CODEX_HOME' : 'HOME']: dir } }
+    }
   }
 })
 
@@ -88,6 +101,7 @@ afterEach(() => {
   mockProfiles.length = 0
   fetchMock.mockReset()
   runAgentMock.mockReset()
+  spawnMock.mockReset()
   while (dirs.length > 1) {
     const dir = dirs.pop()!
     rmSync(dir, { recursive: true, force: true })
@@ -139,6 +153,11 @@ describe('classifyQuotaError', () => {
     })
     expect(gemini?.kind).toBe('rate_limited')
     expect(gemini?.resetAt).toBe(now + 15 * 60_000)
+
+    expect(classifyQuotaError({ message: 'Could not read rate limits: HTTP 401 Unauthorized' })?.kind).toBe('auth_expired')
+    expect(classifyQuotaError({ status: 429, message: 'Unauthorized' })?.kind).toBe('rate_limited')
+    expect(classifyQuotaError({ message: 'Failed to read rate limits: HTTP 503 Authentication required' })?.kind).toBe('error')
+    expect(classifyQuotaError({ message: 'Authentication required', body: { error: { code: 503 } } })?.kind).toBe('error')
 
     // Generic network error is classified as 'error' (not rate_limited)
     const generic = classifyQuotaError({
@@ -278,5 +297,132 @@ describe('quota refresh under 429 rate limiting', () => {
     expect(apiOk).toBe(false)
     expect(snap.accounts[apiCfg.id].quota).toBeNull()
     expect(snap.accounts[apiCfg.id].quotaError).toBeNull()
+  })
+})
+
+function quotaChild() {
+  return Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn()
+  })
+}
+
+describe('OAuth provider quota integration', () => {
+  it('re-reads rotated Claude credentials, and coalesces simultaneous quota requests', async () => {
+    const cfg = makeClaudeProfile()
+    mockProfiles.push(cfg)
+    const usage = await import('./usage')
+    fetchMock.mockImplementationOnce(async () => {
+      writeFileSync(join(cfg.configDir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'external-new' } }))
+      return mockFetchResponse(401, { error: { message: 'OAuth access token has expired' } })
+    }).mockResolvedValueOnce(mockFetchResponse(200, { five_hour: { utilization: 30 } }))
+
+    await expect(Promise.all([usage.refreshAccountQuota(cfg.id), usage.refreshAccountQuota(cfg.id)])).resolves.toEqual([true, true])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map(([, opts]) => opts.headers.Authorization)).toEqual(['Bearer test-oauth-token', 'Bearer external-new'])
+    expect(usage.snapshot().accounts[cfg.id].quota?.fiveHour?.percent).toBe(30)
+  })
+
+  it.each(['no refresh token', 'invalid_grant'])('keeps cached quota and local usage after Claude 401 with %s', async (failure) => {
+    const cfg = makeClaudeProfile({ id: 'claude-expired' })
+    mockProfiles.push(cfg)
+    const usage = await import('./usage')
+    usage.clearAccountUsageCache(cfg.id)
+    if (failure === 'invalid_grant') {
+      writeFileSync(join(cfg.configDir, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'expired', refreshToken: 'revoked' } }))
+    }
+    const report = { fiveHour: { percent: 72, resetsAt: null, minutes: 300 }, sevenDay: null, limited: false, plan: null }
+    usage.recordQuota(cfg.id, report, 'claude-oauth')
+    usage.recordRun(cfg.id, 'claude-sonnet-4-5', { input: 20_000, output: 1000 })
+    fetchMock.mockImplementation(async (_url, opts) => opts.method === 'POST'
+      ? mockFetchResponse(400, { error: 'invalid_grant' })
+      : mockFetchResponse(401, { error: { message: 'OAuth access token has expired' } }))
+    const snap = await usage.refreshUsage(true)
+    expect(snap.accounts[cfg.id]).toMatchObject({ quotaErrorKind: 'auth_expired', quota: report, today: { input: 20_000 }, week: { input: 20_000 } })
+    expect(runAgentMock).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(failure === 'invalid_grant' ? 3 : 2)
+  })
+
+  it('uses the resolved Codex profile for each RPC, persists a rotated token and retries', async () => {
+    const dir = tempDir('agentswitch-codex-oauth-')
+    const path = join(dir, 'auth.json')
+    writeFileSync(path, JSON.stringify({ tokens: { access_token: 'old', refresh_token: 'refresh' } }))
+    const cfg = makeClaudeProfile({ id: 'codex-oauth', kind: 'codex', extraEnv: { CODEX_HOME: dir } })
+    mockProfiles.push(cfg)
+    const usage = await import('./usage')
+    spawnMock.mockImplementation((_bin, _args, options) => {
+      expect(options.env.CODEX_HOME).toBe(dir)
+      const child = quotaChild()
+      child.stdin.on('data', (data) => {
+        const request = JSON.parse(String(data))
+        if (request.id === 1) queueMicrotask(() => child.stdout.write('{"id":1,"result":{}}\n'))
+        if (request.id === 2) {
+          const token = JSON.parse(readFileSync(path, 'utf8')).tokens.access_token
+          const reply = token === 'new'
+            ? { result: { rateLimits: { primary: { usedPercent: 31, windowDurationMins: 300 } } } }
+            : { error: { code: -32603, message: 'HTTP 401: Unauthorized' } }
+          queueMicrotask(() => child.stdout.write(JSON.stringify({ id: 2, ...reply }) + '\n'))
+        }
+      })
+      return child
+    })
+    fetchMock.mockResolvedValueOnce(mockFetchResponse(200, { access_token: 'new', refresh_token: 'rotated' }))
+    await expect(usage.refreshAccountQuota(cfg.id)).resolves.toBe(true)
+    expect(spawnMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(readFileSync(path, 'utf8')).tokens.refresh_token).toBe('rotated')
+    expect(usage.snapshot().accounts[cfg.id].quota?.fiveHour?.percent).toBe(31)
+  })
+
+  it.each([true, false])('uses the isolated Gemini HOME for /usage and models (renewal succeeds: %s)', async (renewed) => {
+    const home = tempDir('agentswitch-gemini-oauth-')
+    const cfg = makeClaudeProfile({ id: 'gemini-oauth', kind: 'gemini', extraEnv: { HOME: home } })
+    mockProfiles.push(cfg)
+    const usage = await import('./usage')
+    usage.clearAccountUsageCache(cfg.id)
+    const commands: string[] = []
+    let authorized = false
+    spawnMock.mockImplementation((_bin, args: string[], { env }) => {
+      expect(env).toMatchObject({ HOME: home, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '1', SSH_TTY: '1' })
+      const child = quotaChild()
+      commands.push(args[0])
+      queueMicrotask(() => {
+        if (args[0] === 'models') {
+          authorized = renewed
+          if (!renewed) child.stderr.write('Authentication required')
+          child.emit('close', renewed ? 0 : 1)
+        } else {
+          const message = authorized
+            ? { command: { data: { groups: [{ name: 'Gemini', buckets: [{ id: 'gemini-5h', window: '5h', remaining_fraction: 0.8 }] }] } } }
+            : { error: { status: 'UNAUTHENTICATED', message: 'HTTP 401' } }
+          child.stdout.write(JSON.stringify(message) + '\n')
+          child.emit('close', authorized ? 0 : 1)
+        }
+      })
+      return child
+    })
+    await expect(usage.refreshAgyQuota(cfg.id)).resolves.toBe(renewed)
+    expect(commands).toEqual(renewed ? ['-p', '-p', 'models', '-p'] : ['-p', '-p', 'models'])
+    const account = usage.snapshot().accounts[cfg.id]
+    if (renewed) expect(account.quota?.fiveHour?.percent).toBe(20)
+    else expect(account.quotaErrorKind).toBe('auth_expired')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('clears persisted account cache immediately and ignores a stale response', async () => {
+    const cfg = makeClaudeProfile({ id: 'claude-inflight' })
+    mockProfiles.push(cfg)
+    state.userDataDir = tempDir('agentswitch-quota-cleared-')
+    const usage = await import('./usage')
+    usage.recordQuota(cfg.id, { fiveHour: null, sevenDay: null, limited: true, plan: null }, 'claude-oauth')
+    usage.recordRun(cfg.id, 'claude-sonnet-4-5', { input: 42 })
+    let respond!: (value: unknown) => void
+    fetchMock.mockImplementation(() => new Promise((r) => { respond = r }))
+    const request = usage.refreshAccountQuota(cfg.id)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    usage.clearAccountUsageCache(cfg.id, { keepStats: true })
+    respond(mockFetchResponse(200, { five_hour: { utilization: 10 } }))
+    await expect(request).resolves.toBe(false)
+    expect(JSON.parse(readFileSync(join(state.userDataDir, 'quota-cache.json'), 'utf8'))).not.toHaveProperty(cfg.id)
+    expect(usage.snapshot().accounts[cfg.id]).toMatchObject({ quota: null, quotaErrorKind: null, limitedAt: null, today: { input: 42 } })
   })
 })

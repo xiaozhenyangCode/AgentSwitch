@@ -26,6 +26,8 @@ import {
   buildSpawnSpec,
   claudeDirs,
   cliVersion,
+  clearIsolatedCredentials,
+  clearProfileKeychainCache,
   envPreview,
   expandHome,
   getConfig,
@@ -41,6 +43,7 @@ import {
   listConfigs,
   loginSignature,
   removeProfile,
+  resolveProfileDir,
   reasonixCanImport,
   resetKindConfig,
   resetProfile,
@@ -53,6 +56,7 @@ import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { secrets } from './secrets'
 import { permissions } from './acp/permissions'
+import { agyAcpPool } from './acp/pool'
 import { ptyModeAllowed } from './apiKey'
 import { ChatStore } from './chatStore'
 import type { ApiKeyConfig } from '@shared/types'
@@ -89,7 +93,7 @@ import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
-import { onUsageChange, refreshUsage, setCustomPrice, syncPrices, snapshot as usageSnapshot, startUsage } from './usage'
+import { clearAccountUsageCache, onUsageChange, pauseAccountQuota, refreshAccountQuota, refreshUsage, setCustomPrice, syncPrices, snapshot as usageSnapshot, startUsage } from './usage'
 import { onRequestLogChange, queryRequestLogs } from './requestLog'
 import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
@@ -179,6 +183,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     onData: (e) => send(IPC.ptyData, e),
     onExit: (e) => {
       if (kindOfInstallSession(e.sessionId)) refreshRuntimePaths()
+      if (e.mode === 'login') finishLogin(e.sessionId, e.exitCode === 0)
       send(IPC.ptyExit, e)
     },
     onUrl: (e) => send(IPC.ptyUrl, e),
@@ -198,27 +203,39 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   )
 
   // ---- login success watcher ----------------------------------------------------
-  const loginWatchers = new Map<ProfileId, NodeJS.Timeout>()
+  const loginWatchers = new Map<ProfileId, { before: string; timer: NodeJS.Timeout; verified: boolean }>()
   const stopWatch = (id: ProfileId): void => {
-    const t = loginWatchers.get(id)
-    if (t) clearInterval(t)
+    const watch = loginWatchers.get(id)
+    if (watch) clearTimeout(watch.timer)
     loginWatchers.delete(id)
+    pauseAccountQuota(id, false)
   }
-  const watchLogin = (id: ProfileId): void => {
+  const loginChanged = (id: ProfileId, before: string): boolean =>
+    hasProfile(id) && loginSignature(id) !== before && isLoggedIn(id)
+
+  const finishLogin = (id: ProfileId, exitedSuccessfully: boolean): void => {
+    const watch = loginWatchers.get(id)
+    if (!watch) return
     stopWatch(id)
-    const before = loginSignature(id)
+    if ((!watch.verified && !exitedSuccessfully) || !loginChanged(id, watch.before)) return
+    clearProfileKeychainCache(resolveProfileDir(getConfig(id)))
+    agyAcpPool.retire(id)
+    orchestrator.rateLimited.delete(id)
+    forgetModels(id)
+    void refreshAccountQuota(id).catch((err) => console.warn('[usage] refreshing account quota failed', err))
+    send(IPC.loginSuccess, { profileId: id })
+    broadcast()
+  }
+
+  const watchLogin = (id: ProfileId, before: string): void => {
     const timer = setInterval(() => {
-      if (!hasProfile(id) || ptys.sessionMode(id) !== 'login') return stopWatch(id)
-      if (loginSignature(id) !== before && isLoggedIn(id)) {
-        stopWatch(id)
-        send(IPC.loginSuccess, { profileId: id })
-        setTimeout(() => {
-          if (ptys.sessionMode(id) === 'login') ptys.kill(id)
-          broadcast()
-        }, LOGIN_KILL_DELAY_MS)
-      }
+      const watch = loginWatchers.get(id)
+      if (!watch || !loginChanged(id, before)) return
+      clearInterval(timer)
+      watch.verified = true
+      watch.timer = setTimeout(() => ptys.kill(id), LOGIN_KILL_DELAY_MS)
     }, LOGIN_POLL_MS)
-    loginWatchers.set(id, timer)
+    loginWatchers.set(id, { before, timer, verified: false })
   }
 
   // ---- accounts -------------------------------------------------------------------
@@ -277,10 +294,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.profilesRemove, (_e, id: unknown) => {
     const pid = assertId(id)
+    const reasonix = getConfig(pid).kind === 'reasonix'
     stopWatch(pid)
-    ptys.forget(pid)
+    if (!reasonix) orchestrator.abortProfile(pid)
+    ptys.forget(pid, reasonix ? undefined : 'SIGKILL')
     ptys.forget(`run:${pid}`)
+    if (!reasonix) agyAcpPool.retire(pid, undefined, true)
     forgetModels(pid)
+    if (!reasonix) clearAccountUsageCache(pid)
     removeProfile(pid)
     broadcast()
   })
@@ -311,8 +332,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const id = assertId(req.profileId)
     if (!PROFILE_MODES.includes(req.mode)) throw new Error(`bad mode ${req.mode}`)
     if (req.mode === 'test' && !req.command?.trim()) throw new Error('test mode needs a command')
-    if (!ptyModeAllowed(getConfig(id), req.mode)) throw new Error(t('apikey.noLogin'))
-    const spec = buildSpawnSpec(id, req.mode, req.command)
+    const cfg = getConfig(id)
+    if (!ptyModeAllowed(cfg, req.mode)) throw new Error(t('apikey.noLogin'))
+    if (req.mode === 'login') {
+      stopWatch(id)
+      orchestrator.abortProfile(id)
+      ptys.forget(id, 'SIGKILL')
+      ptys.forget(`run:${id}`)
+      agyAcpPool.retire(id, undefined, true)
+      forgetModels(id)
+      clearAccountUsageCache(id, { keepStats: true })
+      clearProfileKeychainCache(resolveProfileDir(cfg))
+      clearIsolatedCredentials(cfg)
+    }
+    const spec = buildSpawnSpec(id, req.mode, req.command, true)
     // the chat's project folder, when it still exists
     if (typeof req.cwd === 'string' && isAbsolute(req.cwd)) {
       try {
@@ -321,8 +354,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
         /* moved or deleted: keep the home folder */
       }
     }
+    if (req.mode === 'login') {
+      const before = loginSignature(id)
+      pauseAccountQuota(id, true)
+      watchLogin(id, before)
+    }
     ptys.start(id, req.mode, spec, req.cols, req.rows)
-    if (req.mode === 'login') watchLogin(id)
     return id
   })
   let termSeq = 0
@@ -520,8 +557,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
           : undefined
     const engineKind = KINDS.includes(q.engineKind as ProfileKind) ? (q.engineKind as ProfileKind) : undefined
     return queryRequestLogs({
-      offset: typeof q.offset === 'number' ? q.offset : undefined,
-      limit: typeof q.limit === 'number' ? q.limit : undefined,
+      offset: typeof q.offset === 'number' && Number.isFinite(q.offset) ? q.offset : undefined,
+      limit: typeof q.limit === 'number' && Number.isFinite(q.limit) ? q.limit : undefined,
       statusCode,
       accountId: typeof q.accountId === 'string' && q.accountId ? q.accountId : undefined,
       engineKind,

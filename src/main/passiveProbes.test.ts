@@ -125,7 +125,7 @@ describe('P1-3 passive health & model probes', () => {
     expect(execFileMock).not.toHaveBeenCalled()
   })
 
-  it('uses prepare=false and non-interactive env on manual agy refresh', async () => {
+  it('prepares isolation and uses non-interactive env on manual agy refresh', async () => {
     getConfigMock.mockReturnValue(makeProfile('gemini', 'gemini-test'))
     execFileMock.mockImplementation((_bin, _args, _opts, cb) => {
       cb(null, 'gemini-4-neon-medium\tGemini 4 Neon (Medium)\n', '')
@@ -134,7 +134,7 @@ describe('P1-3 passive health & model probes', () => {
 
     const result = await listModels('gemini-test', true)
     expect(result.source).toBe('command')
-    expect(buildSpawnSpecMock).toHaveBeenCalledWith('gemini-test', 'run', undefined, false)
+    expect(buildSpawnSpecMock).toHaveBeenCalledWith('gemini-test', 'run', undefined, true)
     expect(execFileMock).toHaveBeenCalledTimes(1)
     const [, args, opts] = execFileMock.mock.calls[0]
     expect(args).toEqual(['models'])

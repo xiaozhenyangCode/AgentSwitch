@@ -108,6 +108,7 @@ interface Turn {
   idx: number
   current: RunHandle | null
   stopped: boolean
+  abortedProfile?: ProfileId
   paused: { reviewIdx: number; reason: string } | null
   retryBudget: number
   counter: number
@@ -505,12 +506,22 @@ export class Orchestrator {
     await turn.done
   }
 
-  stop(threadId: string): void {
+  stop(threadId: string, force = false): void {
     const turn = this.turns.get(threadId)
     if (!turn) return
     turn.stopped = true
-    if (turn.current) turn.current.kill()
+    if (turn.current) turn.current.kill(force)
     else this.end(turn, 'stopped')
+  }
+
+  abortProfile(id: ProfileId): void {
+    for (const [threadId, turn] of this.turns) {
+      if (turn.ending || (turn.steps[turn.idx]?.profileId !== id && !turn.steps.slice(turn.idx + 1).some((step) => step.profileId === id))) continue
+      if (turn.steps[turn.idx]?.profileId === id) turn.abortedProfile = id
+      this.stop(threadId, turn.abortedProfile === id)
+    }
+    this.rateLimited.delete(id)
+    this.busy.delete(id)
   }
 
   resume(threadId: string, turnId: string, action: 'retry' | 'skip' | 'stop'): void {
@@ -824,6 +835,7 @@ export class Orchestrator {
     const providerLabel = resolveProviderLabel(cfg)
     const allowNativeTitle = turn.req.wantTitle === true && (step.kind === 'own' || step.kind === 'summary')
     const emit = (event: AgentEvent): void => {
+      if (turn.abortedProfile === cfg.id) return
       if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
       if (event.t === 'request_usage') {
         recordedRequests++
@@ -921,7 +933,7 @@ export class Orchestrator {
         threadHistory
       },
       emit,
-      (text) => this.log(cfg.id, text)
+      (text) => { if (turn.abortedProfile !== cfg.id) this.log(cfg.id, text) }
     )
     turn.current = handle
     const r = await handle.done.finally(() => {
@@ -932,6 +944,11 @@ export class Orchestrator {
       }
     })
     turn.current = null
+    if (turn.abortedProfile === cfg.id) {
+      step.status = 'stopped'
+      this.emit({ kind: 'step-end', ...ids, status: 'stopped', marks: readMarks(step.text) })
+      return this.end(turn, 'stopped')
+    }
     this.busy.set(cfg.id, Math.max(0, (this.busy.get(cfg.id) ?? 1) - 1))
     if (r.ok) this.rateLimited.delete(cfg.id)
     this.onState()

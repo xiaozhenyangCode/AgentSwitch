@@ -117,8 +117,9 @@ export const zhCN = {
 
   // ---- accounts / install (app context)
   'acct.removeTitle': '删除「{name}」？',
-  'acct.removeImported': '只会从 AgentSwitch 中移除这个账号，{dir} 里的配置和登录信息会原样保留，命令行中仍可继续使用。',
-  'acct.removeOwn': '只会从 AgentSwitch 中移除这个账号。它的独立配置目录会保留在磁盘上，不会被删除。',
+  'acct.removeImported': '将从 AgentSwitch 移除这个账号。本机目录 {dir} 的配置和 CLI 登录态会保留。',
+  'acct.removeOwn': '将从 AgentSwitch 移除这个账号，并删除它的独立配置目录及凭证。',
+  'acct.removedGlobalHint': '已从 AgentSwitch 移除；本机全局 CLI 登录态未删除，如需切换请先登出',
   'acct.removeConfirm': '删除账号',
   'acct.removed': '已删除「{name}」',
   'acct.defaultName': '{kind} 账号 {n}',
@@ -303,6 +304,9 @@ export const zhCN = {
   'usage.retryAfter': '预计 {time} 恢复',
   'usage.noReady': '还没有就绪的账号，去「模型引擎」添加并登录。',
   'usage.limited': '已触发限流',
+  'usage.authExpiredBadge': '登录已过期',
+  'usage.authExpiredMsg': '登录凭证已过期，请重新授权',
+  'usage.reauth': '重新授权',
   'usage.used': '{which} 额度已用 {pct}%',
   'usage.remaining': '{which} 剩余 {pct}%',
   'usage.remainingReset': ' · {time} 重置',

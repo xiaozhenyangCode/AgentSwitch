@@ -24,6 +24,7 @@ vi.mock('../profiles', () => ({
   kindBinaryPath: () => '/fake/agy',
   hasProfile: () => false,
   getKindConfig: () => ({ models: ['gemini-test-default'] }),
+  resolveProfileDir: (cfg: ProfileConfig) => cfg.extraEnv.HOME || cfg.configDir,
   expandHome: (p: string) => p
 }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), spawn: stubs.spawn }))

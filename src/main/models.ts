@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/types'
 import { cleanModelName, EFFORT_SUFFIX_RE, effortRank, joinSpec, splitSpec } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, getKindConfig, hasProfile, isLoggedIn, KIND_DEFAULTS, kindBinaryPath } from './profiles'
+import { buildSpawnSpec, expandHome, getConfig, getKindConfig, hasProfile, isLoggedIn, KIND_DEFAULTS, kindBinaryPath, resolveProfileDir } from './profiles'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { t } from './i18n'
 import { displayModel } from './apiKey'
@@ -91,16 +91,25 @@ function collapseEfforts(rows: ModelOption[]): ModelOption[] {
   return out
 }
 
+const modelCommands = new Map<ProfileId, Set<AbortController>>()
+
 function run(cfg: ProfileConfig, args: string[], extraEnv?: Record<string, string>): Promise<string> {
   const bin = kindBinaryPath(cfg.kind)
   if (!bin) return Promise.reject(new Error(t('main.cliMissing')))
-  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, false)
+  const { env } = buildSpawnSpec(cfg.id, 'run', undefined, cfg.kind === 'gemini')
   const spawnEnv = extraEnv ? { ...env, ...extraEnv } : env
-  return new Promise((resolve, reject) => {
-    const child = execFile(bin, args, { env: spawnEnv, cwd: tmpdir(), timeout: CMD_TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
+  const controller = new AbortController()
+  const running = modelCommands.get(cfg.id) ?? new Set<AbortController>()
+  running.add(controller)
+  modelCommands.set(cfg.id, running)
+  return new Promise<string>((resolve, reject) => {
+    const child = execFile(bin, args, { signal: controller.signal, killSignal: 'SIGKILL', env: spawnEnv, cwd: tmpdir(), timeout: CMD_TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
       err ? reject(new Error((stderr || err.message).trim().split('\n').pop() || err.message)) : resolve(stdout)
     )
     child.stdin?.end()
+  }).finally(() => {
+    running.delete(controller)
+    if (!running.size && modelCommands.get(cfg.id) === running) modelCommands.delete(cfg.id)
   })
 }
 
@@ -120,10 +129,7 @@ export const codexModelArgs = (refresh: boolean): string[] => [
 
 // ---- claude ---------------------------------------------------------------------------
 
-export function claudeConfigDir(cfg: ProfileConfig): string {
-  const dir = expandHome(cfg.extraEnv.CLAUDE_CONFIG_DIR || cfg.configDir)
-  return dir === expandHome('~') ? join(dir, '.claude') : dir
-}
+export const claudeConfigDir = (cfg: ProfileConfig): string => resolveProfileDir(cfg)
 
 function claudeCatalog(cfg: ProfileConfig): { models: ModelOption[]; fetchedAt: number; defaultModel?: string } | null {
   const dir = join(claudeConfigDir(cfg), 'cache', 'model-catalog')
@@ -278,8 +284,8 @@ export function codexDefaultModel(): string {
   return configured ?? KIND_DEFAULTS.codex.models[0] ?? 'gpt-5-codex'
 }
 
-export const codexConfigDir = (cfg: ProfileConfig): string => expandHome(cfg.extraEnv.CODEX_HOME || cfg.configDir)
-export const agyHome = (cfg: ProfileConfig): string => expandHome(cfg.extraEnv.HOME || cfg.configDir)
+export const codexConfigDir = (cfg: ProfileConfig): string => resolveProfileDir(cfg)
+export const agyHome = (cfg: ProfileConfig): string => resolveProfileDir(cfg)
 
 function readSettings(path: string): Record<string, unknown> | null {
   try {
@@ -409,14 +415,18 @@ export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
   }
   const running = inflight.get(id)
   if (running && (!refresh || running.refresh)) return running.request
+  const invalidated = (): ModelList => ({ profileId: id, models: staticList(cfg), source: 'static', fetchedAt: Date.now() })
   const p = Promise.resolve().then(async (): Promise<ModelList> => {
+    const active = inflight.get(id)?.request
+    if (active !== p) return active ?? invalidated()
     let live: Omit<ModelList, 'profileId'>
     try {
       live = await fetchLive(cfg, refresh)
     } catch (e) {
       live = fallback(e instanceof Error ? e.message : String(e))
     }
-    if (inflight.get(id)?.request !== p) return listModels(id)
+    const latest = inflight.get(id)?.request
+    if (latest !== p) return latest ?? invalidated()
     const list = complete(live)
     if (list.source !== 'cache' && list.source !== 'static') {
       c[id] = list
@@ -431,6 +441,8 @@ export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
 }
 
 export function forgetModels(id: ProfileId): void {
+  for (const controller of modelCommands.get(id) ?? []) controller.abort()
+  modelCommands.delete(id)
   effectiveDefaults.delete(id)
   inflight.delete(id)
   const c = loadCache()

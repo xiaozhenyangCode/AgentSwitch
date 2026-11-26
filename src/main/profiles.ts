@@ -1,8 +1,8 @@
 import { app } from 'electron'
 import { execFile, spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import {
   KINDS,
   REASONIX_MODELS,
@@ -65,7 +65,7 @@ const AGY_AUTH_LEAK_VARS = [
   'GOOGLE_GENAI_USE_GCA'
 ]
 
-const isIsolatedGemini = (cfg: ProfileConfig, dir: string): boolean => cfg.kind === 'gemini' && dir !== realHome
+const isIsolatedGemini = (cfg: ProfileConfig, dir: string): boolean => cfg.kind === 'gemini' && safeRealpath(dir) !== safeRealpath(realHome)
 
 /** Symlinks `rel` (relative to both HOMEs) from the real HOME when it exists there and is absent here. */
 function linkFromRealHome(dir: string, rel: string): void {
@@ -136,8 +136,70 @@ export function expandHome(p: string): string {
   return resolve(p)
 }
 
+export const managedProfileRoot = (id: ProfileId): string => join(app.getPath('userData'), 'profiles', id)
 const managedDir = (id: ProfileId, kind: ProfileKind): string =>
-  join(app.getPath('userData'), 'profiles', id, ...(kind === 'gemini' ? ['home'] : []))
+  join(managedProfileRoot(id), ...(kind === 'gemini' ? ['home'] : []))
+
+const profileDirEnv = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME', gemini: 'HOME', reasonix: 'REASONIX_HOME' } as const
+
+export function resolveProfileDir(cfg: ProfileConfig): string {
+  const dir = expandHome(cfg.extraEnv?.[profileDirEnv[cfg.kind]] || cfg.configDir)
+  return cfg.kind === 'claude' && safeRealpath(dir) === safeRealpath(realHome) ? join(realHome, '.claude') : dir
+}
+
+/** Resolve existing ancestors too, so a missing path under a symlink cannot escape containment. */
+export function safeRealpath(path: string): string {
+  const seen = new Set<string>()
+  const canonical = (candidate: string): string => {
+    try {
+      return realpathSync(candidate)
+    } catch {
+      const parent = dirname(candidate)
+      if (parent === candidate || seen.has(candidate)) return candidate
+      seen.add(candidate)
+      let link: string
+      try {
+        link = readlinkSync(candidate)
+      } catch {
+        return join(canonical(parent), basename(candidate))
+      }
+      return canonical(resolve(canonical(parent), link))
+    }
+  }
+  return canonical(path)
+}
+
+const globalDirs = () => ['', '.claude', '.codex', '.gemini', '.reasonix'].map((name) => join(realHome, name))
+const within = (path: string, root: string) => path === root || path.startsWith(root + sep)
+
+export function isGlobalDefaultDir(cfg: ProfileConfig, dir = resolveProfileDir(cfg)): boolean {
+  const actual = safeRealpath(dir)
+  return globalDirs().some((path) => path === dir || safeRealpath(path) === actual)
+}
+
+export function isManagedProfileDir(cfg: ProfileConfig): boolean {
+  if (cfg.imported || !cfg.id || basename(cfg.id) !== cfg.id || cfg.id === '.' || cfg.id === '..') return false
+  const dir = resolveProfileDir(cfg)
+  const root = managedProfileRoot(cfg.id)
+  if (!within(dir, root)) return false
+  const expectedRoot = join(safeRealpath(app.getPath('userData')), 'profiles', cfg.id)
+  const actual = safeRealpath(dir)
+  for (let path = dir; within(path, root); path = dirname(path)) {
+    try {
+      if (lstatSync(path).isSymbolicLink()) return false
+    } catch {
+      // The directory may be new.
+    }
+  }
+  const protectedDirs = globalDirs().slice(1)
+  return !isGlobalDefaultDir(cfg, dir) && safeRealpath(root) === expectedRoot && within(actual, expectedRoot) &&
+    !protectedDirs.some((path) => within(dir, path) || within(actual, safeRealpath(path)))
+}
+
+export function claudeCredentialService(dir: string): string {
+  return isSystemClaudeDir(dir) ? 'Claude Code-credentials' :
+    `Claude Code-credentials-${createHash('sha256').update(safeRealpath(dir)).digest('hex').slice(0, 8)}`
+}
 
 const newId = (kind: ProfileKind): ProfileId => `${kind}-${randomBytes(3).toString('hex')}`
 
@@ -256,15 +318,20 @@ export function initProfiles(): void {
   persist()
 }
 
-const withDefaults = (p: ProfileConfig): ProfileConfig => ({
-  ...p,
-  defaultModel: p.defaultModel ?? '',
-  autoApprove: resolvePermissionMode(p.kind, p.autoApprove),
-  ...(getProviderCapabilities(p.kind).supportsInteractiveTransport
-    ? { agyTransport: p.agyTransport === 'acp' ? ('acp' as const) : ('print' as const) }
-    : {}),
-  extraEnv: { ...p.extraEnv }
-})
+const withDefaults = (p: ProfileConfig): ProfileConfig => {
+  const extraEnv = { ...p.extraEnv }
+  // Apply the same pinned-directory constraint to older Reasonix records as to settings edits.
+  if (p.kind === 'reasonix') delete extraEnv.REASONIX_HOME
+  return {
+    ...p,
+    defaultModel: p.defaultModel ?? '',
+    autoApprove: resolvePermissionMode(p.kind, p.autoApprove),
+    ...(getProviderCapabilities(p.kind).supportsInteractiveTransport
+      ? { agyTransport: p.agyTransport === 'acp' ? ('acp' as const) : ('print' as const) }
+      : {}),
+    extraEnv
+  }
+}
 
 export const listConfigs = (): ProfileConfig[] => store.profiles.map(withDefaults)
 
@@ -374,7 +441,7 @@ export function reasonixCanImport(): boolean {
 export function reasonixManagedProfilePath(cfg: ProfileConfig): string | null {
   if (cfg.imported) return null
   try {
-    const actual = managedReasonixPath(expandHome(cfg.configDir), reasonixProfilesRoot(), cfg.id)
+    const actual = managedReasonixPath(resolveProfileDir(cfg), reasonixProfilesRoot(), cfg.id)
     let imported = expandHome(REASONIX_IMPORT_DIR)
     try {
       imported = realpathSync(imported)
@@ -517,10 +584,14 @@ export function removeProfile(id: ProfileId): void {
       imported: cfg.imported
     })
   }
+  if (cfg && cfg.kind !== 'reasonix') {
+    agyAcpPool.retire(id)
+    deleteManagedProfileDir(withDefaults(cfg))
+    clearProfileKeychainCache(resolveProfileDir(withDefaults(cfg)))
+  }
   store.profiles = store.profiles.filter((p) => p.id !== id)
   persist()
   if (cfg?.kind === 'reasonix') return
-  agyAcpPool.retire(id)
   try {
     secrets().remove(id)
   } catch (e) {
@@ -556,7 +627,7 @@ export function which(bin: string, pathVar: string): string | null {
 export const kindBinaryPath = (kind: ProfileKind): string | null =>
   which(getKindConfig(kind).binary, getBaseEnv().PATH ?? '')
 
-const isSystemClaudeDir = (dir: string): boolean => dir === join(realHome, '.claude')
+const isSystemClaudeDir = (dir: string): boolean => safeRealpath(dir) === safeRealpath(join(realHome, '.claude'))
 
 function readJson(p: string): any {
   try {
@@ -574,10 +645,85 @@ function readJson(p: string): any {
  * Cached briefly: state snapshots are rebuilt often.
  */
 const keychainCache = new Map<string, { at: number; value: string | null }>()
+export function clearProfileKeychainCache(dir?: string): void {
+  if (dir === undefined) keychainCache.clear()
+  else {
+    const actual = safeRealpath(dir)
+    for (const key of keychainCache.keys()) if (key === dir || safeRealpath(key) === actual) keychainCache.delete(key)
+  }
+}
+
+/** Only follow paths within the profile when searching for or removing sensitive data. */
+function localPath(dir: string, path: string): boolean {
+  return within(safeRealpath(dirname(path)), safeRealpath(dir))
+}
+
+function isolatedKeychainFiles(dir: string): string[] {
+  return [ISOLATED_KEYCHAIN, ISOLATED_KEYCHAIN_LINK].map((name) => join(dir, 'Library', 'Keychains', name))
+    .filter((path) => localPath(dir, path) && within(safeRealpath(path), safeRealpath(dir)) && existsSync(path))
+}
+
+export function clearIsolatedCredentials(cfg: ProfileConfig): void {
+  if (!isManagedProfileDir(cfg)) return
+  const dir = resolveProfileDir(cfg)
+  const remove = (path: string) => {
+    if (localPath(dir, path)) rmSync(path, { recursive: true, force: true })
+  }
+  if (cfg.kind === 'gemini') {
+    if (process.platform === 'darwin') {
+      const env = { HOME: dir, PATH: '/usr/bin:/bin', USER: process.env.USER ?? '' }
+      for (const path of new Set(isolatedKeychainFiles(dir).map(safeRealpath))) {
+        spawnSync('/usr/bin/security', ['delete-generic-password', '-s', 'gemini', '-a', 'antigravity', path], { env, timeout: 3000 })
+      }
+    }
+    for (const name of [ISOLATED_KEYCHAIN, ISOLATED_KEYCHAIN_LINK, ISOLATED_KEYCHAIN_PASS]) remove(join(dir, 'Library', 'Keychains', name))
+    for (const path of agyTokenFiles(dir, true)) remove(path)
+    remove(join(dir, '.gemini', 'antigravity-cli', 'jetski_state.pbtxt'))
+  } else if (cfg.kind === 'claude') {
+    remove(join(dir, '.credentials.json'))
+    const path = join(dir, '.claude.json')
+    if (within(safeRealpath(path), safeRealpath(dir))) {
+      const data = readJson(path)
+      if (data?.oauthAccount !== undefined) {
+        delete data.oauthAccount
+        const temp = join(dir, `.claude.json.${randomBytes(8).toString('hex')}`)
+        try {
+          writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' })
+          renameSync(temp, path)
+        } finally {
+          rmSync(temp, { force: true })
+        }
+      }
+    }
+    if (process.platform === 'darwin') {
+      const result = spawnSync('/usr/bin/security', ['delete-generic-password', '-s', claudeCredentialService(dir)], {
+        encoding: 'utf8', timeout: 3000
+      })
+      if (result.status !== 0 && result.status !== 44 && !/could not be found/i.test(result.stderr ?? '')) {
+        throw new Error('Could not remove isolated Claude OAuth credentials from Keychain')
+      }
+    }
+  } else if (cfg.kind === 'codex') {
+    remove(join(dir, 'auth.json'))
+  }
+  clearProfileKeychainCache(dir)
+}
+
+export function deleteManagedProfileDir(cfg: ProfileConfig): boolean {
+  if (cfg.kind === 'reasonix' || !isManagedProfileDir(cfg)) return false
+  clearIsolatedCredentials(cfg)
+  if (!isManagedProfileDir(cfg)) return false
+  rmSync(managedProfileRoot(cfg.id), { recursive: true, force: true })
+  clearProfileKeychainCache(resolveProfileDir(cfg))
+  return true
+}
+
 function agyKeychainItem(home: string): string | null {
   const hit = keychainCache.get(home)
   if (hit && Date.now() - hit.at < 1000) return hit.value
-  const r = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'], {
+  const paths = safeRealpath(home) === safeRealpath(realHome) ? [] : isolatedKeychainFiles(home)
+  if (!paths.length && safeRealpath(home) !== safeRealpath(realHome)) return null
+  const r = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity', ...paths], {
     env: { HOME: home, PATH: '/usr/bin:/bin', USER: process.env.USER ?? '' },
     encoding: 'utf8',
     timeout: 3000
@@ -591,10 +737,11 @@ function agyKeychainItem(home: string): string | null {
  * When the keychain is unavailable (e.g. isolated HOME) agy falls back to file storage.
  * The exact file isn't documented, so look for token-like files under ~/.gemini (depth 2).
  */
-function agyTokenFiles(home: string): string[] {
+function agyTokenFiles(home: string, forCleanup = false): string[] {
   const root = join(home, '.gemini')
   const out: string[] = []
   const walk = (dir: string, depth: number) => {
+    if (!within(safeRealpath(dir), safeRealpath(home))) return
     let names: string[]
     try {
       names = readdirSync(dir)
@@ -603,8 +750,9 @@ function agyTokenFiles(home: string): string[] {
     }
     for (const n of names) {
       const p = join(dir, n)
-      if (/token|credential|keyring|secret|oauth/i.test(n)) out.push(p)
-      else if (depth > 0 && n !== 'conversations' && n !== 'log' && n !== 'skills' && n !== 'plugins') {
+      if (/token|credential|keyring|secret|oauth/i.test(n)) {
+        if (forCleanup || within(safeRealpath(p), safeRealpath(home))) out.push(p)
+      } else if (depth > 0 && n !== 'conversations' && n !== 'log' && n !== 'skills' && n !== 'plugins') {
         try {
           if (statSync(p).isDirectory()) walk(p, depth - 1)
         } catch {
@@ -618,7 +766,7 @@ function agyTokenFiles(home: string): string[] {
 }
 
 /** Best-effort "has this account completed OAuth" check, by kind. */
-function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
+function detectLoggedIn(cfg: ProfileConfig, dir = resolveProfileDir(cfg)): boolean {
   if (cfg.apiKey && canUseOAuthLogin(cfg.kind)) return secrets().has(cfg.id)
   switch (cfg.kind) {
     case 'claude': {
@@ -643,7 +791,7 @@ function detectLoggedIn(cfg: ProfileConfig, dir: string): boolean {
 
 export function isLoggedIn(id: ProfileId): boolean {
   const cfg = getConfig(id)
-  return detectLoggedIn(cfg, expandHome(cfg.configDir))
+  return detectLoggedIn(cfg)
 }
 
 /**
@@ -653,7 +801,7 @@ export function isLoggedIn(id: ProfileId): boolean {
  */
 export function loginSignature(id: ProfileId): string {
   const cfg = getConfig(id)
-  const dir = expandHome(cfg.configDir)
+  const dir = resolveProfileDir(cfg)
   const stamp = (p: string): string => {
     try {
       const st = statSync(p)
@@ -673,7 +821,6 @@ export function loginSignature(id: ProfileId): string {
       keychainCache.delete(dir)
       return [
         `kc:${agyKeychainItem(dir) ?? '-'}`,
-        stamp(join(dir, '.gemini', 'antigravity-cli', 'jetski_state.pbtxt')),
         ...agyTokenFiles(dir).map(stamp)
       ].join('|')
     case 'codex':
@@ -714,13 +861,16 @@ const ISOLATED_KEYCHAIN_PASS = '.passphrase'
  * `login.keychain-db` specially and rejects `unlock-keychain -p` for it (exit 51), we create
  * `agentswitch.keychain-db` and point `login.keychain-db` at it via a relative symlink.
  */
-export function ensureIsolatedKeychain(dir: string): void {
-  if (process.platform !== 'darwin' || dir === realHome) return
+export function ensureIsolatedKeychain(dir: string, required = true): void {
+  if (process.platform !== 'darwin' || safeRealpath(dir) === safeRealpath(realHome)) return
   const kcDir = join(dir, 'Library', 'Keychains')
   const kcPath = join(kcDir, ISOLATED_KEYCHAIN)
   const loginLink = join(kcDir, ISOLATED_KEYCHAIN_LINK)
   const passPath = join(kcDir, ISOLATED_KEYCHAIN_PASS)
   const env = { HOME: dir, PATH: '/usr/bin:/bin', USER: process.env.USER ?? '' }
+  if (![kcPath, passPath].every((path) => within(safeRealpath(path), safeRealpath(dir))) || !localPath(dir, loginLink)) {
+    throw new Error('Isolated Keychain path escapes the account directory')
+  }
 
   let loginStat: ReturnType<typeof lstatSync> | null = null
   try {
@@ -729,6 +879,9 @@ export function ensureIsolatedKeychain(dir: string): void {
     /* not present */
   }
   // If a regular (non-symlink) login.keychain-db already exists here, leave it untouched.
+  if (loginStat?.isSymbolicLink() && existsSync(loginLink) && !within(safeRealpath(loginLink), safeRealpath(dir))) {
+    throw new Error('Isolated login Keychain points outside the account directory')
+  }
   if (loginStat && !loginStat.isSymbolicLink() && !existsSync(kcPath)) return
 
   try {
@@ -744,8 +897,7 @@ export function ensureIsolatedKeychain(dir: string): void {
       }
       const created = spawnSync('/usr/bin/security', ['create-keychain', '-p', pw, kcPath], { env, encoding: 'utf8', timeout: 5000 })
       if (created.status !== 0 || !existsSync(kcPath)) {
-        console.warn(`[profiles] create-keychain failed for ${kcPath}:`, created.stderr?.trim() || created.error)
-        return
+        throw new Error('Could not create the isolated Gemini Keychain')
       }
       // Disable auto-lock timeout and lock-on-sleep so background refreshes stay unlocked.
       spawnSync('/usr/bin/security', ['set-keychain-settings', kcPath], { env, encoding: 'utf8', timeout: 5000 })
@@ -756,20 +908,22 @@ export function ensureIsolatedKeychain(dir: string): void {
       unlinkSync(loginLink)
       symlinkSync(ISOLATED_KEYCHAIN, loginLink)
     }
+    if (!pw && required) throw new Error('Isolated Gemini Keychain password is missing')
     if (pw) {
       const unlocked = spawnSync('/usr/bin/security', ['unlock-keychain', '-p', pw, kcPath], { env, encoding: 'utf8', timeout: 5000 })
       if (unlocked.status !== 0) {
-        console.warn(`[profiles] unlock-keychain failed for ${kcPath}:`, unlocked.stderr?.trim() || unlocked.error)
+        throw new Error('Could not unlock the isolated Gemini Keychain')
       }
     }
   } catch (e) {
+    if (required) throw e
     console.warn(`[profiles] ensureIsolatedKeychain failed for ${dir}`, e)
   }
 }
 
 /** Ensures the isolation dir exists. Never touches existing dirs/symlinks (e.g. ~/.claude2/projects). */
 export function prepareProfileDir(cfg: ProfileConfig): string {
-  const dir = expandHome(cfg.configDir)
+  const dir = resolveProfileDir(cfg)
   if (cfg.kind === 'reasonix') {
     if (!cfg.imported && !reasonixManagedProfilePath(cfg)) throw new Error(t('reasonix.writeFailed'))
     return dir
@@ -777,7 +931,7 @@ export function prepareProfileDir(cfg: ProfileConfig): string {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   if (isIsolatedGemini(cfg, dir)) {
     for (const rel of [...HOME_LINKS, ...AGY_SHARED_LINKS]) linkFromRealHome(dir, rel)
-    ensureIsolatedKeychain(dir)
+    ensureIsolatedKeychain(dir, !cfg.apiKey)
   }
   if (cfg.kind === 'gemini' && isApiKeyAccount(cfg)) ensureAgyGeminiProvider(dir)
   return dir
@@ -802,10 +956,11 @@ function isolationEnv(cfg: ProfileConfig, dir: string): Record<string, string> {
   const env: Record<string, string> = {}
   switch (cfg.kind) {
     case 'claude':
-      if (!isSystemClaudeDir(dir)) env.CLAUDE_CONFIG_DIR = dir
+      if (isSystemClaudeDir(dir)) env.HOME = realHome
+      else env.CLAUDE_CONFIG_DIR = dir
       break
     case 'gemini':
-      if (dir !== realHome) env.HOME = dir
+      env.HOME = dir
       // Background calls (agy models, /usage, chat turns) must not stall on or trigger self-updates.
       env.AGY_CLI_DISABLE_AUTO_UPDATE = '1'
       break
@@ -874,14 +1029,28 @@ export function buildInstallSpec(kind: ProfileKind, update = false, prepare = tr
 export function buildSpawnSpec(id: ProfileId, mode: Exclude<PtyMode, 'install'>, command?: string, prepare = true): SpawnSpec {
   const cfg = getConfig(id)
   const base = getBaseEnv()
-  const dir = prepare ? prepareProfileDir(cfg) : expandHome(cfg.configDir)
+  const dir = resolveProfileDir(cfg)
+  if (cfg.kind !== 'reasonix' && !cfg.imported && within(dir, managedProfileRoot(cfg.id)) && !isManagedProfileDir(cfg)) {
+    throw new Error('Managed account directory escapes its profile')
+  }
+  if (canUseOAuthLogin(cfg.kind) && !cfg.apiKey && !isGlobalDefaultDir(cfg, dir)) {
+    const credentialPaths = cfg.kind === 'gemini' ? ['.gemini', '.gemini/antigravity-cli'] :
+      cfg.kind === 'claude' ? ['.credentials.json', '.claude.json'] : cfg.kind === 'codex' ? ['auth.json'] : []
+    if (credentialPaths.some((path) => !within(safeRealpath(join(dir, path)), safeRealpath(dir)))) {
+      throw new Error('OAuth credential path escapes the account directory')
+    }
+  }
+  if (prepare) prepareProfileDir(cfg)
   if (isIsolatedGemini(cfg, dir)) for (const k of AGY_AUTH_LEAK_VARS) delete base[k]
   // Inherited credential vars are always dropped, so a global `export ANTHROPIC_BASE_URL=…`
   // can't redirect a subscription account, and an API-key account gets only its own key.
   const isolation = isolationEnv(cfg, dir)
+  const extra = { ...cfg.extraEnv }
+  delete extra[profileDirEnv[cfg.kind]]
+  if (cfg.kind === 'claude') delete base.CLAUDE_CONFIG_DIR
   const added = cfg.kind === 'reasonix'
     ? { ...stripCredentials('reasonix', cfg.extraEnv), ...isolation }
-    : { ...isolation, ...accountKeyEnv(cfg), ...cfg.extraEnv }
+    : { ...accountKeyEnv(cfg), ...extra, ...isolation }
   const env = { ...stripCredentials(cfg.kind, base), ...added }
   const injected = maskEnv(added)
   const cwd = realHome
@@ -896,7 +1065,7 @@ export function envPreview(id: ProfileId, mode: PtyMode): EnvPreview {
   const cfg = getConfig(id)
   const s = mode === 'install' ? buildInstallSpec(cfg.kind, false, false) : buildSpawnSpec(id, mode, undefined, false)
   const removed = strippedVarNames()
-  if (mode !== 'install' && isIsolatedGemini(cfg, expandHome(cfg.configDir))) removed.push(...AGY_AUTH_LEAK_VARS)
+  if (mode !== 'install' && isIsolatedGemini(cfg, resolveProfileDir(cfg))) removed.push(...AGY_AUTH_LEAK_VARS)
   return { injected: s.injected, removed, shell: s.shell, args: s.args, cwd: s.cwd }
 }
 
@@ -906,7 +1075,7 @@ export function envPreview(id: ProfileId, mode: PtyMode): EnvPreview {
  * `sessions/`, or `conversations/`) can natively `--resume` each other's sessions.
  */
 export function sessionStoreKeyOf(cfg: ProfileConfig): string {
-  const dir = expandHome(cfg.configDir)
+  const dir = resolveProfileDir(cfg)
   const sub =
     cfg.kind === 'claude'
       ? join(dir, 'projects')
@@ -931,7 +1100,7 @@ export function getState(
   rateLimited: boolean,
   installing: boolean
 ): ProfileState {
-  const dir = expandHome(cfg.configDir)
+  const dir = resolveProfileDir(cfg)
   const loggedIn = binaryPath ? detectLoggedIn(cfg, dir) : false
   let status: ProfileStatus
   if (sessionMode) status = 'running'
@@ -939,5 +1108,5 @@ export function getState(
   else if (rateLimited) status = 'rate_limited'
   else if (!loggedIn) status = 'not_logged_in'
   else status = 'idle'
-  return { ...cfg, status, binaryPath, loggedIn, resolvedConfigDir: dir, sessionStoreKey: sessionStoreKeyOf(cfg), sessionMode, installing }
+  return { ...cfg, status, binaryPath, loggedIn, resolvedConfigDir: dir, isManagedDir: isManagedProfileDir(cfg), isGlobalDir: isGlobalDefaultDir(cfg, dir), sessionStoreKey: sessionStoreKeyOf(cfg), sessionMode, installing }
 }
