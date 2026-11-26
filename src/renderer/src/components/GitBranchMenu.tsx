@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GitBranch, GitCommit, GitMutation, GitStatus } from '@shared/types'
+import type { GitBranch, GitCommit, GitMergeMode, GitMutation, GitPullStrategy, GitStatus } from '@shared/types'
 import { useEscape } from '../lib/escStack'
+import { btnPrimary, btnSecondary } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { fmtAgo, t } from '../state/i18n'
+import { setSetting, useSettings } from '../state/settings'
 import type { RunGit } from '../state/useProjectGit'
-import { Segmented } from './common'
-import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFile, IconPlus, IconRefresh, IconSearch, IconX, Spinner } from './icons'
+import { Modal, Segmented } from './common'
+import { gitOperationReason } from './GitConflicts'
+import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFile, IconGear, IconPlus, IconRefresh, IconSearch, IconX, Spinner } from './icons'
 
 const itemBase = 'flex min-h-8 min-w-0 items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-45'
 const item = itemBase + ' w-full'
@@ -29,18 +32,96 @@ const syncActions = [
 
 type View = 'branches' | 'commits'
 type CommitLog = { kind: 'loading' } | { kind: 'ready'; commits: GitCommit[] } | { kind: 'error'; detail: string }
+type BranchFormAction = 'rename' | 'upstream' | 'merge'
+type RepoStatus = Extract<GitStatus, { repo: true }>
 
-export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChanges, onViewHistory }: {
-  dir: string
-  status: Extract<GitStatus, { repo: true }>
+interface GitSyncProps {
+  status: RepoStatus
   disabled: boolean
   pending: GitMutation['kind'] | null
   run: RunGit
+}
+
+export function GitSyncBar({ status, pending, disabled, run, compact = false }: GitSyncProps & { compact?: boolean }) {
+  const { confirm } = useApp()
+  const { gitPullStrategy, gitFetchPrune } = useSettings()
+  const [options, setOptions] = useState(false)
+  useEscape(() => setOptions(false), options)
+
+  const sync = (kind: 'fetch' | 'pull' | 'push') => {
+    if (kind === 'fetch') return run({ kind, prune: gitFetchPrune })
+    if (kind === 'pull') return run({ kind, strategy: gitPullStrategy })
+    return run({ kind })
+  }
+  const forcePush = async () => {
+    setOptions(false)
+    const label = t('git.forcePush')
+    if (await confirm({ title: label, message: t('git.forcePushConfirm', {
+      name: status.upstream ?? `origin/${status.branch}`
+    }), confirmLabel: label, destructive: true })) {
+      await run({ kind: 'push', forceWithLease: true })
+    }
+  }
+
+  return (
+    <div className={compact ? 'flex shrink-0 items-center gap-0.5' : 'flex items-center gap-1'}>
+      {syncActions.map(({ kind, Icon, progress }) => {
+        const active = kind === pending
+        const label = t(kind === 'push' && !status.upstream ? 'git.publish' : `git.${kind}`)
+        const count = kind === 'pull' && status.behind ? `↓${status.behind}` : kind === 'push' && status.ahead ? `↑${status.ahead}` : ''
+        const unavailable = kind === 'pull' ? !status.upstream
+          : kind === 'push' ? !status.branch || (!status.upstream && !status.remotes.includes('origin')) : !status.remotes.length
+        const blocked = kind === 'fetch' ? undefined : gitOperationReason(status.inProgress)
+        return (
+          <button type="button" key={kind}
+            className={itemBase + (compact ? ' gap-1 px-1.5' : ' flex-1 justify-center gap-1 px-1.5') + (active ? ' disabled:opacity-100!' : '')}
+            disabled={disabled || unavailable || !!blocked} aria-label={active ? t(progress) : label}
+            title={active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')} onClick={() => void sync(kind)}>
+            {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
+            <span className={compact ? 'hidden min-[1100px]:inline' : 'truncate'}>{active ? t(progress) : label}</span>
+            {!compact && !active && count && <span className="shrink-0 text-[10px] tabular-nums text-ink-3">{count}</span>}
+          </button>
+        )
+      })}
+      <div className={compact ? 'relative shrink-0' : 'shrink-0'} onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setOptions(false)
+      }}>
+        <button type="button" className={itemBase + ' px-1.5'} aria-expanded={options}
+          aria-label={t('git.syncOptions')} title={t('git.syncOptions')} onClick={() => setOptions(!options)}>
+          <IconGear size={14} />
+        </button>
+        {options && (
+          <div className={`absolute right-0 z-40 w-56 space-y-2 rounded-xl border border-hairline bg-surface p-2.5 text-[12px] shadow-lg ${compact ? 'top-full mt-1' : 'bottom-12 mr-2'}`}>
+            <label className="flex items-center gap-2 px-1 text-ink">
+              <input type="checkbox" checked={gitFetchPrune} onChange={(e) => setSetting('gitFetchPrune', e.target.checked)} />
+              {t('git.fetchPrune')}
+            </label>
+            <label className="block space-y-1">
+              <span className="px-1 text-ink-2">{t('git.pullStrategy')}</span>
+              <select className={gitInput} value={gitPullStrategy} onChange={(e) => setSetting('gitPullStrategy', e.target.value as GitPullStrategy)}>
+                <option value="ff-only">{t('git.ffOnly')}</option>
+                <option value="merge">{t('git.mergeDefault')}</option>
+                <option value="rebase">{t('git.rebase')}</option>
+              </select>
+            </label>
+            <button type="button" className={item + ' text-danger!'} onClick={() => void forcePush()}
+              disabled={disabled || !!status.inProgress || !status.branch || (!status.upstream && !status.remotes.includes('origin'))}>
+              {t('git.forcePush')}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChanges, onViewHistory }: GitSyncProps & {
+  dir: string
   onViewChanges: () => void
   onViewHistory: () => void
 }) {
-  const { toast } = useApp()
-  const operationReason = status.operation ? t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) }) : undefined
+  const { toast, confirm } = useApp()
+  const operationReason = gitOperationReason(status.inProgress)
   const branchDisabled = disabled || !!operationReason
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<View>('branches')
@@ -51,6 +132,8 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [commitLog, setCommitLog] = useState<CommitLog>({ kind: 'loading' })
   const [copiedHash, setCopiedHash] = useState<string | null>(null)
+  const [actions, setActions] = useState<GitBranch | null>(null)
+  const [form, setForm] = useState<{ action: BranchFormAction; branch: GitBranch } | null>(null)
   const logRequest = useRef(0)
   const currentView = useRef(view)
   currentView.current = view
@@ -67,6 +150,7 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
     setOpen(false)
     setView('branches')
     setQuery('')
+    setActions(null)
     leaveCreate()
   }
 
@@ -78,8 +162,12 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
       const result = await window.agentswitch.git.log(dir)
       if (request !== logRequest.current) return
       setCommitLog(result.ok ? { kind: 'ready', commits: result.commits } : { kind: 'error', detail: result.error })
+      if (!result.ok) toast({ kind: 'error', title: t('git.historyFailed'), desc: result.error })
     } catch (error) {
-      if (request === logRequest.current) setCommitLog({ kind: 'error', detail: String(error) })
+      if (request === logRequest.current) {
+        setCommitLog({ kind: 'error', detail: String(error) })
+        toast({ kind: 'error', title: t('git.historyFailed'), desc: String(error) })
+      }
     }
   }
 
@@ -87,6 +175,7 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
     if (next === view) return
     setView(next)
     setQuery('')
+    setActions(null)
     leaveCreate()
     queueMicrotask(() => search.current?.focus())
     if (next === 'commits') void loadCommitLog()
@@ -135,22 +224,76 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
     remotes.set(branch.remote, group)
   }
 
+  const switchTo = async (op: Extract<GitMutation, { kind: 'switch' }>) => {
+    const result = await run(op)
+    if (result.ok) return close()
+    if (result.code !== 'switchChanges') return
+    close()
+    if (await confirm({
+      title: t('git.errSwitchChanges'), message: t('git.autoStashConfirm', { name: op.name }),
+      confirmLabel: t('git.autoStashSwitch')
+    })) await run({ ...op, autoStash: true })
+  }
+
+  const openForm = (action: BranchFormAction, branch: GitBranch) => {
+    close()
+    setForm({ action, branch })
+  }
+
+  const deleteBranch = async (branch: GitBranch) => {
+    close()
+    const label = t(branch.remote ? 'git.deleteRemoteBranch' : 'git.deleteBranch')
+    if (!(await confirm({
+      title: label,
+      message: t(branch.remote ? 'git.deleteRemoteBranchConfirm' : 'git.deleteBranchConfirm', { name: branch.name }),
+      confirmLabel: label, destructive: true
+    }))) return
+    if (branch.remote !== null) {
+      await run({ kind: 'deleteRemoteBranch', remote: branch.remote, branch: branch.name.slice(branch.remote.length + 1) })
+      return
+    }
+    const result = await run({ kind: 'deleteBranch', name: branch.name })
+    const forceLabel = t('git.forceDeleteBranch')
+    if (!result.ok && result.code === 'branchNotMerged' && await confirm({
+      title: forceLabel, message: t('git.forceDeleteBranchConfirm', { name: branch.name }),
+      confirmLabel: forceLabel, destructive: true
+    })) await run({ kind: 'deleteBranch', name: branch.name, force: true })
+  }
+
   const renderBranch = (branch: GitBranch) => {
     const localName = branch.remote === null ? branch.name : branch.name.slice(branch.remote.length + 1)
     const alreadyLocal = branch.remote !== null && localNames.has(localName)
     const active = branch.remote === null && branch.name === status.branch
     const label = alreadyLocal ? `${branch.name} · ${t('git.alreadyLocal')}` : branch.name
+    const showActions = actions?.name === branch.name && actions.remote === branch.remote
     return (
-      <button key={branch.name} className={item} disabled={branchDisabled || active} title={operationReason ?? label} onClick={() => {
-        void run({ kind: 'switch', name: alreadyLocal ? localName : branch.name, remote: alreadyLocal ? null : branch.remote }).then((result) => {
-          if (result.ok) close()
-        })
-      }}>
-        <IconBranch size={13} className={`shrink-0 ${active ? 'text-accent' : 'text-ink-3'}`} aria-hidden="true" />
-        <span className={`min-w-0 flex-1 truncate ${active ? 'font-medium' : ''}`}>{branch.name}</span>
-        {alreadyLocal && <span className="shrink-0 text-[10.5px] text-ink-3">{t('git.alreadyLocal')}</span>}
-        {active && <IconCheck size={14} className="shrink-0 text-accent" />}
-      </button>
+      <div key={branch.name}>
+        <div className="flex items-center">
+          <button className={item} disabled={branchDisabled || active} title={operationReason ?? label} onClick={() => {
+            void switchTo({ kind: 'switch', name: alreadyLocal ? localName : branch.name, remote: alreadyLocal ? null : branch.remote })
+          }}>
+            <IconBranch size={13} className={`shrink-0 ${active ? 'text-accent' : 'text-ink-3'}`} aria-hidden="true" />
+            <span className={`min-w-0 flex-1 truncate ${active ? 'font-medium' : ''}`}>{branch.name}</span>
+            {alreadyLocal && <span className="shrink-0 text-[10.5px] text-ink-3">{t('git.alreadyLocal')}</span>}
+            {active && <IconCheck size={14} className="shrink-0 text-accent" />}
+          </button>
+          <button type="button" className={itemBase + ' shrink-0 px-2'} aria-label={t('git.branchActions', { name: branch.name })}
+            title={t('git.branchActions', { name: branch.name })} disabled={disabled} aria-expanded={showActions}
+            onClick={() => setActions(showActions ? null : branch)}><IconGear size={13} /></button>
+        </div>
+        {showActions && (
+          <div className="ml-4 rounded-lg border border-hairline bg-surface-2 p-0.5">
+            {branch.remote === null && <>
+              <button className={item} disabled={disabled} onClick={() => openForm('rename', branch)}>{t('git.renameBranch')}</button>
+              <button className={item} disabled={disabled} onClick={() => openForm('upstream', branch)}>{t('git.setUpstream')}</button>
+            </>}
+            {!active && status.branch && <button className={item} disabled={disabled} onClick={() => openForm('merge', branch)}>{t('git.mergeInto', { name: status.branch })}</button>}
+            {!active && <button className={item + ' text-danger!'} disabled={disabled} onClick={() => void deleteBranch(branch)}>
+              {t(branch.remote ? 'git.deleteRemoteBranch' : 'git.deleteBranch')}
+            </button>}
+          </div>
+        )}
+      </div>
     )
   }
 
@@ -223,7 +366,7 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
       </button>
       <span className="sr-only" role="status">{progressLabel}</span>
       {open && (
-        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-[360px] max-w-full rounded-2xl bg-surface/95 p-2 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-[360px] max-w-full rounded-2xl bg-surface p-2 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)]">
           <Segmented size="sm" value={view} onChange={selectView} options={[
             { value: 'branches', label: t('git.branchesTab') },
             { value: 'commits', label: t('git.commitsTab') }
@@ -311,26 +454,11 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
           ))}
           <div className="mx-1.5 my-1 h-px bg-hairline" />
           {operationReason && <p className="px-2.5 py-1 text-[11px] text-warn">{operationReason}</p>}
-          <div className="grid grid-cols-3 gap-1">
-            {syncActions.map(({ kind, Icon, progress }) => {
-              const active = kind === pending
-              const publish = kind === 'push' && !status.upstream
-              const label = t(publish ? 'git.publish' : `git.${kind}`)
-              const count = kind === 'pull' && status.behind ? `↓${status.behind}` : kind === 'push' && status.ahead ? `↑${status.ahead}` : ''
-              const blocked = kind === 'fetch' ? undefined : operationReason
-              return (
-                <button key={kind} className={item + ` justify-center gap-1.5 px-1.5 text-[12px] font-medium text-ink-2 hover:text-ink ${active ? 'disabled:opacity-100!' : ''}`}
-                  disabled={disabled || !!blocked} title={active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')}
-                  onClick={() => void run({ kind }).then((result) => {
-                    if (result.ok && kind === 'pull' && currentView.current === 'commits' && ref.current) void loadCommitLog()
-                  })}>
-                  {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
-                  <span className="min-w-0 truncate">{active ? t(progress) : label}</span>
-                  {!active && count && <span className="shrink-0 text-[10px] tabular-nums text-ink-3">{count}</span>}
-                </button>
-              )
-            })}
-          </div>
+          <GitSyncBar status={status} pending={pending} disabled={disabled} run={async (op, options) => {
+            const result = await run(op, options)
+            if (result.ok && op.kind === 'pull' && currentView.current === 'commits' && ref.current) void loadCommitLog()
+            return result
+          }} />
           <div className="mx-1.5 my-1 h-px bg-hairline" />
           <button className={item} onClick={() => { close(); onViewChanges() }}>
             <IconFile size={14} className="shrink-0 text-ink-2" aria-hidden="true" />
@@ -343,6 +471,56 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
           </button>
         </div>
       )}
+      {form && <BranchForm {...form} status={status} disabled={disabled} run={run} onClose={() => setForm(null)} />}
     </div>
+  )
+}
+
+function BranchForm({ action, branch, status, disabled, run, onClose }: {
+  action: BranchFormAction
+  branch: GitBranch
+  status: RepoStatus
+  disabled: boolean
+  run: RunGit
+  onClose: () => void
+}) {
+  const [name, setName] = useState(branch.name)
+  const [upstream, setUpstream] = useState(branch.name === status.branch ? status.upstream ?? '' : '')
+  const [mode, setMode] = useState<GitMergeMode>('default')
+  const title = t(action === 'rename' ? 'git.renameBranch' : action === 'upstream' ? 'git.setUpstream' : 'git.mergeInto', { name: status.branch ?? '' })
+  const submit = async (op: GitMutation) => {
+    if ((await run(op)).ok) onClose()
+  }
+  const remotes = status.branches.filter((item) => item.remote !== null && status.remotes.includes(item.remote))
+  return (
+    <Modal onClose={onClose} width={400}>
+      <form className="space-y-3 p-5" onSubmit={(e) => {
+        e.preventDefault()
+        if (disabled) return
+        if (action === 'rename' && name && !invalidBranchName(name)) void submit({ kind: 'renameBranch', oldName: branch.name, newName: name })
+        else if (action === 'upstream') void submit({ kind: 'setUpstream', branch: branch.name, upstream: upstream || null })
+        else if (action === 'merge') void submit({ kind: 'merge', branch: branch.name, remote: branch.remote, mode })
+      }}>
+        <h2 className="text-[16px] font-semibold text-ink">{title}</h2>
+        <p className="break-all text-[12px] text-ink-2">{branch.name}</p>
+        {action === 'rename' && <input autoFocus className={gitInput} aria-label={t('git.branchName')} value={name} onChange={(e) => setName(e.target.value)} />}
+        {action === 'upstream' && <select autoFocus className={gitInput} aria-label={title} value={upstream} onChange={(e) => setUpstream(e.target.value)}>
+          <option value="">{t('git.unsetUpstream')}</option>
+          {upstream && !remotes.some((branch) => branch.name === upstream) && <option value={upstream}>{upstream}</option>}
+          {remotes.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
+        </select>}
+        {action === 'merge' && <select autoFocus className={gitInput} aria-label={title} value={mode} onChange={(e) => setMode(e.target.value as GitMergeMode)}>
+          <option value="default">{t('git.mergeDefault')}</option>
+          <option value="no-ff">{t('git.mergeNoFf')}</option>
+          <option value="squash">{t('git.mergeSquash')}</option>
+        </select>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className={btnSecondary} onClick={onClose}>{t('common.cancel')}</button>
+          <button className={btnPrimary} disabled={disabled || (action === 'rename' && (!name || name === branch.name || invalidBranchName(name)))}>
+            {action === 'merge' ? t('git.mergeDefault') : t('common.save')}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }

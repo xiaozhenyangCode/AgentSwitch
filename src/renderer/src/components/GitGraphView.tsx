@@ -8,9 +8,11 @@ import {
 } from '../lib/gitGraph'
 import { useApp } from '../state/AppContext'
 import { currentLocale, fmtAgo, t } from '../state/i18n'
-import { gitErrorDetail, gitErrorTitle, type RunGit } from '../state/useProjectGit'
+import { gitErrorDetail, gitErrorTitle, type ProjectGitTools, type RunGit } from '../state/useProjectGit'
 import { Counts, FileRow } from './ChangesPanel'
-import { GitOperationBanner } from './GitOperationBanner'
+import { GitBranchFromCommitForm, GitCommitMenu, type GitMenuSelection } from './GitCommitMenu'
+import { GitConflictBar, gitConflictLabel, gitOperationReason } from './GitConflicts'
+import { GitRepositoryDialog, GitTagForm } from './GitRepositoryDialog'
 import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
 
 type CommitDetail = { hash: string; commit?: GitCommitDetail; error?: string }
@@ -61,14 +63,15 @@ function readColumnWidths() {
   return widths
 }
 
-export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
+export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision }: {
   dir: string
   onClose: () => void
   onViewChanges: () => void
   remote: RemoteControls | null
+  gitRevision: number
 }) {
-  const { toast } = useApp()
-  const dialog = useRef<HTMLDialogElement>(null)
+  const { toast, confirmState } = useApp()
+  const overlay = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const sentinel = useRef<HTMLDivElement>(null)
   const table = useRef<HTMLDivElement>(null)
@@ -83,6 +86,11 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
   const [copiedHash, setCopiedHash] = useState<string | null>(null)
   const [focusHash, setFocusHash] = useState<string | null>(null)
   const [remoteError, setRemoteError] = useState<RemoteFailure | null>(null)
+  const [menu, setMenu] = useState<GitMenuSelection | null>(null)
+  const [form, setForm] = useState<{ kind: 'branch' | 'tag'; commit: GitGraphCommit } | null>(null)
+  const [repository, setRepository] = useState<'tags' | 'remotes' | null>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const lastGitRevision = useRef(gitRevision)
   const [widths, setWidths] = useState(readColumnWidths)
   const savedWidths = useRef(widths)
   const graphRequest = useRef(0)
@@ -99,11 +107,11 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
 
   useLayer({ onEsc: onClose, onClose })
   useLayoutEffect(() => {
-    const modal = dialog.current
-    if (!modal) return
-    modal.showModal()
+    const focused = document.activeElement
     search.current?.focus()
-    return () => modal.close()
+    return () => {
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true })
+    }
   }, [])
 
   const cancelSearch = useCallback(() => {
@@ -211,6 +219,15 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
 
   const reload = () => resetList(filters.current.branch, currentQuery())
 
+  // Any Git mutation (from this view, the changes panel or a commit menu) bumps the revision.
+  const reloadOnRevision = useRef(reload)
+  reloadOnRevision.current = reload
+  useEffect(() => {
+    if (gitRevision === lastGitRevision.current) return
+    lastGitRevision.current = gitRevision
+    void reloadOnRevision.current()
+  }, [gitRevision])
+
   const syncRemote = async (kind: RemoteAction) => {
     if (!remote || remote.disabled || remoteRunning.current) return
     remoteRunning.current = true
@@ -218,8 +235,7 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
     try {
       const result = await remote.run({ kind }, { errorToast: false })
       if (!mounted.current) return
-      if (result.ok) void reload()
-      else setRemoteError(result)
+      if (!result.ok) setRemoteError(result)
     } finally {
       remoteRunning.current = false
     }
@@ -255,6 +271,9 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
     minWidth: `calc(${graphWidth}px + 180px + var(--col-author) + var(--col-time) + var(--col-hash))`
   } as CSSProperties
   const tabStop = detail && byHash.has(detail.hash) ? detail.hash : commits[0]?.hash
+  const gitTools: ProjectGitTools | null = useMemo(() => remote?.status
+    ? { status: remote.status, disabled: remote.disabled, run: remote.run } : null, [remote?.status, remote?.disabled, remote?.run])
+  const conflictLabel = gitTools ? gitConflictLabel(gitTools.status.inProgress, gitTools.status.conflicts) : null
 
   const loadMore = useCallback(() => {
     if (!data?.hasMore || loading || inFlight.current || searchTimer.current !== null || composing.current
@@ -326,11 +345,21 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
   }
 
   return (
-    <dialog ref={dialog} aria-labelledby="git-workspace-title"
-      onCancel={(event) => { event.preventDefault(); onClose() }}
-      onMouseDown={(event) => { if (event.target === dialog.current) onClose() }}
-      className="git-workspace no-drag fixed inset-0 m-auto h-[calc(100vh*2/3)] min-h-[min(460px,calc(100vh-32px))] max-h-[calc(100vh-32px)] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[calc(100vw-32px)] overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)] backdrop:bg-(--scrim)">
-      <div className="flex h-full min-h-0 flex-col">
+    <div ref={overlay} className="no-drag fixed inset-0 z-40 grid place-items-center bg-(--scrim)"
+      onMouseDown={(event) => { if (event.target === overlay.current) onClose() }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="git-workspace-title" inert={!!(form || repository || confirmState)}
+        className="git-workspace flex h-[calc(100vh*2/3)] min-h-[min(460px,calc(100vh-32px))] max-h-[calc(100vh-32px)] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
+        onKeyDown={(event) => {
+          if (event.key !== 'Tab') return
+          const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, [tabindex="0"]')]
+            .filter((element) => element.tabIndex >= 0 && element.getClientRects().length)
+          const first = focusable[0]
+          const last = focusable.at(-1)
+          if (event.shiftKey ? document.activeElement === first : document.activeElement === last) {
+            event.preventDefault()
+            ;(event.shiftKey ? last : first)?.focus()
+          }
+        }}>
         <header className="flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-2 px-3 py-2">
           <h2 id="git-workspace-title" className="mr-2 flex shrink-0 items-center gap-2 text-[13px] font-semibold">
             <IconBranch size={15} className="text-ink-2" aria-hidden="true" />
@@ -356,6 +385,11 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
               onCompositionEnd={(event) => { composing.current = false; updateSearch(event.currentTarget.value) }} />
           </label>
           <div className="ml-auto flex items-center gap-1">
+            {conflictLabel && <button type="button" className={textButton + ' text-danger!'} onClick={onViewChanges}>{conflictLabel}</button>}
+            {gitTools && <>
+              <button type="button" className={textButton} onClick={() => setRepository('tags')}>{t('git.tags')}</button>
+              <button type="button" className={textButton} onClick={() => setRepository('remotes')}>{t('git.remotes')}</button>
+            </>}
             {remote && <RemoteButtons remote={remote} onRun={(kind) => void syncRemote(kind)} />}
             <button type="button" className={toolbarButton}
               onClick={() => void locateHead()} disabled={!data?.headHash} title={t('git.graphLocateHead')}>
@@ -371,9 +405,7 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
             </button>
           </div>
         </header>
-        {remote?.status && <GitOperationBanner status={remote.status} disabled={remote.disabled} run={remote.run}
-          onDone={() => { if (mounted.current) { setRemoteError(null); void reload() } }}
-          onError={(result) => { if (mounted.current) setRemoteError(result) }} />}
+        {gitTools && <GitConflictBar tools={gitTools} />}
         {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
         <GitHistorySplit inspector={(
           <CommitInspector detail={detail} copiedHash={copiedHash} onCopy={(hash) => void copyHash(hash)} onRetry={(hash) => void openCommit(hash)} />
@@ -395,7 +427,8 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
                 if (!commit) return <WorktreeRow key={row.hash} rail={graph} count={data?.uncommittedCount ?? 0} onClick={onViewChanges} />
                 return <HistoryRow key={row.hash} commit={commit} rail={graph} head={isHead} columns={columns}
                   selected={detail?.hash === row.hash} tabIndex={tabStop === row.hash ? 0 : -1} copied={copiedHash === row.hash}
-                  onSelect={() => selectCommit(row.hash)} onCopy={() => void copyHash(row.hash)} />
+                  onSelect={() => selectCommit(row.hash)} onCopy={() => void copyHash(row.hash)}
+                  onMenu={(x, y, trigger) => setMenu({ commit, x, y, trigger })} />
               })}
               {data && !loading && !commits.length && (
                 <p className="px-4 py-4 text-[12px] text-ink-2">{t(filters.current.query ? 'git.noMatchingCommits' : 'git.noCommits')}</p>
@@ -417,7 +450,17 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote }: {
         </GitHistorySplit>
         <span className="sr-only" role="status">{copiedHash && t('common.copied')}</span>
       </div>
-    </dialog>
+      {menu && overlay.current && <GitCommitMenu dir={dir} tools={gitTools} selection={menu} host={overlay.current}
+        onClose={closeMenu} onCopyHash={(hash) => void copyHash(hash)}
+        onBranchForm={() => setForm({ kind: 'branch', commit: menu.commit })}
+        onTagForm={() => setForm({ kind: 'tag', commit: menu.commit })} />}
+      {gitTools && form?.kind === 'branch' && <GitBranchFromCommitForm commit={form.commit}
+        run={gitTools.run} disabled={gitTools.disabled} onClose={() => setForm(null)} />}
+      {gitTools && form?.kind === 'tag' && <GitTagForm target={form.commit.hash} run={gitTools.run}
+        disabled={gitTools.disabled} onClose={() => setForm(null)} />}
+      {gitTools && repository && <GitRepositoryDialog dir={dir} initialTab={repository} tools={gitTools}
+        onClose={() => setRepository(null)} />}
+    </div>
   )
 }
 
@@ -431,9 +474,9 @@ function RemoteButtons({ remote, onRun }: { remote: RemoteControls; onRun: (kind
         const count = kind === 'pull' && status && status.behind > 0 ? `↓${status.behind}`
           : kind === 'push' && status && status.ahead > 0 ? `↑${status.ahead}` : ''
         let unavailable = ''
-        if (status?.operation && kind !== 'fetch') {
-          unavailable = t('git.blockedByOperation', { op: t(`git.op.${status.operation}`) })
-        } else if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
+        const blocked = kind === 'fetch' ? undefined : gitOperationReason(status?.inProgress ?? null)
+        if (blocked) unavailable = blocked
+        else if (status && kind !== 'fetch' && !status.branch) unavailable = t('git.detachedNoRemote')
         else if (status && kind === 'pull' && !status.upstream) unavailable = t('git.pullNoUpstream')
         const title = active ? t(progress) : unavailable || [label, count].filter(Boolean).join(' ')
         return (
@@ -626,7 +669,7 @@ function WorktreeRow({ rail, count, onClick }: { rail?: React.ReactNode; count: 
   )
 }
 
-function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, onSelect, onCopy }: {
+function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, onSelect, onCopy, onMenu }: {
   commit: GitGraphCommit
   rail: React.ReactNode
   head: boolean
@@ -636,6 +679,7 @@ function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, o
   copied: boolean
   onSelect: () => void
   onCopy: () => void
+  onMenu: (x: number, y: number, trigger: HTMLElement) => void
 }) {
   const subject = commit.subject || t('git.noCommitSubject')
   const branch = commit.refs.find((ref) => ref.kind === 'branch')
@@ -644,9 +688,20 @@ function HistoryRow({ commit, rail, head, columns, selected, tabIndex, copied, o
     .filter((ref) => ref.kind !== 'head' || !branch)
   const date = new Date(commit.timestamp).toLocaleString(currentLocale())
   return (
-    <div data-history-row={commit.hash} style={{ gridTemplateColumns: columns }}
+    <div data-history-row={commit.hash} style={{ gridTemplateColumns: columns, height: GRAPH_ROW_HEIGHT }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        const trigger = event.currentTarget.querySelector<HTMLElement>('[data-commit]')
+        if (trigger) onMenu(event.clientX, event.clientY, trigger)
+      }}
       className={`group grid h-[32px] items-center text-[12px] [box-shadow:inset_0_-1px_var(--hairline)] ${selected ? 'bg-accent/10' : 'hover:bg-black/[0.045]'}`}>
-      <button type="button" data-commit={commit.hash} aria-pressed={selected} tabIndex={tabIndex}
+      <button type="button" data-commit={commit.hash} aria-pressed={selected} aria-haspopup="menu" tabIndex={tabIndex}
+        onKeyDown={(event) => {
+          if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+          event.preventDefault()
+          const rect = event.currentTarget.getBoundingClientRect()
+          onMenu(rect.left + 16, rect.bottom, event.currentTarget)
+        }}
         className="col-span-4 grid h-full min-w-0 grid-cols-subgrid items-center overflow-hidden text-left focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-inset focus-visible:outline-none"
         title={[subject, ...commit.refs.map((ref) => ref.name)].join('\n')} onClick={onSelect}>
         {rail}

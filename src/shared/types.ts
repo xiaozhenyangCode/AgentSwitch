@@ -563,6 +563,13 @@ export const IPC = {
   gitLog: 'git:log',
   gitGraph: 'git:graph',
   gitCommitDetail: 'git:commit-detail',
+  gitStashes: 'git:stashes',
+  gitStashDetail: 'git:stash-detail',
+  gitConflictFile: 'git:conflict-file',
+  gitTags: 'git:tags',
+  gitRemotes: 'git:remotes',
+  gitCommandLog: 'git:command-log',
+  gitCommandLogClear: 'git:command-log-clear',
   gitMutate: 'git:mutate',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
@@ -836,13 +843,15 @@ export interface FileChange {
   /** Relative to the project folder (forward slashes). */
   path: string
   abs: string
-  /** M modified · A added · D deleted · U untracked · R renamed. */
-  status: 'M' | 'A' | 'D' | 'U' | 'R'
+  /** M modified · A added · D deleted · U untracked · R renamed · C conflicted. */
+  status: 'M' | 'A' | 'D' | 'U' | 'R' | 'C'
+  conflicted?: boolean
+  /** Repo-relative path for conflicts, including paths outside a project's subfolder. */
+  conflictPath?: string
   added: number
   removed: number
   staged?: boolean
   unstaged?: boolean
-  conflicted?: boolean
   stagedChange?: FileChangePreview
   unstagedChange?: FileChangePreview
   /** Unified diff (may be cut short); empty for binary files. */
@@ -882,25 +891,91 @@ export interface FileChanges {
   more?: number
 }
 
-export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode; files?: string[] }
+export type GitResult<T extends object = object> = ({ ok: true } & T) | { ok: false; error: string; code?: GitErrorCode; conflictFiles?: string[] }
 
 export type GitErrorCode = 'invalidBranch' | 'busy' | 'switchChanges' | 'diverged' | 'noUpstream' | 'auth' | 'pushRejected' | 'indexLocked'
-  | 'operationInProgress' | 'unmerged' | 'localChanges' | 'pullConflict'
+  | 'branchNotMerged' | 'mergeConflict' | 'pullConflict' | 'operationInProgress' | 'unmerged' | 'localChanges'
 
-export type GitOperation = 'merge' | 'rebase' | 'cherryPick' | 'revert'
+export type GitPullStrategy = 'ff-only' | 'merge' | 'rebase'
+export type GitMergeMode = 'default' | 'no-ff' | 'squash'
+export type GitInProgressOp = 'merge' | 'rebase' | 'cherry-pick' | 'revert'
+export type GitResetMode = 'soft' | 'mixed' | 'hard'
+export type GitConflictChoice = 'current' | 'incoming' | 'both'
+
+export interface GitConflictHunk {
+  index: number
+  startLine: number
+  endLine: number
+  currentLabel: string
+  incomingLabel: string
+  current: string
+  base?: string
+  incoming: string
+}
+
+export interface GitConflictFile {
+  path: string
+  abs: string
+  binary: boolean
+  truncated: boolean
+  hunks: GitConflictHunk[]
+  unresolvedCount: number
+  /** Identifies the contents shown in the resolver so stale hunk indices cannot be applied. */
+  version?: string
+  missing?: boolean
+  nonRegular?: boolean
+  malformed?: boolean
+}
+
+export interface GitTag {
+  name: string
+  hash: string
+  shortHash: string
+  annotated: boolean
+  message: string
+  tagger: string
+  timestamp: number
+}
+
+export interface GitRemote {
+  name: string
+  fetchUrl: string
+  pushUrl: string
+}
+
+export interface GitCommandLogEntry {
+  id: number
+  timestamp: number
+  repoPath: string
+  args: string[]
+  durationMs: number
+  exitCode: number | null
+  ok: boolean
+  stdout: string
+  stderr: string
+}
 
 export type GitMutationResult = GitResult<{ outcome?: GitMutationOutcome }>
 
-type GitMutationOutcome =
+export type GitMutationOutcome =
   | { kind: 'switch' | 'createBranch'; branch: string }
   | { kind: 'pull'; count: number | null }
-  | { kind: 'push'; target: string; count: number | null; published: boolean }
+  | { kind: 'push'; target: string; count: number | null; published: boolean; forced?: boolean }
   | { kind: 'commit'; sha: string; subject: string }
-  | { kind: 'abortOperation'; operation: GitOperation }
+  | { kind: 'undoLastCommit'; message: string }
+  | { kind: 'merge'; squashed: boolean }
 
 export interface GitBranch {
   name: string
   remote: string | null
+}
+
+export interface GitHeadCommit {
+  hash: string
+  shortHash: string
+  subject: string
+  message: string
+  hasParent: boolean
 }
 
 export type GitStatus = { repo: false } | {
@@ -911,11 +986,15 @@ export type GitStatus = { repo: false } | {
   upstream: string | null
   ahead: number
   behind: number
-  operation: GitOperation | null
-  conflicts: number
   dirty: boolean
   staged: number
   unstaged: number
+  untracked: number
+  stashCount: number
+  remotes: string[]
+  headCommit: GitHeadCommit | null
+  inProgress: GitInProgressOp | null
+  conflicts: number
   atRoot: boolean
   branches: GitBranch[]
 }
@@ -971,6 +1050,7 @@ export type GitCommitFile = FileChangePreview & { path: string; oldPath?: string
 export interface GitCommitDetail extends GitCommit {
   parents: string[]
   body: string
+  message: string
   email: string
   files: GitCommitFile[]
   added: number
@@ -978,14 +1058,59 @@ export interface GitCommitDetail extends GitCommit {
   more?: number
 }
 
+export interface GitStashEntry {
+  ref: string
+  index: number
+  hash: string
+  shortHash: string
+  timestamp: number
+  message: string
+  branch: string | null
+}
+
+export interface GitStashDetail {
+  ref: string
+  files: GitCommitFile[]
+  added: number
+  removed: number
+  more?: number
+}
+
 export type GitMutation =
-  | { kind: 'switch'; name: string; remote: string | null }
-  | { kind: 'createBranch'; name: string }
-  | { kind: 'fetch' | 'pull' | 'push' | 'stageAll' | 'unstageAll' }
+  | { kind: 'switch'; name: string; remote: string | null; autoStash?: boolean }
+  | { kind: 'createBranch'; name: string; startPoint?: string }
+  | { kind: 'renameBranch'; oldName: string; newName: string }
+  | { kind: 'deleteBranch'; name: string; force?: boolean }
+  | { kind: 'deleteRemoteBranch'; remote: string; branch: string }
+  | { kind: 'setUpstream'; branch?: string; upstream: string | null }
+  | { kind: 'merge'; branch: string; remote: string | null; mode: GitMergeMode }
+  | { kind: 'fetch'; prune?: boolean }
+  | { kind: 'pull'; strategy?: GitPullStrategy }
+  | { kind: 'push'; forceWithLease?: boolean }
+  | { kind: 'stageAll' | 'stageTracked' | 'stageUntracked' | 'unstageAll' | 'discardAll' | 'cleanAll' }
   | { kind: 'stage' | 'unstage'; path: string }
   | { kind: 'discard'; path: string; untracked: boolean }
-  | { kind: 'commit' | 'stageAndCommit'; message: string }
-  | { kind: 'abortOperation'; operation: GitOperation }
+  | { kind: 'ignore'; path: string; mode: 'file' | 'dir' | 'ext' }
+  | { kind: 'commit' | 'stageAndCommit'; message: string; amend?: boolean }
+  | { kind: 'undoLastCommit' }
+  | { kind: 'stashPush'; message?: string; includeUntracked?: boolean; keepIndex?: boolean }
+  | { kind: 'stashApply' | 'stashPop' | 'stashDrop'; ref: string; expectedHash?: string }
+  | { kind: 'stashClear' }
+  | { kind: 'stashBranch'; ref: string; name: string; expectedHash?: string }
+  | { kind: 'checkoutCommit'; hash: string }
+  | { kind: 'cherryPick'; hash: string }
+  | { kind: 'revert'; hash: string; mainline?: number }
+  | { kind: 'reset'; hash: string; mode: GitResetMode }
+  | { kind: 'continueOperation' | 'skipOperation' | 'abortOperation'; expectedOperation?: GitInProgressOp }
+  | { kind: 'resolveConflict'; path: string; repoRelative?: boolean; hunkIndex?: number; choice: GitConflictChoice; stageIfComplete?: boolean; expectedVersion?: string }
+  | { kind: 'markResolved'; path: string; repoRelative?: boolean; expectedVersion?: string }
+  | { kind: 'createTag'; name: string; target?: string; message?: string }
+  | { kind: 'deleteTag'; name: string }
+  | { kind: 'deleteRemoteTag'; remote: string; name: string }
+  | { kind: 'pushTag'; remote: string; name?: string; all?: boolean }
+  | { kind: 'addRemote'; name: string; url: string }
+  | { kind: 'setRemoteUrl'; name: string; url: string; pushUrl?: string }
+  | { kind: 'removeRemote'; name: string }
 
 /** Read-only preview of an attached file (64 KB cap). */
 export interface AttachmentText extends ExtFileText {

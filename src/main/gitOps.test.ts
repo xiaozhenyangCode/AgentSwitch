@@ -6,8 +6,9 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { classifyGitError } from '@shared/gitErrors'
-import { gitChanges, gitCommitDetail } from './gitChanges'
-import { gitGraph, gitLog, gitMutate, gitStatus, parseGitGraph, parseGitLog, parseStatus } from './gitOps'
+import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
+import { clearGitCommandLog, git as runGit, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes,
+  gitStashes, gitStatus, gitTags, parseGitGraph, parseGitLog, parseStatus, redactGitSecrets } from './gitOps'
 
 vi.mock('./fileProtocol', () => ({ allowRoot: vi.fn() }))
 
@@ -56,6 +57,16 @@ async function createDivergingCommits() {
   await git(repo, 'switch', 'main')
   await addCommit(repo, 'tracked.txt', 'main edit\n', 'Main edit')
   return git(repo, 'rev-parse', 'HEAD')
+}
+
+async function conflictingBranches(path: string, initial: string, current: string, incoming: string) {
+  await addCommit(repo, path, initial, 'Common')
+  await git(repo, 'switch', '-c', 'topic')
+  await addCommit(repo, path, incoming, 'Incoming')
+  const topic = await git(repo, 'rev-parse', 'HEAD')
+  await git(repo, 'switch', 'main')
+  await addCommit(repo, path, current, 'Current')
+  return { topic, main: await git(repo, 'rev-parse', 'HEAD') }
 }
 
 describe('Git log parsing', () => {
@@ -129,6 +140,346 @@ describe('Git workbench operations', () => {
     await rm(temp, { recursive: true, force: true })
   })
 
+  it('stages tracked and untracked groups independently and scopes bulk discard and clean to the repository', async () => {
+    const child = join(repo, 'project')
+    await mkdir(child)
+    await writeFile(join(repo, 'tracked.txt'), 'staged\n')
+    await writeFile(join(repo, '.gitignore'), '*.keep\n')
+    await writeFile(join(repo, 'preserved.keep'), 'ignored')
+    await writeFile(join(child, 'new\nfile.txt'), 'untracked')
+    expect(await gitMutate(child, { kind: 'stageTracked' })).toEqual({ ok: true })
+    expect(await gitStatus(child)).toMatchObject({ staged: 1, unstaged: 2, untracked: 2 })
+    await writeFile(join(repo, 'tracked.txt'), 'unstaged\n')
+    expect(await gitMutate(child, { kind: 'stageUntracked' })).toEqual({ ok: true })
+    expect(await gitStatus(child)).toMatchObject({ staged: 3, unstaged: 1, untracked: 0 })
+    expect(await gitMutate(child, { kind: 'discardAll' })).toEqual({ ok: true })
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('staged\n')
+    expect(await gitMutate(repo, { kind: 'unstage', path: 'project/new\nfile.txt' })).toEqual({ ok: true })
+    expect(await gitMutate(child, { kind: 'cleanAll' })).toEqual({ ok: true })
+    await expect(readFile(join(child, 'new\nfile.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(join(repo, 'preserved.keep'), 'utf8')).toBe('ignored')
+    expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('.gitignore\ntracked.txt')
+  })
+
+  it('safely appends anchored, escaped and deduplicated ignore rules from a project subfolder', async () => {
+    const child = join(repo, 'project')
+    await mkdir(child)
+    await writeFile(join(repo, '.gitignore'), '# existing')
+    await writeFile(join(child, 'a [*]!.log'), 'untracked')
+    await writeFile(join(repo, 'a [*]!.log'), 'outside the rule')
+    const op = { kind: 'ignore', path: 'a [*]!.log', mode: 'file' }
+    expect(await gitMutate(child, op)).toEqual({ ok: true })
+    expect(await gitMutate(child, op)).toEqual({ ok: true })
+    expect(await git(repo, 'check-ignore', '--', 'project/a [*]!.log')).toBe('project/a [*]!.log')
+    await expect(git(repo, 'check-ignore', '--', 'a [*]!.log')).rejects.toMatchObject({ code: 1 })
+    expect((await readFile(join(repo, '.gitignore'), 'utf8')).split('\n').filter(Boolean)).toHaveLength(2)
+    expect(await gitMutate(child, { ...op, mode: 'ext' })).toEqual({ ok: true })
+    expect(await git(repo, 'check-ignore', '--', 'a [*]!.log')).toBe('a [*]!.log')
+    expect(await gitMutate(child, { ...op, mode: 'dir' })).toEqual({ ok: true })
+    expect(await git(repo, 'check-ignore', '--', 'project/another.txt')).toBe('project/another.txt')
+    for (const path of ['../tracked.txt', join(repo, 'tracked.txt'), '.git/config', 'bad\nname']) {
+      expect(await gitMutate(child, { ...op, path })).toMatchObject({ ok: false })
+    }
+    const outside = join(temp, 'outside')
+    await writeFile(outside, 'unchanged')
+    await rm(join(repo, '.gitignore'))
+    await symlink(outside, join(repo, '.gitignore'))
+    expect(await gitMutate(child, op)).toMatchObject({ ok: false })
+    expect(await readFile(outside, 'utf8')).toBe('unchanged')
+  })
+
+  it('amends with and without staged changes and undoes ordinary and root commits without touching the index', async () => {
+    expect(await gitStatus(repo)).toMatchObject({ untracked: 0, stashCount: 0, remotes: [],
+      headCommit: { message: 'Initial commit', hasParent: false } })
+    expect(await gitMutate(repo, { kind: 'commit', amend: true, message: '修正\n\nA revised body' }))
+      .toMatchObject({ ok: true, outcome: { kind: 'commit', subject: '修正' } })
+    const rootHash = await git(repo, 'rev-parse', 'HEAD')
+    await addCommit(repo, 'new.txt', 'second', 'Second')
+    await writeFile(join(repo, 'new.txt'), 'amended')
+    expect(await gitMutate(repo, { kind: 'stageAndCommit', amend: true, message: 'Replacement\n\nMore detail' })).toMatchObject({ ok: true })
+    await writeFile(join(repo, 'new.txt'), 'unsaved')
+    expect(await gitStatus(repo)).toMatchObject({ headCommit: { message: 'Replacement\n\nMore detail', hasParent: true } })
+    expect(await gitMutate(repo, { kind: 'undoLastCommit' })).toEqual({
+      ok: true, outcome: { kind: 'undoLastCommit', message: 'Replacement\n\nMore detail' }
+    })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(rootHash)
+    expect(await git(repo, 'show', ':new.txt')).toBe('amended')
+    expect(await readFile(join(repo, 'new.txt'), 'utf8')).toBe('unsaved')
+    expect(await gitMutate(repo, { kind: 'undoLastCommit' })).toEqual({
+      ok: true, outcome: { kind: 'undoLastCommit', message: '修正\n\nA revised body' }
+    })
+    expect(await gitStatus(repo)).toMatchObject({ branch: 'main', headCommit: null, staged: 2, unstaged: 1 })
+    expect(await git(repo, 'show', ':tracked.txt')).toBe('initial')
+    expect(await git(repo, 'show', ':new.txt')).toBe('amended')
+    expect(await gitMutate(repo, { kind: 'stageAndCommit', amend: true, message: 'No commit yet' })).toMatchObject({ ok: false })
+    expect(await git(repo, 'show', ':new.txt')).toBe('amended')
+  })
+
+  it('offers an automatic stash for checkout collisions and rolls it back with the index if switching fails', async () => {
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'tracked.txt', 'topic', 'Topic')
+    await git(repo, 'switch', 'main')
+    await writeFile(join(repo, 'tracked.txt'), 'work to keep')
+    await writeFile(join(repo, 'untracked.txt'), 'also keep')
+    const op = { kind: 'switch', name: 'topic', remote: null }
+    expect(await gitMutate(repo, op)).toMatchObject({ ok: false, code: 'switchChanges' })
+    expect(await gitMutate(repo, { ...op, autoStash: true })).toEqual({ ok: true, outcome: { kind: 'switch', branch: 'topic' } })
+    expect(await gitStatus(repo)).toMatchObject({ dirty: false, stashCount: 1 })
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('topic')
+
+    await git(repo, 'switch', 'main')
+    await git(repo, 'worktree', 'add', join(temp, 'occupied'), 'topic')
+    const original = await gitStashes(repo)
+    await writeFile(join(repo, 'tracked.txt'), 'index')
+    await git(repo, 'add', '--', 'tracked.txt')
+    await writeFile(join(repo, 'tracked.txt'), 'working tree')
+    await writeFile(join(repo, 'rollback.txt'), 'untracked rollback')
+    expect(await gitMutate(repo, { ...op, autoStash: true })).toMatchObject({ ok: false, error: expect.stringMatching(/already (?:used|checked out)/) })
+    expect(await gitStashes(repo)).toEqual(original)
+    expect(await git(repo, 'show', ':tracked.txt')).toBe('index')
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('working tree')
+    expect(await readFile(join(repo, 'rollback.txt'), 'utf8')).toBe('untracked rollback')
+  })
+
+  it('renames a branch, validates local deletion, sets or unsets upstream, and deletes an exact remote branch', async () => {
+    const bare = await createOrigin()
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'topic.txt', 'topic', 'Topic')
+    await git(repo, 'push', 'origin', 'topic')
+    expect(await gitMutate(repo, { kind: 'renameBranch', oldName: 'topic', newName: 'review' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ branch: 'review', remotes: ['origin'] })
+    expect(await gitMutate(repo, { kind: 'setUpstream', upstream: 'origin/topic' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ upstream: 'origin/topic' })
+    expect(await gitMutate(repo, { kind: 'setUpstream', upstream: null })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ upstream: null })
+    expect(await gitMutate(repo, { kind: 'deleteBranch', name: 'review', force: true })).toMatchObject({ ok: false })
+    await git(repo, 'switch', 'main')
+    expect(await gitMutate(repo, { kind: 'deleteBranch', name: 'review' })).toMatchObject({ ok: false, code: 'branchNotMerged' })
+    expect(await gitMutate(repo, { kind: 'deleteBranch', name: 'review', force: true })).toEqual({ ok: true })
+    await git(repo, 'branch', 'merged')
+    expect(await gitMutate(repo, { kind: 'deleteBranch', name: 'merged' })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'deleteRemoteBranch', remote: 'origin', branch: 'topic' })).toEqual({ ok: true })
+    expect(await git(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main')
+  })
+
+  it.each(['default', 'no-ff', 'squash'] as const)('merges using the %s mode', async (mode) => {
+    const before = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'topic.txt', 'topic', 'Topic')
+    const topic = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'switch', 'main')
+    expect(await gitMutate(repo, { kind: 'merge', branch: 'topic', remote: null, mode }))
+      .toEqual({ ok: true, outcome: { kind: 'merge', squashed: mode === 'squash' } })
+    if (mode === 'squash') {
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+      expect(await git(repo, 'show', ':topic.txt')).toBe('topic')
+    } else if (mode === 'no-ff') {
+      expect(await git(repo, 'log', '-1', '--format=%P')).toBe(before + ' ' + topic)
+    } else {
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(topic)
+    }
+  })
+
+  it('classifies a real merge conflict and forwards Git output', async () => {
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'tracked.txt', 'topic\n', 'Topic')
+    await git(repo, 'switch', 'main')
+    await addCommit(repo, 'tracked.txt', 'main\n', 'Local')
+    expect(await gitMutate(repo, { kind: 'merge', branch: 'topic', remote: null, mode: 'default' }))
+      .toMatchObject({ ok: false, code: 'mergeConflict', error: expect.stringMatching(/CONFLICT.*tracked\.txt/) })
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'merge' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0 })
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('main\n')
+  })
+
+  it('preserves the shallow branch tip when its parent object is unavailable', async () => {
+    await addCommit(repo, 'second.txt', 'second', 'Second')
+    const shallow = join(temp, 'shallow')
+    await git(temp, 'clone', '--depth=1', '--', 'file://' + repo, shallow)
+    const before = await git(shallow, 'rev-parse', 'HEAD')
+    expect(await gitStatus(shallow)).toMatchObject({ headCommit: { hash: before, hasParent: true } })
+    expect(await gitMutate(shallow, { kind: 'undoLastCommit' })).toMatchObject({ ok: false })
+    expect(await git(shallow, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
+  it('creates, lists, previews, applies, pops, drops, clears and branches from stashes', async () => {
+    const file = join(repo, 'tracked.txt')
+    const untracked = join(repo, 'new\tfile.txt')
+    expect(await gitMutate(repo, { kind: 'stashPush' }))
+      .toMatchObject({ ok: false, error: expect.stringMatching(/No local changes/) })
+    await writeFile(file, 'staged\n')
+    await git(repo, 'add', '--', 'tracked.txt')
+    await writeFile(file, 'working\n')
+    await writeFile(untracked, 'untracked line\n')
+    expect(await gitMutate(repo, { kind: 'stashPush', message: '储藏内容', includeUntracked: true, keepIndex: true })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ staged: 1, unstaged: 0, untracked: 0, stashCount: 1 })
+    expect(await readFile(file, 'utf8')).toBe('staged\n')
+    const stashes = await gitStashes(repo)
+    expect(stashes).toMatchObject({ ok: true, stashes: [{
+      ref: 'stash@{0}', index: 0, branch: 'main', timestamp: expect.any(Number), message: 'On main: 储藏内容'
+    }] })
+    if (!stashes.ok) throw new Error(stashes.error)
+    const saved = stashes.stashes[0]
+    expect(await gitStashDetail(repo, saved.ref)).toMatchObject({ ok: true, stash: {
+      ref: saved.ref, added: 2, removed: 1,
+      files: expect.arrayContaining([
+        expect.objectContaining({ path: 'new\tfile.txt', status: 'A', diff: expect.stringContaining('+untracked line') }),
+        expect.objectContaining({ path: 'tracked.txt', status: 'M', diff: expect.stringContaining('+working') })
+      ])
+    } })
+    await git(repo, 'restore', '--staged', '--worktree', '--', 'tracked.txt')
+    expect(await gitMutate(repo, { kind: 'stashApply', ref: saved.ref, expectedHash: saved.hash })).toEqual({ ok: true })
+    expect(await readFile(file, 'utf8')).toBe('working\n')
+    expect(await readFile(untracked, 'utf8')).toBe('untracked line\n')
+    expect(await gitStatus(repo)).toMatchObject({ stashCount: 1 })
+    await git(repo, 'restore', '--', 'tracked.txt')
+    await rm(untracked)
+    expect(await gitMutate(repo, { kind: 'stashPop', ref: saved.ref })).toEqual({ ok: true })
+    expect(await readFile(file, 'utf8')).toBe('working\n')
+    expect(await gitStatus(repo)).toMatchObject({ stashCount: 0 })
+    expect(await gitMutate(repo, { kind: 'stashPush', message: 'branch from me', includeUntracked: true })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'stashBranch', ref: saved.ref, name: 'recovered' }))
+      .toEqual({ ok: true, outcome: { kind: 'createBranch', branch: 'recovered' } })
+    expect(await gitStatus(repo)).toMatchObject({ branch: 'recovered', stashCount: 0 })
+    expect(await readFile(untracked, 'utf8')).toBe('untracked line\n')
+    expect(await gitMutate(repo, { kind: 'stashPush', message: 'drop me', includeUntracked: true })).toEqual({ ok: true })
+    await writeFile(file, 'different\n')
+    expect(await gitMutate(repo, { kind: 'stashPush', message: 'keep after drop' })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'stashDrop', ref: 'stash@{0}', expectedHash: saved.hash })).toMatchObject({ ok: false })
+    expect(await gitMutate(repo, { kind: 'stashDrop', ref: 'stash@{1}' })).toEqual({ ok: true })
+    expect(await gitStashes(repo)).toMatchObject({ ok: true, stashes: [{ message: 'On recovered: keep after drop' }] })
+    expect(await gitMutate(repo, { kind: 'stashClear' })).toEqual({ ok: true })
+    expect(await gitStashes(repo)).toEqual({ ok: true, stashes: [] })
+  })
+
+  it('prunes deleted tracking branches only when requested', async () => {
+    const bare = await createOrigin()
+    await git(repo, 'push', 'origin', 'main:refs/heads/stale')
+    await git(bare, 'branch', '-D', 'stale')
+    await git(repo, 'config', 'fetch.prune', 'true')
+    expect(await gitMutate(repo, { kind: 'fetch', prune: false })).toEqual({ ok: true })
+    expect(await git(repo, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin')).toContain('refs/remotes/origin/stale')
+    expect(await gitMutate(repo, { kind: 'fetch', prune: true })).toEqual({ ok: true })
+    expect(await git(repo, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin')).not.toContain('refs/remotes/origin/stale')
+  })
+
+  async function openPeer() {
+    const bare = await createOrigin()
+    const peer = join(temp, 'peer')
+    await git(temp, 'clone', '--', bare, peer)
+    await git(peer, 'config', 'user.name', 'Git GUI Peer')
+    await git(peer, 'config', 'user.email', 'peer@example.invalid')
+    return { bare, peer }
+  }
+
+  it('preflights pull after fetching and protects renamed, untracked and staged paths under all strategies', async () => {
+    expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({ ok: false, code: 'noUpstream' })
+    const { peer } = await openPeer()
+    await addCommit(peer, 'tracked.txt', 'remote tracked', 'Remote tracked change')
+    await addCommit(peer, 'new\nfile.txt', 'remote new', 'Remote new file')
+    await git(peer, 'push')
+    const before = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'mv', '--', 'tracked.txt', 'renamed.txt')
+    await writeFile(join(repo, 'new\nfile.txt'), 'local new')
+    for (const strategy of ['ff-only', 'merge', 'rebase']) {
+      expect(await gitMutate(repo, { kind: 'pull', strategy })).toMatchObject({
+        ok: false, code: 'pullConflict', conflictFiles: ['new\nfile.txt', 'tracked.txt']
+      })
+    }
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
+    expect(await git(repo, 'rev-parse', 'origin/main')).toBe(await git(peer, 'rev-parse', 'HEAD'))
+    expect(await git(repo, 'show', ':renamed.txt')).toBe('initial')
+    expect(await readFile(join(repo, 'new\nfile.txt'), 'utf8')).toBe('local new')
+  })
+
+  it.each(['merge', 'rebase'] as const)('pulls diverged branches using the selected %s strategy', async (strategy) => {
+    const { peer } = await openPeer()
+    await addCommit(peer, 'incoming.txt', 'remote', 'Remote')
+    await git(peer, 'push')
+    await addCommit(repo, 'local.txt', 'local', 'Local')
+    const local = await git(repo, 'rev-parse', 'HEAD')
+    const incoming = await git(peer, 'rev-parse', 'HEAD')
+    await git(repo, 'config', 'pull.ff', 'only')
+    await git(repo, 'config', 'pull.rebase', strategy === 'merge' ? 'true' : 'false')
+    expect(await gitMutate(repo, { kind: 'pull', strategy })).toMatchObject({ ok: true, outcome: { kind: 'pull' } })
+    expect(await git(repo, 'log', '-1', '--format=%P')).toBe(strategy === 'merge' ? local + ' ' + incoming : incoming)
+    expect(await readFile(join(repo, 'incoming.txt'), 'utf8')).toBe('remote')
+    expect(await readFile(join(repo, 'local.txt'), 'utf8')).toBe('local')
+  })
+
+  it('rejects a stale force-with-lease and parses an accepted forced update', async () => {
+    const { bare, peer } = await openPeer()
+    await addCommit(peer, 'theirs.txt', 'remote', 'Remote')
+    await git(peer, 'push')
+    await addCommit(repo, 'ours.txt', 'local', 'Local')
+    expect(await gitMutate(repo, { kind: 'push', forceWithLease: true })).toMatchObject({ ok: false, code: 'pushRejected', error: expect.stringMatching(/stale info/) })
+    expect(await git(bare, 'rev-parse', 'HEAD')).toBe(await git(peer, 'rev-parse', 'HEAD'))
+    expect(await gitMutate(repo, { kind: 'fetch' })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'push', forceWithLease: true })).toMatchObject({
+      ok: true, outcome: { kind: 'push', target: 'origin/main', count: 1, published: false, forced: true }
+    })
+    expect(await git(bare, 'rev-parse', 'HEAD')).toBe(await git(repo, 'rev-parse', 'HEAD'))
+  })
+
+  it('serializes canonical aliases while allowing independent repositories to mutate', async () => {
+    const other = join(temp, 'other')
+    const alias = join(temp, 'alias')
+    await initRepository(other)
+    await symlink(repo, alias, 'dir')
+    await writeFile(join(repo, 'one.txt'), '1')
+    await writeFile(join(repo, 'two.txt'), '2')
+    await writeFile(join(other, 'other.txt'), '3')
+    let release!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const first = gitMutate(repo, { kind: 'stage', path: 'one.txt' }, async () => {
+      entered()
+      await gate
+      return false
+    })
+    await started
+    const enteredSecond = vi.fn(() => false)
+    const second = gitMutate(alias, { kind: 'stage', path: 'two.txt' }, enteredSecond)
+    try {
+      expect(await gitMutate(other, { kind: 'stage', path: 'other.txt' })).toEqual({ ok: true })
+      expect(enteredSecond).not.toHaveBeenCalled()
+    } finally {
+      release()
+      await Promise.all([first, second])
+    }
+    expect(await first).toEqual({ ok: true })
+    expect(await second).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ staged: 2 })
+    expect(await gitMutate(other, { kind: 'unstageAll' }, () => true)).toMatchObject({ ok: false, code: 'busy' })
+    expect(await gitStatus(other)).toMatchObject({ staged: 1 })
+  })
+
+  it('rejects option-shaped mutation arguments and treats command-like messages as literal text', async () => {
+    const marker = join(temp, 'should-not-exist')
+    const message = '$(touch ' + marker + ')'
+    await writeFile(join(repo, 'tracked.txt'), 'change')
+    expect(await gitMutate(repo, { kind: 'stageAndCommit', message })).toMatchObject({ ok: true })
+    expect(await git(repo, 'log', '-1', '--format=%s')).toBe(message)
+    await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+    for (const op of [
+      { kind: 'renameBranch', oldName: 'main', newName: '--help' },
+      { kind: 'deleteBranch', name: '--all', force: true },
+      { kind: 'deleteRemoteBranch', remote: '--mirror', branch: 'main' },
+      { kind: 'deleteRemoteBranch', remote: 'unknown', branch: '--force' },
+      { kind: 'setUpstream', upstream: 'HEAD~1' },
+      { kind: 'merge', branch: 'HEAD~1', remote: null, mode: 'default' },
+      { kind: 'pull', strategy: '--recurse-submodules' },
+      { kind: 'push', forceWithLease: '--force' },
+      { kind: 'stashApply', ref: '--index' },
+      { kind: 'stashDrop', ref: 'stash@{0}\n' },
+      { kind: 'stashPop', ref: 'refs/stash' },
+      { kind: 'stashBranch', ref: 'stash@{0}', name: '--force' },
+      { kind: 'ignore', path: 'tracked.txt', mode: 'glob' }
+    ]) expect(await gitMutate(repo, op)).toMatchObject({ ok: false })
+    expect(await gitStashDetail(repo, 'HEAD~1')).toMatchObject({ ok: false })
+  })
+
   it('reports branch and dirty state from a subfolder and handles detached HEAD', async () => {
     const child = join(repo, 'child')
     await mkdir(child)
@@ -183,7 +534,7 @@ describe('Git workbench operations', () => {
     await writeFile(join(repo, 'a.ts'), 'working a\n')
     await writeFile(join(repo, 'new.ts'), 'working new\n')
     expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({
-      ok: false, code: 'pullConflict', files: ['a.ts', 'new.ts']
+      ok: false, code: 'pullConflict', conflictFiles: ['a.ts', 'new.ts']
     })
     expect(await git(repo, 'rev-parse', 'refs/remotes/origin/main')).toBe(await git(peer, 'rev-parse', 'HEAD'))
     expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
@@ -207,7 +558,7 @@ describe('Git workbench operations', () => {
     await addCommit(peer, 'folder', 'remote file\n', 'Add file')
     await git(peer, 'push')
     expect(await gitMutate(repo, { kind: 'pull' })).toMatchObject({
-      ok: false, code: 'pullConflict', files: ['LocalCase.ts', 'folder/child', 'prefix', 'tracked.txt']
+      ok: false, code: 'pullConflict', conflictFiles: ['LocalCase.ts', 'folder/child', 'prefix', 'tracked.txt']
     })
   })
 
@@ -544,8 +895,8 @@ describe('Git workbench operations', () => {
     await createOrigin()
     const before = await createDivergingCommits()
     await expect(git(repo, 'merge', '--no-edit', 'feature')).rejects.toThrow(/merge/i)
-    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 1 })
-    expect((await gitChanges(repo, true)).files).toMatchObject([{ path: 'tracked.txt', conflicted: true, staged: true, unstaged: true }])
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'merge', conflicts: 1 })
+    expect((await gitChanges(repo, true)).files).toMatchObject([{ path: 'tracked.txt', status: 'C', conflicted: true, conflictPath: 'tracked.txt' }])
     for (const op of [{ kind: 'pull' }, { kind: 'push' }, { kind: 'switch', name: 'feature', remote: null }, { kind: 'createBranch', name: 'blocked' }]) {
       expect(await gitMutate(repo, op)).toMatchObject({ ok: false, code: 'operationInProgress' })
     }
@@ -553,16 +904,14 @@ describe('Git workbench operations', () => {
       expect(await gitMutate(repo, { kind, message: 'Blocked' })).toMatchObject({ ok: false, code: 'unmerged' })
     }
     expect(await gitMutate(repo, { kind: 'fetch' })).toEqual({ ok: true })
-    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'constructor' })).toEqual({ ok: false, error: 'Invalid Git operation.' })
-    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'rebase' })).toEqual({
-      ok: false, error: 'The Git operation changed. Refresh and try again.'
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'constructor' })).toEqual({ ok: false, error: 'Invalid Git operation.' })
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'rebase' })).toEqual({
+      ok: false, error: 'The Git operation changed. Refresh the repository status and try again.'
     })
-    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'merge' }, async () => true)).toMatchObject({ ok: false, code: 'busy' })
-    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 1 })
-    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'merge' })).toEqual({
-      ok: true, outcome: { kind: 'abortOperation', operation: 'merge' }
-    })
-    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0, dirty: false })
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'merge' }, async () => true)).toMatchObject({ ok: false, code: 'busy' })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'merge', conflicts: 1 })
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'merge' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, dirty: false })
     expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
     expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('main edit\n')
   })
@@ -573,21 +922,19 @@ describe('Git workbench operations', () => {
     await expect(git(repo, 'merge', '--no-edit', 'feature')).rejects.toThrow(/merge/i)
     await writeFile(join(repo, 'tracked.txt'), 'main edit\n')
     expect(await gitMutate(repo, { kind: 'stage', path: 'tracked.txt' })).toEqual({ ok: true })
-    expect(await gitStatus(repo)).toMatchObject({ operation: 'merge', conflicts: 0, staged: 0, dirty: false })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'merge', conflicts: 0, staged: 0, dirty: false })
     expect(await gitMutate(repo, { kind: 'commit', message: 'Resolve merge' })).toMatchObject({ ok: true, outcome: { kind: 'commit' } })
     expect(await git(repo, 'log', '-1', '--format=%P')).toBe(`${before} ${feature}`)
-    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0 })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0 })
   })
 
   it('detects a rebase conflict and aborts back to the original branch and HEAD', async () => {
     const before = await createDivergingCommits()
     await expect(git(repo, 'rebase', 'feature')).rejects.toThrow(/could not apply/i)
-    expect(await gitStatus(repo)).toMatchObject({ branch: null, operation: 'rebase', conflicts: 1 })
+    expect(await gitStatus(repo)).toMatchObject({ branch: null, inProgress: 'rebase', conflicts: 1 })
     expect(await gitMutate(repo, { kind: 'commit', message: 'Blocked' })).toMatchObject({ ok: false, code: 'operationInProgress' })
-    expect(await gitMutate(repo, { kind: 'abortOperation', operation: 'rebase' })).toEqual({
-      ok: true, outcome: { kind: 'abortOperation', operation: 'rebase' }
-    })
-    expect(await gitStatus(repo)).toMatchObject({ branch: 'main', operation: null, conflicts: 0 })
+    expect(await gitMutate(repo, { kind: 'abortOperation', expectedOperation: 'rebase' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ branch: 'main', inProgress: null, conflicts: 0 })
     expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before)
   })
 
@@ -596,20 +943,20 @@ describe('Git workbench operations', () => {
     const linked = join(temp, 'linked worktree')
     await git(repo, 'worktree', 'add', '--detach', linked, before)
     await expect(git(linked, 'cherry-pick', 'feature')).rejects.toThrow(/could not apply/i)
-    expect(await gitStatus(linked)).toMatchObject({ operation: 'cherryPick', conflicts: 1 })
-    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 0 })
-    expect(await gitMutate(linked, { kind: 'abortOperation', operation: 'cherryPick' })).toMatchObject({ ok: true })
+    expect(await gitStatus(linked)).toMatchObject({ inProgress: 'cherry-pick', conflicts: 1 })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0 })
+    expect(await gitMutate(linked, { kind: 'abortOperation', expectedOperation: 'cherry-pick' })).toMatchObject({ ok: true })
     await expect(git(linked, 'revert', '--no-edit', 'HEAD^')).rejects.toThrow(/could not revert/i)
-    expect(await gitStatus(linked)).toMatchObject({ operation: 'revert', conflicts: 1 })
-    expect(await gitMutate(linked, { kind: 'abortOperation', operation: 'revert' })).toMatchObject({ ok: true })
-    expect(await gitStatus(linked)).toMatchObject({ operation: null, conflicts: 0 })
+    expect(await gitStatus(linked)).toMatchObject({ inProgress: 'revert', conflicts: 1 })
+    expect(await gitMutate(linked, { kind: 'abortOperation', expectedOperation: 'revert' })).toMatchObject({ ok: true })
+    expect(await gitStatus(linked)).toMatchObject({ inProgress: null, conflicts: 0 })
     expect(await git(linked, 'rev-parse', 'HEAD')).toBe(before)
   })
 
   it('detects unmerged files without an operation marker and does not auto-stage them on commit', async () => {
     await createDivergingCommits()
     await expect(git(repo, 'merge', '--squash', 'feature')).rejects.toThrow(/merge/i)
-    expect(await gitStatus(repo)).toMatchObject({ operation: null, conflicts: 1 })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 1 })
     expect(await gitMutate(repo, { kind: 'stageAndCommit', message: 'Blocked' })).toMatchObject({ ok: false, code: 'unmerged' })
     expect(await git(repo, 'status', '--porcelain')).toBe('UU tracked.txt')
   })
@@ -647,6 +994,242 @@ describe('Git workbench operations', () => {
     expect(await readFile(outside, 'utf8')).toBe('outside')
   })
 
+  it('checks out a verified commit and branches from a historic commit before cherry-picking and reverting', async () => {
+    const root = await git(repo, 'rev-parse', 'HEAD')
+    await addCommit(repo, 'feature.txt', 'new content\n', 'Feature\nTitle continuation\n\nBody\nSecond line')
+    const feature = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitCommitDetail(repo, feature)).toMatchObject({
+      ok: true, commit: { message: 'Feature\nTitle continuation\n\nBody\nSecond line\n' }
+    })
+    expect(await gitMutate(repo, { kind: 'checkoutCommit', hash: root.slice(0, 12).toUpperCase() })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ branch: null, headCommit: { hash: root } })
+    expect(await gitMutate(repo, { kind: 'createBranch', name: 'picked', startPoint: root })).toMatchObject({ ok: true })
+    expect(await gitMutate(repo, { kind: 'cherryPick', hash: feature })).toEqual({ ok: true })
+    expect(await readFile(join(repo, 'feature.txt'), 'utf8')).toBe('new content\n')
+    const picked = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitMutate(repo, { kind: 'revert', hash: picked })).toEqual({ ok: true })
+    await expect(readFile(join(repo, 'feature.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await git(repo, 'rev-parse', 'picked~1')).toBe(picked)
+  })
+
+  it('reverts a merge against a valid mainline and resets the expected layers in all three modes', async () => {
+    const root = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'switch', '-c', 'topic')
+    await addCommit(repo, 'topic.txt', 'topic\n', 'Topic')
+    await git(repo, 'switch', 'main')
+    await addCommit(repo, 'tracked.txt', 'main\n', 'Main')
+    const main = await git(repo, 'rev-parse', 'HEAD')
+    await git(repo, 'merge', '--no-ff', '-m', 'Merge topic', 'topic')
+    const merge = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitMutate(repo, { kind: 'revert', hash: merge, mainline: 3 })).toMatchObject({ ok: false })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(merge)
+    expect(await gitMutate(repo, { kind: 'revert', hash: merge, mainline: 1 })).toEqual({ ok: true })
+    await expect(readFile(join(repo, 'topic.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await gitMutate(repo, { kind: 'reset', hash: root, mode: 'soft' })).toEqual({ ok: true })
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(root)
+    expect(await git(repo, 'status', '--porcelain')).toBe('M  tracked.txt')
+    expect(await gitMutate(repo, { kind: 'reset', hash: root, mode: 'mixed' })).toEqual({ ok: true })
+    expect(await git(repo, 'status', '--porcelain')).toBe(' M tracked.txt')
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('main\n')
+    expect(await gitMutate(repo, { kind: 'reset', hash: main, mode: 'hard' })).toEqual({ ok: true })
+    await writeFile(join(repo, 'tracked.txt'), 'discard me\n')
+    expect(await gitMutate(repo, { kind: 'reset', hash: root, mode: 'hard' })).toEqual({ ok: true })
+    expect(await readFile(join(repo, 'tracked.txt'), 'utf8')).toBe('initial\n')
+    expect(await git(repo, 'status', '--porcelain')).toBe('')
+  })
+
+  it('resolves real diff3 merge hunks, rejects stale previews, and continues after marking the file', async () => {
+    const gap = Array.from({ length: 18 }, (_, i) => `unchanged ${i}\n`).join('')
+    const middle = 'first\n' + gap + 'last\n'
+    const current = '当前\n' + gap + '当前末尾\n'
+    const incoming = '传入\n' + gap + '传入末尾\n'
+    const { main, topic } = await conflictingBranches('tracked.txt', middle, current, incoming)
+    await git(repo, 'config', 'merge.conflictStyle', 'diff3')
+    expect(await gitMutate(repo, { kind: 'merge', branch: 'topic', remote: null, mode: 'default' }))
+      .toMatchObject({ ok: false, code: 'mergeConflict' })
+    const subfolder = join(repo, 'sub')
+    await mkdir(subfolder)
+    expect(await gitStatus(subfolder)).toMatchObject({ repo: true, inProgress: 'merge', conflicts: 1, staged: 0 })
+    expect(await gitChanges(subfolder, true)).toMatchObject({ files: [{ status: 'C', conflicted: true, conflictPath: 'tracked.txt' }] })
+    expect(await gitMutate(repo, { kind: 'continueOperation' })).toMatchObject({ ok: false })
+    expect(await gitMutate(repo, { kind: 'skipOperation' })).toMatchObject({ ok: false })
+    expect(await gitMutate(repo, { kind: 'stageAll' })).toMatchObject({ ok: false })
+
+    const initial = await gitConflictFile(subfolder, 'tracked.txt', true)
+    expect(initial).toMatchObject({ ok: true, file: { unresolvedCount: 2, hunks: [{ base: 'first\n' }, { base: 'last\n' }] } })
+    if (!initial.ok) throw new Error(initial.error)
+    const abs = join(repo, 'tracked.txt')
+    await writeFile(abs, (await readFile(abs, 'utf8')).replace('unchanged 9', 'updated externally'))
+    expect(await gitMutate(repo, { kind: 'resolveConflict', path: 'tracked.txt', hunkIndex: 0,
+      choice: 'current', expectedVersion: initial.file.version })).toMatchObject({ ok: false, error: expect.stringMatching(/changed/) })
+    expect(await gitMutate(repo, { kind: 'markResolved', path: 'tracked.txt', expectedVersion: initial.file.version }))
+      .toMatchObject({ ok: false, error: expect.stringMatching(/changed/) })
+    expect(await gitMutate(subfolder, { kind: 'resolveConflict', path: 'tracked.txt', hunkIndex: 0, repoRelative: true,
+      choice: 'current' })).toEqual({ ok: true })
+    expect(await gitConflictFile(repo, 'tracked.txt')).toMatchObject({ ok: true, file: { unresolvedCount: 1 } })
+    expect(await gitMutate(repo, { kind: 'resolveConflict', path: 'tracked.txt', choice: 'both' })).toEqual({ ok: true })
+    expect(await readFile(abs, 'utf8')).toBe('当前\n' + gap.replace('unchanged 9', 'updated externally') + '当前末尾\n传入末尾\n')
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'merge', conflicts: 1 })
+    expect(await gitMutate(repo, { kind: 'markResolved', path: 'tracked.txt' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'merge', conflicts: 0 })
+    expect(await gitMutate(repo, { kind: 'continueOperation', expectedOperation: 'merge' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, dirty: false })
+    expect(await git(repo, 'show', '-s', '--format=%P')).toBe(main + ' ' + topic)
+  })
+
+  it('detects rebase in a linked worktree and can continue, skip and abort real conflicts', async () => {
+    const { topic, main } = await conflictingBranches('tracked.txt', 'original\n', 'ours\n', 'theirs\n')
+    const worktree = join(temp, 'linked')
+    await git(repo, 'worktree', 'add', worktree, 'topic')
+    const start = async () => {
+      await expect(git(worktree, 'rebase', '--merge', 'main')).rejects.toThrow()
+      expect(await gitStatus(worktree)).toMatchObject({ inProgress: 'rebase', conflicts: 1 })
+      expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0 })
+    }
+    await start()
+    expect(await gitMutate(worktree, { kind: 'abortOperation', expectedOperation: 'cherry-pick' })).toMatchObject({ ok: false })
+    expect(await gitMutate(worktree, { kind: 'abortOperation', expectedOperation: 'rebase' })).toEqual({ ok: true })
+    expect(await gitStatus(worktree)).toMatchObject({ branch: 'topic', inProgress: null, conflicts: 0, headCommit: { hash: topic } })
+    await start()
+    expect(await gitMutate(worktree, { kind: 'skipOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(worktree)).toMatchObject({ branch: 'topic', inProgress: null, headCommit: { hash: main } })
+    await git(worktree, 'reset', '--hard', topic)
+    await start()
+    expect(await gitMutate(worktree, { kind: 'resolveConflict', path: 'tracked.txt', choice: 'incoming', stageIfComplete: true })).toEqual({ ok: true })
+    expect(await gitMutate(worktree, { kind: 'continueOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(worktree)).toMatchObject({ branch: 'topic', inProgress: null, conflicts: 0 })
+    expect(await readFile(join(worktree, 'tracked.txt'), 'utf8')).toBe('theirs\n')
+    expect(await git(worktree, 'rev-parse', 'HEAD^')).toBe(main)
+  })
+
+  it('continues or skips a conflicting cherry-pick and stages a resolved file deletion', async () => {
+    const { main, topic } = await conflictingBranches('tracked.txt', 'base\n', 'local text\n', 'topic text\n')
+    const cherryPick = async () => {
+      expect(await gitMutate(repo, { kind: 'cherryPick', hash: topic })).toMatchObject({ ok: false, code: 'mergeConflict' })
+      expect(await gitStatus(repo)).toMatchObject({ inProgress: 'cherry-pick', conflicts: 1 })
+    }
+    await cherryPick()
+    expect(await gitMutate(repo, { kind: 'abortOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, headCommit: { hash: main } })
+    await cherryPick()
+    expect(await gitMutate(repo, { kind: 'skipOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, headCommit: { hash: main } })
+    await cherryPick()
+    await rm(join(repo, 'tracked.txt'))
+    expect(await gitConflictFile(repo, 'tracked.txt')).toMatchObject({ ok: true, file: { missing: true, hunks: [] } })
+    expect(await gitMutate(repo, { kind: 'markResolved', path: 'tracked.txt' })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'continueOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, dirty: false })
+    await expect(readFile(join(repo, 'tracked.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('detects and aborts a conflicting revert and refuses to rewrite a symlink target', async () => {
+    await addCommit(repo, 'tracked.txt', 'target\n', 'Target')
+    const target = await git(repo, 'rev-parse', 'HEAD')
+    await addCommit(repo, 'tracked.txt', 'current\n', 'Current')
+    const head = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitMutate(repo, { kind: 'revert', hash: target })).toMatchObject({ ok: false, code: 'mergeConflict' })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: 'revert', conflicts: 1 })
+    const abs = join(repo, 'tracked.txt')
+    const outside = join(temp, 'outside')
+    await writeFile(outside, 'untouched')
+    await rm(abs)
+    await symlink(outside, abs)
+    expect(await gitConflictFile(repo, 'tracked.txt')).toMatchObject({ ok: true, file: { binary: true, hunks: [] } })
+    expect(await gitConflictFile(repo, '../outside')).toMatchObject({ ok: false })
+    expect(await gitMutate(repo, { kind: 'resolveConflict', path: 'tracked.txt', choice: 'incoming' })).toMatchObject({ ok: false })
+    expect(await readFile(outside, 'utf8')).toBe('untouched')
+    expect(await gitMutate(repo, { kind: 'abortOperation' })).toEqual({ ok: true })
+    expect(await gitStatus(repo)).toMatchObject({ inProgress: null, conflicts: 0, headCommit: { hash: head } })
+    expect(await readFile(abs, 'utf8')).toBe('current\n')
+  })
+
+  it('manages tags and fetch/push remotes and lists tags from the selected remote endpoint', async () => {
+    const fetchRepo = join(temp, 'fetch.git')
+    const pushRepo = join(temp, 'push.git')
+    await git(temp, 'init', '--bare', '--', fetchRepo)
+    await git(temp, 'init', '--bare', '--', pushRepo)
+    const head = await git(repo, 'rev-parse', 'HEAD')
+    expect(await gitMutate(repo, { kind: 'addRemote', name: 'publish/release', url: pushRepo })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'setRemoteUrl', name: 'publish/release', url: fetchRepo, pushUrl: pushRepo })).toEqual({ ok: true })
+    expect(await gitRemotes(repo)).toEqual({ ok: true, remotes: [{ name: 'publish/release', fetchUrl: fetchRepo, pushUrl: pushRepo }] })
+    expect(await gitMutate(repo, { kind: 'createTag', name: 'v1', target: head })).toEqual({ ok: true })
+    expect(await gitMutate(repo, { kind: 'createTag', name: 'stable/v2', message: '发布\n\nSecond paragraph' })).toEqual({ ok: true })
+    await git(repo, 'update-ref', 'refs/agentswitch/hidden', head)
+    expect(await gitTags(repo)).toMatchObject({ ok: true, tags: [
+      { name: 'stable/v2', hash: head, annotated: true, message: '发布\n\nSecond paragraph', tagger: 'Git GUI Tests' },
+      { name: 'v1', hash: head, annotated: false, message: '' }
+    ] })
+    const remote = 'publish/release'
+    expect(await gitMutate(repo, { kind: 'pushTag', remote, name: 'v1' })).toEqual({ ok: true })
+    expect(await gitTags(repo, remote)).toEqual({ ok: true, tags: [] })
+    expect(await gitTags(repo, remote, true)).toMatchObject({ ok: true, tags: [{ name: 'v1', annotated: false }] })
+    expect(await gitMutate(repo, { kind: 'pushTag', remote, all: true })).toEqual({ ok: true })
+    expect(await gitTags(repo, remote, true)).toMatchObject({ ok: true, tags: [{ name: 'stable/v2', annotated: true, hash: head }, { name: 'v1' }] })
+    expect(await gitMutate(repo, { kind: 'deleteRemoteTag', remote, name: 'stable/v2' })).toEqual({ ok: true })
+    expect(await gitTags(repo, remote, true)).toMatchObject({ ok: true, tags: [{ name: 'v1' }] })
+    expect(await gitMutate(repo, { kind: 'deleteTag', name: 'v1' })).toEqual({ ok: true })
+    expect(await gitTags(repo)).toMatchObject({ ok: true, tags: [{ name: 'stable/v2' }] })
+    expect(await gitMutate(repo, { kind: 'removeRemote', name: remote })).toEqual({ ok: true })
+    expect(await gitRemotes(repo)).toEqual({ ok: true, remotes: [] })
+  })
+
+  it('rejects invalid hashes, ref names, remote locations and conflict paths without mutating Git state', async () => {
+    const head = await git(repo, 'rev-parse', 'HEAD')
+    for (const op of [
+      { kind: 'checkoutCommit', hash: '--help' }, { kind: 'createBranch', name: 'new', startPoint: 'HEAD~1' },
+      { kind: 'cherryPick', hash: head + '\n' }, { kind: 'revert', hash: head, mainline: -1 },
+      { kind: 'reset', hash: head, mode: '--hard' }, { kind: 'createTag', name: '--force' },
+      { kind: 'createTag', name: 'bad..tag' }, { kind: 'createTag', name: 'valid', target: 'HEAD' },
+      { kind: 'deleteRemoteTag', remote: 'unknown', name: 'v1' }, { kind: 'pushTag', remote: '--repo', all: true },
+      { kind: 'addRemote', name: '--help', url: 'https://example.invalid/ok' },
+      { kind: 'addRemote', name: 'remote', url: '-bad' }, { kind: 'addRemote', name: 'remote', url: 'ext::sh' },
+      { kind: 'addRemote', name: 'remote', url: 'EXT::sh' }, { kind: 'addRemote', name: 'remote', url: 'x\ny' },
+      { kind: 'addRemote', name: 'remote', url: 'x y' }, { kind: 'addRemote', name: 'remote', url: 'x\0y' },
+      { kind: 'resolveConflict', path: '../tracked.txt', choice: 'incoming' },
+      { kind: 'resolveConflict', path: 'tracked.txt', choice: 'invalid' }, { kind: 'markResolved', path: 'tracked.txt' }
+    ]) expect(await gitMutate(repo, op)).toMatchObject({ ok: false })
+    expect(await gitStatus(repo)).toMatchObject({ headCommit: { hash: head }, branches: [{ name: 'main' }], dirty: false })
+    expect(await git(repo, 'remote')).toBe('')
+    expect(await git(repo, 'tag')).toBe('')
+  })
+
+  it('captures redacted argv and both output streams, filters by repository, and retains the last 200 entries', async () => {
+    clearGitCommandLog()
+    const url = 'https://username:password@example.invalid/git?token=query-secret'
+    const pat = 'github_pat_TOP_SECRET'
+    const signedHeader = 'http.extraHeader=Authorization: Bearer header-secret'
+    expect(redactGitSecrets(`${url}\n${signedHeader}\n${pat} ghp_ABCD gho_EFGH glpat-IJKL\nAuthorization: Basic very-secret`))
+      .toContain('https://***@example.invalid/git?token=***')
+    expect(await gitMutate(repo, { kind: 'addRemote', name: 'example', url })).toEqual({ ok: true })
+    await gitRemotes(repo)
+    await runGit(repo, ['-c', signedHeader, 'config', '--get', 'http.extraHeader'])
+    await runGit(repo, ['-c', 'http.extraHeader=X-Internal: opaque-secret', 'config', '--get', 'http.extraHeader'])
+    await expect(runGit(repo, ['not-a-real-git-command', pat])).rejects.toThrow()
+    const entries = await gitCommandLog(repo)
+    const json = JSON.stringify(entries)
+    for (const secret of ['username', 'password', 'query-secret', 'header-secret', 'opaque-secret', pat]) expect(json).not.toContain(secret)
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ok: false, exitCode: expect.any(Number), stderr: expect.stringContaining('not-a-real-git-command') }),
+      expect.objectContaining({ ok: true, exitCode: 0, stdout: expect.stringContaining('https://***@example.invalid') }),
+      expect.objectContaining({ args: expect.arrayContaining(['http.extraHeader=***']), stdout: '***' })
+    ]))
+    expect(entries.every(({ durationMs }) => durationMs >= 0)).toBe(true)
+    await runGit(temp, ['--version'])
+    expect((await gitCommandLog()).some(({ args }) => args[0] === '--version')).toBe(true)
+    expect((await gitCommandLog(repo)).some(({ args }) => args[0] === '--version')).toBe(false)
+    for (let i = 0; i < 205; i += 10) {
+      await Promise.all(Array.from({ length: Math.min(205 - i, 10) }, () => runGit(repo, ['rev-parse', '--verify', 'HEAD'])))
+    }
+    const bounded = await gitCommandLog()
+    expect(bounded).toHaveLength(200)
+    expect(new Set(bounded.map(({ id }) => id)).size).toBe(200)
+    expect(bounded[0].id - bounded.at(-1)!.id).toBe(199)
+    expect(bounded.every(({ args, stdout, stderr }) => args[0] === 'rev-parse' && stdout.length <= 4096 && stderr.length <= 4096)).toBe(true)
+    clearGitCommandLog()
+    expect(await gitCommandLog()).toEqual([])
+  })
+
   it('rejects invalid directories and writes while an agent occupies a repository', async () => {
     for (const dir of [null, 'relative', temp, join(repo, 'tracked.txt'), join(temp, 'missing')]) {
       expect(await gitStatus(dir)).toEqual({ ok: true, repo: false })
@@ -667,8 +1250,9 @@ describe('Git error categories', () => {
     ['error: you need to resolve your current index first', 'unmerged'],
     ['error: Pulling is not possible because you have unmerged files.', 'unmerged'],
     ['tracked.txt: needs merge', 'unmerged'],
-    ['hint: fix conflicts and then commit', 'unmerged'],
-    ['Auto-merging a.ts\nCONFLICT (content): Merge conflict in a.ts', 'unmerged'],
+    ['error: The branch \'topic\' is not fully merged.', 'branchNotMerged'],
+    ['hint: fix conflicts and then commit', 'mergeConflict'],
+    ['Auto-merging a.ts\nCONFLICT (content): Merge conflict in a.ts', 'mergeConflict'],
     ['fatal: Not possible to fast-forward, aborting.', 'diverged'],
     ['There is no tracking information for the current branch.', 'noUpstream'],
     ['fatal: could not read Username for a remote: terminal prompts disabled', 'auth'],

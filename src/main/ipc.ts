@@ -91,8 +91,8 @@ import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from '
 import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot, startUsage } from './usage'
 import { forgetModels, listModels } from './models'
-import { gitChanges, gitCommitDetail } from './gitChanges'
-import { gitGraph, gitLog, gitMutate, gitStatus } from './gitOps'
+import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
+import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
 import { allowFile, allowRoot, attachmentsDir, isAllowedPath } from './fileProtocol'
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -348,14 +348,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
   ipcMain.handle(IPC.gitGraph, (_e, dir: unknown, options?: unknown) => gitGraph(dir, options))
-  ipcMain.handle(IPC.gitCommitDetail, (_e, dir: unknown, hash: unknown) => gitCommitDetail(dir, hash))
+  ipcMain.handle(IPC.gitCommitDetail, (_e, dir: unknown, hash: unknown, metadataOnly: unknown) => gitCommitDetail(dir, hash, metadataOnly === true))
+  ipcMain.handle(IPC.gitStashes, (_e, dir: unknown) => gitStashes(dir))
+  ipcMain.handle(IPC.gitStashDetail, (_e, dir: unknown, ref: unknown) => gitStashDetail(dir, ref))
+  ipcMain.handle(IPC.gitConflictFile, (_e, dir: unknown, path: unknown, repoRelative: unknown) => gitConflictFile(dir, path, repoRelative === true))
+  ipcMain.handle(IPC.gitTags, (_e, dir: unknown, remote?: unknown, pushDestination?: unknown) => gitTags(dir, remote, pushDestination === true))
+  ipcMain.handle(IPC.gitRemotes, (_e, dir: unknown) => gitRemotes(dir))
+  ipcMain.handle(IPC.gitCommandLog, (_e, dir?: unknown) => gitCommandLog(dir))
+  ipcMain.handle(IPC.gitCommandLogClear, () => clearGitCommandLog())
   ipcMain.handle(IPC.gitMutate, async (_e, dir: unknown, op: unknown) => {
     let repoRoot: string | undefined
-    const result = await gitMutate(dir, op, async (root) => {
+    const result = await gitMutate(dir, op, (root) => {
       repoRoot = root
       return orchestrator.checkpoints.isRestoring(root)
-    }, t('git.repoBusy'))
-    if (result.ok && repoRoot) invalidateFileIndex(repoRoot)
+    }, t('git.checkpointBusy'))
+    if (repoRoot) invalidateFileIndex(repoRoot)
     return result
   })
   /** Closes a drawer tab: kills the process (if any) and drops its scrollback. */

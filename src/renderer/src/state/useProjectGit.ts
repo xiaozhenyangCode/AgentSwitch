@@ -5,6 +5,7 @@ import { t } from './i18n'
 import { getSettings } from './settings'
 
 export type RunGit = (op: GitMutation, options?: { errorToast?: boolean }) => Promise<GitMutationResult>
+export type ProjectGitTools = { status: Extract<GitStatus, { repo: true }>; disabled: boolean; run: RunGit }
 
 const pendingByDir = new Map<string, GitMutation['kind']>()
 const pendingListeners = new Set<() => void>()
@@ -27,12 +28,14 @@ const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: t
       : outcome.count === null ? t('git.pulled') : t('git.pulledCount', { n: outcome.count })
     case 'push': {
       const name = outcome.target
+      if (outcome.forced) return t('git.forcePushed', { name })
       if (outcome.published) return t('git.published', { name })
       if (outcome.count === 0) return t('git.upToDate')
       return outcome.count === null ? t('git.pushed', { name }) : t('git.pushedCount', { n: outcome.count, name })
     }
     case 'commit': return outcome.sha ? t('git.committed', { sha: outcome.sha, subject: outcome.subject }) : t('git.commitDone')
-    case 'abortOperation': return t('git.operationAborted', { op: t(`git.op.${outcome.operation}`) })
+    case 'undoLastCommit': return t('git.undoDone')
+    case 'merge': return t(outcome.squashed ? 'git.squashDone' : 'git.mergeDone')
   }
   switch (op.kind) {
     case 'fetch': return t('git.fetched')
@@ -40,8 +43,11 @@ const resultTitle = (op: GitMutation, result: Extract<GitMutationResult, { ok: t
     case 'unstage': return t('git.unstagedFile', { path: op.path })
     case 'discard': return t(op.untracked ? 'git.deletedFile' : 'git.discardedFile', { path: op.path })
     case 'stageAll': return t('git.stagedAll')
+    case 'stageTracked':
+    case 'stageUntracked': return t('git.stagedGroupDone')
     case 'unstageAll': return t('git.unstagedAll')
-    default: return t('git.failed')
+    case 'ignore': return t('git.ignoreDone', { path: op.path })
+    default: return t('git.operationDone')
   }
 }
 
@@ -50,7 +56,7 @@ const errorTitles = {
   diverged: 'git.errDiverged', noUpstream: 'git.errNoUpstream', auth: 'git.errAuth',
   pushRejected: 'git.errPushRejected', indexLocked: 'git.errIndexLocked',
   operationInProgress: 'git.errOperationInProgress', unmerged: 'git.errUnmerged', localChanges: 'git.errLocalChanges',
-  pullConflict: 'git.errPullConflict'
+  branchNotMerged: 'git.errBranchNotMerged', mergeConflict: 'git.errMergeConflict', pullConflict: 'git.errPullConflict'
 } as const
 
 export function gitErrorTitle(result: Extract<GitMutationResult, { ok: false }>): string {
@@ -58,9 +64,10 @@ export function gitErrorTitle(result: Extract<GitMutationResult, { ok: false }>)
 }
 
 export function gitErrorDetail(result: Extract<GitMutationResult, { ok: false }>): string | undefined {
-  if (result.code === 'busy') return undefined
-  if (result.code !== 'pullConflict' || !result.files?.length) return result.error
-  const { files } = result
+  // Renderer-side busy errors repeat the title; main-process ones explain why (for example a checkpoint restore).
+  if (result.code === 'busy') return result.error === t('git.repoBusy') ? undefined : result.error
+  const files = result.code === 'pullConflict' ? result.conflictFiles ?? [] : []
+  if (!files.length) return result.error
   const visible = files.slice(0, 8).map((file) => file.replace(/\r/g, '\\r').replace(/\n/g, '\\n'))
   const rest = files.length - visible.length
   return [t('git.pullConflictHint', { n: files.length }), ...visible, ...(rest ? [t('git.moreFiles', { n: rest })] : [])].join('\n')
@@ -69,6 +76,8 @@ export function gitErrorDetail(result: Extract<GitMutationResult, { ok: false }>
 export function useProjectGit(dir: string | null, threadId: string | null, agentRunning: boolean, refreshFiles: () => void) {
   const { toast } = useApp()
   const [snapshot, setSnapshot] = useState<{ dir: string; status: GitStatus } | null>(null)
+  const [pullConflict, setPullConflict] = useState<{ dir: string; files: string[] } | null>(null)
+  const [revision, setRevision] = useState(0)
   const request = useRef(0)
   const status = dir && snapshot?.dir === dir && snapshot.status.repo ? snapshot.status : null
   const repoPath = status?.repoPath ?? dir
@@ -80,13 +89,14 @@ export function useProjectGit(dir: string | null, threadId: string | null, agent
     void window.agentswitch.git.status(dir).then((result) => {
       if (id !== request.current) return
       if (result.ok) setSnapshot({ dir, status: result })
-      else setSnapshot(null)
-    }).catch(() => {
-      if (id === request.current) setSnapshot(null)
+      else toast({ kind: 'error', title: t(result.code ? errorTitles[result.code] : 'git.failed'), desc: result.error })
+    }).catch((error) => {
+      if (id === request.current) toast({ kind: 'error', title: t('git.failed'), desc: String(error) })
     })
-  }, [dir])
+  }, [dir, toast])
 
   useEffect(() => {
+    setPullConflict(null)
     refresh()
     if (!dir) return
     window.addEventListener('focus', refresh)
@@ -111,9 +121,10 @@ export function useProjectGit(dir: string | null, threadId: string | null, agent
 
   const run: RunGit = async (op, { errorToast = true } = {}) => {
     const context = current.current
-    if (!getSettings().showGitTools) return { ok: false, error: t('git.failed') }
-    if (!dir || !repoPath || dir !== context.dir || threadId !== context.threadId || repoPath !== context.repoPath) {
-      return { ok: false, error: t('git.failed') }
+    if (!getSettings().showGitTools || !dir || !repoPath || dir !== context.dir || threadId !== context.threadId || repoPath !== context.repoPath) {
+      const error = t('git.projectChanged')
+      if (errorToast) toast({ kind: 'error', title: error })
+      return { ok: false, error }
     }
     if (pendingByDir.has(repoPath)) {
       const error = t('git.repoBusy')
@@ -123,9 +134,12 @@ export function useProjectGit(dir: string | null, threadId: string | null, agent
     pendingByDir.set(repoPath, op.kind)
     notifyPending()
     try {
-      const result = await window.agentswitch.git.mutate(dir, op, threadId)
+      const result = await window.agentswitch.git.mutate(dir, op)
       if (!getSettings().showGitTools) return result
       if (result.ok) toast({ kind: 'success', title: resultTitle(op, result) })
+      else if (errorToast && result.code === 'pullConflict' && result.conflictFiles?.length && current.current.dir === dir) {
+        setPullConflict({ dir, files: result.conflictFiles })
+      }
       else if (errorToast) toast({
         kind: 'error',
         title: gitErrorTitle(result),
@@ -139,9 +153,13 @@ export function useProjectGit(dir: string | null, threadId: string | null, agent
     } finally {
       pendingByDir.delete(repoPath)
       notifyPending()
-      if (current.current.repoPath === repoPath || current.current.dir === dir) current.current.refreshAll()
+      if (current.current.repoPath === repoPath || current.current.dir === dir) {
+        current.current.refreshAll()
+        setRevision((value) => value + 1)
+      }
     }
   }
 
-  return { status, disabled: pending !== null, pending, run, refresh, refreshAll }
+  return { status, disabled: pending !== null, pending, run, refresh, refreshAll, revision,
+    pullConflict: pullConflict?.dir === dir ? pullConflict : null, dismissPullConflict: () => setPullConflict(null) }
 }

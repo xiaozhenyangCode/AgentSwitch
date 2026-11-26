@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { ProfileId } from '@shared/types'
+import type { GitPullStrategy, ProfileId } from '@shared/types'
 
 /**
  * Renderer preferences kept in localStorage (the language and the theme live in the main
@@ -19,11 +19,16 @@ export interface Settings {
   showDebugTerminal: boolean
   /** Developer: branch chip + stage/commit tools for git projects; off = read-only changes panel. */
   showGitTools: boolean
+  gitPullStrategy: GitPullStrategy
+  gitFetchPrune: boolean
 }
 
 const KEY = 'agentswitch.settings.v1'
 const PROBE_KEY = 'agentswitch.usage.probe' // older home of probeClaude
-const DEFAULTS: Settings = { sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80, showDebugTerminal: false, showGitTools: false }
+const DEFAULTS: Settings = {
+  sendKey: 'enter', defaultDriver: null, probeClaude: false, quotaWarn: 80,
+  showDebugTerminal: false, showGitTools: false, gitPullStrategy: 'ff-only', gitFetchPrune: true
+}
 
 function load(): Settings {
   let saved: Partial<Settings> = {}
@@ -38,6 +43,8 @@ function load(): Settings {
   if (![70, 80, 90].includes(s.quotaWarn)) s.quotaWarn = 80
   s.showDebugTerminal = s.showDebugTerminal === true
   s.showGitTools = s.showGitTools === true
+  if (!['ff-only', 'merge', 'rebase'].includes(s.gitPullStrategy)) s.gitPullStrategy = 'ff-only'
+  s.gitFetchPrune = s.gitFetchPrune !== false
   return s
 }
 

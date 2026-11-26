@@ -23,8 +23,9 @@ import { estimateMessageCost, fmtTokens, useUsage } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { GitGraphView } from '../components/GitGraphView'
+import { gitConflictLabel } from '../components/GitConflicts'
 import { ProjectBar } from '../components/ProjectBar'
-import { GitBranchMenu } from '../components/GitBranchMenu'
+import { GitBranchMenu, GitSyncBar } from '../components/GitBranchMenu'
 import { useProjectGit } from '../state/useProjectGit'
 import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
@@ -529,6 +530,8 @@ export function WorkbenchPage() {
   const agentRunning = isThreadBusy(thread)
   const fc = useFileChanges(thread, ctx.projectDir, agentRunning, showGitTools && changesOpen)
   const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, agentRunning, fc.refresh)
+  const gitTools = showGitTools && git.status ? { status: git.status, disabled: git.disabled, run: git.run } : null
+  const conflictLabel = gitTools ? gitConflictLabel(gitTools.status.inProgress, gitTools.status.conflicts) : null
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
 
   const openRewind = useCallback(
@@ -622,6 +625,10 @@ export function WorkbenchPage() {
             </div>
           )}
           <div className="no-drag flex items-center gap-1.5">
+            {showGitTools && git.status && <GitSyncBar key={ctx.projectDir} status={git.status} disabled={git.disabled}
+              pending={git.pending} run={git.run} compact />}
+            {!changesOpen && conflictLabel && <button type="button" onClick={() => setChangesVisible(true)}
+              className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-danger hover:bg-danger-soft">{conflictLabel}</button>}
             <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
             {showDebugTerminal && (
               <button
@@ -946,13 +953,26 @@ export function WorkbenchPage() {
         )}
       </div>
       {changesOpen && (
-        <ChangesPanel changes={fc.changes} loading={fc.loading} dir={ctx.projectDir} onRefresh={showGitTools ? git.refreshAll : fc.refresh}
-          onClose={toggleChanges} onViewHistory={openHistory} gitTools={showGitTools && git.status
-            ? { status: git.status, disabled: git.disabled || fc.loading, run: git.run }
+        <ChangesPanel key={ctx.projectDir} changes={fc.changes} loading={fc.loading} readFailed={fc.readFailed} dir={ctx.projectDir}
+          onRefresh={showGitTools ? git.refreshAll : fc.refresh} onClose={toggleChanges} onViewHistory={openHistory} gitRevision={git.revision} gitTools={gitTools
+            ? { ...gitTools, disabled: gitTools.disabled || fc.loading }
             : null} />
       )}
+      {git.pullConflict && (
+        <Modal onClose={git.dismissPullConflict} width={460}>
+          <div role="alertdialog" aria-label={t('git.errPullConflict')} className="space-y-3 p-6">
+            <h2 className="text-[16px] font-semibold text-ink">{t('git.errPullConflict')}</h2>
+            <p className="text-[13px] text-ink-2">{t('git.pullConflictDetail')}</p>
+            <ul className="max-h-[38vh] space-y-1 overflow-y-auto rounded-lg bg-surface-2 p-3 font-mono text-[12px] text-ink">
+              {git.pullConflict.files.map((path) => <li key={path} className="break-all whitespace-pre-wrap">{path}</li>)}
+            </ul>
+            <div className="flex justify-end"><button type="button" autoFocus className={btnPrimary}
+              onClick={git.dismissPullConflict}>{t('common.close')}</button></div>
+          </div>
+        </Modal>
+      )}
       {historyDir && historyDir === ctx.projectDir && (
-        <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)}
+        <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)} gitRevision={git.revision}
           remote={showGitTools ? { status: git.status, disabled: git.disabled, pending: git.pending, run: git.run, refresh: git.refresh } : null}
           onViewChanges={() => {
             setHistoryDir(null)
