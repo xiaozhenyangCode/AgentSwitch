@@ -501,7 +501,14 @@ describe('agy ACP runs', () => {
       { t: 'thinking', delta: 'Thought' },
       { t: 'text', delta: '\n\n' },
       { t: 'text', delta: 'Done.' },
-      { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64, contextWindow: 1048576 } }
+      { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64, contextWindow: 1048576 } },
+      expect.objectContaining({
+        t: 'request_usage',
+        model: null,
+        streaming: true,
+        turnIndex: 1,
+        usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2 }
+      })
     ])
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Late.'))
   })

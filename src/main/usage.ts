@@ -189,6 +189,23 @@ function priceOf(model: string): Match | null {
   return matches.get(model) ?? null
 }
 
+/** Computes USD cost for a single request using the active price tables (custom > LiteLLM > built-in). */
+export function priceForRequest(
+  model: string | null | undefined,
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h?: number },
+  fallbackCostUsd?: number | null
+): { model: string; costUsd: number | null } {
+  const m = (model ?? '').trim()
+  const hit = m ? priceOf(m) : null
+  if (hit) {
+    const prompt = n(tokens.input) + n(tokens.cacheRead) + n(tokens.cacheWrite)
+    const long = isLong(hit.rate, prompt)
+    return { model: m, costUsd: costOf(tokens, hit.rate, long) }
+  }
+  const fb = typeof fallbackCostUsd === 'number' && Number.isFinite(fallbackCostUsd) && fallbackCostUsd >= 0 ? fallbackCostUsd : null
+  return { model: m, costUsd: fb }
+}
+
 /** Bucket key of a request (or run) of `model` whose prompt was `prompt` tokens. */
 function modelKey(model: string | null | undefined, prompt: number): string {
   const m = (model ?? '').trim()

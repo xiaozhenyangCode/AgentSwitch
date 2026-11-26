@@ -23,6 +23,7 @@ import {
 } from '../state/usage'
 import { KindAvatar, Modal, ProfileAvatar } from './common'
 import { IconChevronDown, IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
+import { RequestLogView } from './RequestLogView'
 
 const STALE = 6 * 3600_000
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
@@ -684,15 +685,41 @@ function ModelTable({
   )
 }
 
-/** 用量限额 page body: period totals, per-account quota grid, per-account and per-model detail. */
-export function UsageView() {
+type UsageTab = 'logs' | 'accounts' | 'models'
+let lastUsageTab: UsageTab = 'logs'
+
+/** 用量限额 page body: multi-tab view (Request Logs, Providers/Accounts, Models). */
+export function UsageView({ onClose }: { onClose?: () => void }) {
   const { profiles } = useApp()
   const snap = useUsage()
+  const [tab, setTabState] = useState<UsageTab>(lastUsageTab)
+  const [logTotal, setLogTotal] = useState<number>(0)
+  const setTab = (next: UsageTab) => {
+    lastUsageTab = next
+    setTabState(next)
+  }
   const [period, setPeriodState] = useState<Period>(lastPeriod)
   const setPeriod = (p: Period) => {
     lastPeriod = p
     setPeriodState(p)
   }
+
+  // Keep the Request Logs tab badge synced even while viewing other tabs.
+  useEffect(() => {
+    let alive = true
+    const fetchCount = () => {
+      void window.agentswitch.usage.requestLogs({ limit: 1 }).then((page) => {
+        if (alive) setLogTotal(page.counts.total)
+      }).catch(() => {})
+    }
+    fetchCount()
+    const unsub = window.agentswitch.usage.onRequestLogsChanged(fetchCount)
+    return () => {
+      alive = false
+      unsub()
+    }
+  }, [])
+
   const from = periodFrom(period)
   const rows = (snap?.daily ?? []).filter((d) => from === null || d.day >= from)
   const byAccount = new Map<ProfileId, UsageTotals>()
@@ -704,103 +731,159 @@ export function UsageView() {
     byModel.set(d.model, addTotals(byModel.get(d.model) ?? emptyTotals(), d))
   }
   const modelRows = [...byModel.entries()].filter(([m, u]) => m !== '<synthetic>' && tokenSum(u) > 0).sort((a, b) => b[1].costUsd - a[1].costUsd || tokenSum(b[1]) - tokenSum(a[1]))
+  const customPrices = snap?.customPrices ?? {}
+  const seenModels = new Set(modelRows.map(([m]) => m.toLowerCase()))
+  const extraCustomCount = Object.keys(customPrices).filter((k) => !seenModels.has(k.toLowerCase())).length
+  const modelCount = modelRows.length + extraCustomCount
   const cards = quotaCardProfiles(profiles)
   const idlest = idlestAccounts(profiles, snap)
   const num = 'px-4 py-3 text-right tabular-nums'
   const unpriced = total.unpriced ?? 0
+
+  const tabs: { id: UsageTab; label: string; count: number }[] = [
+    { id: 'logs', label: t('reqLog.tab.logs'), count: logTotal },
+    { id: 'accounts', label: t('reqLog.tab.accounts'), count: profiles.length },
+    { id: 'models', label: t('reqLog.tab.models'), count: modelCount }
+  ]
+
+  const periodBar = (
+    <div className="mb-4 flex items-center gap-1 rounded-[10px] bg-fill p-0.5 text-[12.5px] w-fit">
+      {PERIODS.map((p) => (
+        <button
+          key={p}
+          className={`h-7 rounded-lg px-3 ${period === p ? 'bg-surface font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.08)]' : 'text-ink-2 hover:text-ink'}`}
+          onClick={() => setPeriod(p)}
+        >
+          {t(`usage.period.${p}`)}
+        </button>
+      ))}
+    </div>
+  )
+
   return (
     <div>
-      <div className="mb-3 flex items-center gap-1 rounded-[10px] bg-fill p-0.5 text-[12.5px] w-fit">
-        {PERIODS.map((p) => (
-          <button
-            key={p}
-            className={`h-7 rounded-lg px-3 ${period === p ? 'bg-surface font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.08)]' : 'text-ink-2 hover:text-ink'}`}
-            onClick={() => setPeriod(p)}
-          >
-            {t(`usage.period.${p}`)}
-          </button>
-        ))}
-      </div>
-      <div className="grid grid-cols-4 gap-3">
-        <Stat
-          label={t('usage.statCost')}
-          value={fmtCost(total.costUsd)}
-          sub={unpriced > 0 ? t('usage.statCostUnpriced', { n: fmtTokens(unpriced) }) : t('usage.statCostSub')}
-        />
-        <Stat label={t('usage.statTokens')} value={fmtTokens(tokenSum(total))} sub={t('usage.statTodaySub', { n: fmtTokens(total.output) })} />
-        <Stat label={t('usage.statCacheHit')} value={fmtPct(cacheHit(total))} sub={t('usage.statCacheHitSub', { n: fmtTokens(total.cacheRead) })} />
-        <Stat label={t('usage.statRuns')} value={String(total.runs)} sub={t('usage.statRunsSub')} />
+      {/* Top multi-dimensional tab bar */}
+      <div className="mb-5 flex items-center gap-1 border-b border-hairline" role="tablist">
+        {tabs.map((item) => {
+          const active = tab === item.id
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(item.id)}
+              className={`relative -mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] font-medium transition-colors ${
+                active
+                  ? 'border-accent text-ink'
+                  : 'border-transparent text-ink-3 hover:text-ink-2'
+              }`}
+            >
+              <span>{item.label}</span>
+              <span
+                className={`rounded-full px-1.5 py-px text-[11px] font-medium tabular-nums ${
+                  active ? 'bg-accent/12 text-accent' : 'bg-black/[0.05] text-ink-3 dark:bg-white/[0.08]'
+                }`}
+              >
+                {item.count.toLocaleString()}
+              </span>
+            </button>
+          )
+        })}
       </div>
 
-      <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
-      {cards.length ? (
-        <div className="grid grid-cols-2 gap-3">
-          {cards.map((p) => (
-            <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
-          ))}
-        </div>
-      ) : (
-        <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
-      )}
+      {tab === 'logs' && <RequestLogView onCloseDialog={onClose} onCountsChange={(c) => setLogTotal(c.total)} />}
 
-      <SectionTitle>{t('usage.detailSection')}</SectionTitle>
-      {!profiles.length ? (
-        <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noData')}</div>
-      ) : (
-        <div className={`overflow-hidden ${CARD}`}>
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
-                <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
-                <th className="px-4 py-2 text-right font-medium">{t('usage.colTokens')}</th>
-                <th className="px-4 py-2 text-right font-medium">{t('usage.colCacheHit')}</th>
-                <th className="px-4 py-2 text-right font-medium">{t('usage.colRuns')}</th>
-                <th className="px-4 py-2 text-right font-medium">{t('usage.colCost')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {profiles.map((p) => {
-                const u = byAccount.get(p.id)
-                return (
-                  <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2.5">
-                        <ProfileAvatar profile={p} size={22} />
-                        <span className="truncate font-medium text-ink">{p.name}</span>
-                      </div>
-                    </td>
-                    <td
-                      className={num}
-                      title={
-                        u
-                          ? t('usage.cellTip', { input: fmtTokens(u.input), output: fmtTokens(u.output), cacheRead: fmtTokens(u.cacheRead), cacheWrite: fmtTokens(u.cacheWrite) }) +
-                            (u.reasoning ? t('usage.cellTipReasoning', { n: fmtTokens(u.reasoning) }) : '')
-                          : undefined
-                      }
-                    >
-                      {u ? fmtTokens(tokenSum(u)) : '—'}
-                    </td>
-                    <td className={`${num} text-ink-2`}>{u ? fmtPct(cacheHit(u)) : '—'}</td>
-                    <td className={`${num} text-ink-2`}>{u?.runs || '—'}</td>
-                    <td className={`${num} font-medium text-ink`}>{u && u.costUsd > 0 ? fmtCost(u.costUsd) : '—'}</td>
+      {tab === 'accounts' && (
+        <div>
+          {periodBar}
+          <div className="grid grid-cols-4 gap-3">
+            <Stat
+              label={t('usage.statCost')}
+              value={fmtCost(total.costUsd)}
+              sub={unpriced > 0 ? t('usage.statCostUnpriced', { n: fmtTokens(unpriced) }) : t('usage.statCostSub')}
+            />
+            <Stat label={t('usage.statTokens')} value={fmtTokens(tokenSum(total))} sub={t('usage.statTodaySub', { n: fmtTokens(total.output) })} />
+            <Stat label={t('usage.statCacheHit')} value={fmtPct(cacheHit(total))} sub={t('usage.statCacheHitSub', { n: fmtTokens(total.cacheRead) })} />
+            <Stat label={t('usage.statRuns')} value={String(total.runs)} sub={t('usage.statRunsSub')} />
+          </div>
+
+          <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
+          {cards.length ? (
+            <div className="grid grid-cols-2 gap-3">
+              {cards.map((p) => (
+                <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
+              ))}
+            </div>
+          ) : (
+            <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
+          )}
+
+          <SectionTitle>{t('usage.detailSection')}</SectionTitle>
+          {!profiles.length ? (
+            <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noData')}</div>
+          ) : (
+            <div className={`overflow-hidden ${CARD}`}>
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
+                    <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t('usage.colTokens')}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t('usage.colCacheHit')}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t('usage.colRuns')}</th>
+                    <th className="px-4 py-2 text-right font-medium">{t('usage.colCost')}</th>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {profiles.map((p) => {
+                    const u = byAccount.get(p.id)
+                    return (
+                      <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2.5">
+                            <ProfileAvatar profile={p} size={22} />
+                            <span className="truncate font-medium text-ink">{p.name}</span>
+                          </div>
+                        </td>
+                        <td
+                          className={num}
+                          title={
+                            u
+                              ? t('usage.cellTip', { input: fmtTokens(u.input), output: fmtTokens(u.output), cacheRead: fmtTokens(u.cacheRead), cacheWrite: fmtTokens(u.cacheWrite) }) +
+                                (u.reasoning ? t('usage.cellTipReasoning', { n: fmtTokens(u.reasoning) }) : '')
+                              : undefined
+                          }
+                        >
+                          {u ? fmtTokens(tokenSum(u)) : '—'}
+                        </td>
+                        <td className={`${num} text-ink-2`}>{u ? fmtPct(cacheHit(u)) : '—'}</td>
+                        <td className={`${num} text-ink-2`}>{u?.runs || '—'}</td>
+                        <td className={`${num} font-medium text-ink`}>{u && u.costUsd > 0 ? fmtCost(u.costUsd) : '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
-      <ModelTable
-        rows={modelRows}
-        models={snap?.models ?? {}}
-        customPrices={snap?.customPrices ?? {}}
-        footnote={
-          t('usage.footnote', { days: snap?.claudeDays ?? 30, date: snap?.pricesAt ?? '' }) +
-          (snap?.pricesLive ? '' : t('usage.footnoteOffline')) +
-          (snap?.backfill === 'running' ? t('usage.backfillRunning') : '')
-        }
-      />
+      {tab === 'models' && (
+        <div>
+          {periodBar}
+          <ModelTable
+            rows={modelRows}
+            models={snap?.models ?? {}}
+            customPrices={customPrices}
+            footnote={
+              t('usage.footnote', { days: snap?.claudeDays ?? 30, date: snap?.pricesAt ?? '' }) +
+              (snap?.pricesLive ? '' : t('usage.footnoteOffline')) +
+              (snap?.backfill === 'running' ? t('usage.backfillRunning') : '')
+            }
+          />
+        </div>
+      )}
     </div>
   )
 }

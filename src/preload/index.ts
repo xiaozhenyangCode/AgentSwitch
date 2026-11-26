@@ -44,6 +44,8 @@ import {
   type HistoryEntry,
   type UsageSnapshot,
   type PriceRate,
+  type RequestLogPage,
+  type RequestLogQuery,
   type HistoryStat,
   type HistoryThread,
   type KindConfig,
@@ -144,7 +146,9 @@ const api = {
     /** probe=true sends one tiny haiku message per claude account to pull fresh quota (uses quota). */
     refresh: (probe = false): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageRefresh, probe),
     setPrice: (model: string, rate: PriceRate | null): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSetPrice, model, rate),
-    onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb)
+    onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb),
+    requestLogs: (query?: RequestLogQuery): Promise<RequestLogPage> => ipcRenderer.invoke(IPC.requestLogsQuery, query),
+    onRequestLogsChanged: (cb: () => void) => subscribe(IPC.requestLogsChanged, () => cb())
   },
   history: {
     list: (force = false): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.historyList, force),

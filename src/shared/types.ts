@@ -324,6 +324,66 @@ export interface UsageSnapshot {
   updatedAt: number
 }
 
+export interface RequestLogEntry {
+  id: string
+  /** ms epoch when the request finished. */
+  timestamp: number
+  accountId: ProfileId
+  accountName: string
+  engineKind: ProfileKind
+  /** Vendor or endpoint label (Anthropic, OpenAI, Google, DeepSeek, Custom API…). */
+  provider: string
+  /** Canonical or fallback-resolved model identifier. */
+  model: string
+  projectDir?: string | null
+  threadId?: string | null
+  runId?: string | null
+  turnIndex?: number | null
+  /** Mutually exclusive normalized token counts. */
+  uncachedInputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number | null
+  ttftMs: number | null
+  durationMs: number | null
+  tokensPerSecond: number | null
+  /** HTTP-like status code: 200, 401, 403, 408, 429, 499, 500. */
+  statusCode: number
+  errorSummary?: string | null
+  rawUsage?: unknown
+}
+
+export type RequestLogStatusFilter = 'all' | '2xx' | '429' | '4xx5xx' | number
+
+export interface RequestLogQuery {
+  offset?: number
+  limit?: number
+  statusCode?: RequestLogStatusFilter
+  accountId?: ProfileId | null
+  engineKind?: ProfileKind | null
+  model?: string | null
+}
+
+export interface RequestLogCounts {
+  total: number
+  accounts: number
+  models: number
+  status2xx: number
+  status429: number
+  statusError: number
+}
+
+export interface RequestLogPage {
+  entries: RequestLogEntry[]
+  total: number
+  filteredTotal: number
+  hasMore: boolean
+  counts: RequestLogCounts
+  availableModels: string[]
+  availableEngines: ProfileKind[]
+}
+
 export interface Usage {
   /** Uncached input tokens. */
   input?: number
@@ -393,6 +453,18 @@ export type AgentEvent =
    */
   | { t: 'activity'; id?: string; type: ActivityType; target: string; status?: 'running' | 'done' | 'error'; detail?: ActivityDetail }
   | { t: 'usage'; usage: Usage }
+  /** Per-LLM-request usage telemetry (consumed by the main process for Request Log; not sent to chat UI). */
+  | {
+      t: 'request_usage'
+      model?: string | null
+      usage: Usage
+      startedAt?: number | null
+      firstTokenAt?: number | null
+      endedAt?: number | null
+      streaming?: boolean
+      turnIndex?: number | null
+      rawUsage?: unknown
+    }
   /** Account quota windows reported by the CLI (claude rate_limit_event). Consumed by the main process. */
   | { t: 'quota'; quota: QuotaReport }
   /** Structured CLI event no adapter rule handles yet: forwarded instead of dropped. */
@@ -643,6 +715,8 @@ export const IPC = {
   usageRefresh: 'usage:refresh',
   usageSetPrice: 'usage:setPrice',
   usageChanged: 'usage:changed',
+  requestLogsQuery: 'usage:requestLogsQuery',
+  requestLogsChanged: 'usage:requestLogsChanged',
   historyOpen: 'history:open',
   historyImport: 'history:import',
   historyStat: 'history:stat',

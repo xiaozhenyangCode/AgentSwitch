@@ -90,6 +90,7 @@ import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot, startUsage } from './usage'
+import { onRequestLogChange, queryRequestLogs } from './requestLog'
 import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
@@ -492,6 +493,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
 
   // ---- usage & quota ------------------------------------------------------------------------
   onUsageChange((s) => send(IPC.usageChanged, s))
+  onRequestLogChange(() => send(IPC.requestLogsChanged, null))
   startUsage()
   ipcMain.handle(IPC.usageGet, () => usageSnapshot())
   ipcMain.handle(IPC.usageRefresh, (_e, probe?: boolean) => refreshUsage(probe === true))
@@ -499,6 +501,26 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     if (typeof model !== 'string' || !model.trim()) throw new Error('bad model')
     if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) throw new Error('bad rate')
     return setCustomPrice(model, rate as Parameters<typeof setCustomPrice>[1])
+  })
+  ipcMain.handle(IPC.requestLogsQuery, (_e, raw?: unknown) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return queryRequestLogs()
+    const q = raw as Record<string, unknown>
+    const statusRaw = q.statusCode
+    const statusCode =
+      statusRaw === 'all' || statusRaw === '2xx' || statusRaw === '429' || statusRaw === '4xx5xx'
+        ? statusRaw
+        : typeof statusRaw === 'number' && Number.isInteger(statusRaw)
+          ? statusRaw
+          : undefined
+    const engineKind = KINDS.includes(q.engineKind as ProfileKind) ? (q.engineKind as ProfileKind) : undefined
+    return queryRequestLogs({
+      offset: typeof q.offset === 'number' ? q.offset : undefined,
+      limit: typeof q.limit === 'number' ? q.limit : undefined,
+      statusCode,
+      accountId: typeof q.accountId === 'string' && q.accountId ? q.accountId : undefined,
+      engineKind,
+      model: typeof q.model === 'string' && q.model ? q.model : undefined
+    })
   })
 
   // ---- local CLI history (read-only) ------------------------------------------------------

@@ -24,9 +24,10 @@ describe('claude context usage', () => {
 
     if (status === 'finished') adapter.onLine({ type: 'result', subtype: 'success', usage: { input_tokens: 110, output_tokens: 23 } }, emit)
     else adapter.finish?.(emit)
-    expect(emit).toHaveBeenCalledExactlyOnceWith({
-      t: 'usage', usage: expect.objectContaining({ input: 110, output: 23, context: 320 })
-    })
+    const usageEvents = emit.mock.calls.map(([e]) => e).filter((e) => e.t === 'usage')
+    expect(usageEvents).toEqual([
+      { t: 'usage', usage: expect.objectContaining({ input: 110, output: 23, context: 320 }) }
+    ])
   })
 })
 

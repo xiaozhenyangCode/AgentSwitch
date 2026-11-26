@@ -8,6 +8,7 @@ import { runAgent, type RunHandle } from './agentRunner'
 import { agyAcpPool } from './acp/pool'
 import { FileBaseline } from './fileBaseline'
 import { recordLimited, recordQuota, recordRun, refreshPostRunQuota } from './usage'
+import { mapStatusCode, recordRequestLog, resolveProviderLabel } from './requestLog'
 import { allowRoot } from './fileProtocol'
 import { KIND_LABEL, getConfig, hasProfile } from './profiles'
 import { t } from './i18n'
@@ -815,11 +816,50 @@ export class Orchestrator {
     const system = compact ? null : fixed
     let stepUsage: Usage | null = null
     let pendingText = ''
+    const stepStartedAt = Date.now()
+    let stepFirstTokenAt: number | null = null
+    let recordedRequests = 0
+    const stepStreaming = cfg.kind !== 'codex'
+    const providerLabel = resolveProviderLabel(cfg)
     const allowNativeTitle = turn.req.wantTitle === true && (step.kind === 'own' || step.kind === 'summary')
     const emit = (event: AgentEvent): void => {
       if (event.t === 'quota') return recordQuota(cfg.id, event.quota, 'claude-stream')
+      if (event.t === 'request_usage') {
+        recordedRequests++
+        try {
+          recordRequestLog({
+            accountId: cfg.id,
+            accountName: cfg.name,
+            engineKind: cfg.kind,
+            provider: providerLabel,
+            model: event.model || step.model || cfg.defaultModel || null,
+            projectDir: turn.req.projectDir ?? turn.cwd,
+            threadId: turn.req.threadId,
+            runId: turn.req.turnId,
+            turnIndex: event.turnIndex ?? recordedRequests,
+            uncachedInputTokens: event.usage.input,
+            outputTokens: event.usage.output,
+            cacheReadTokens: event.usage.cacheRead,
+            cacheWriteTokens: event.usage.cacheWrite,
+            cacheWrite1hTokens: event.usage.cacheWrite1h,
+            costUsd: event.usage.costUsd ?? null,
+            startedAt: event.startedAt ?? stepStartedAt,
+            firstTokenAt: event.firstTokenAt ?? null,
+            endedAt: event.endedAt ?? Date.now(),
+            streaming: event.streaming ?? stepStreaming,
+            statusCode: 200,
+            rawUsage: event.rawUsage
+          })
+        } catch (e) {
+          this.log(cfg.id, `[request-log] ${String(e)}\n`)
+        }
+        return
+      }
       if (event.t === 'title' && !allowNativeTitle) return
       if (event.t === 'usage') stepUsage = { ...(stepUsage ?? {}), ...event.usage }
+      if ((event.t === 'text' && event.delta) || (event.t === 'thinking' && event.delta)) {
+        if (stepFirstTokenAt === null) stepFirstTokenAt = Date.now()
+      }
       if (event.t === 'text') {
         step.text += event.delta
         const { body, pending } = splitReplyText(pendingText + event.delta)
@@ -896,7 +936,59 @@ export class Orchestrator {
     this.onState()
     // usage & quota bookkeeping never blocks the turn
     try {
-      if (stepUsage || r.ok) recordRun(cfg.id, r.model || step.model || cfg.defaultModel || null, stepUsage)
+      const resolvedModel = r.model || step.model || cfg.defaultModel || null
+      if (stepUsage || r.ok) recordRun(cfg.id, resolvedModel, stepUsage)
+      const statusCode = mapStatusCode({
+        ok: r.ok,
+        stopped: r.stopped || turn.stopped,
+        rateLimited: r.rateLimited,
+        error: r.error
+      })
+      const finalUsage = stepUsage as Usage | null
+      if (recordedRequests === 0) {
+        recordRequestLog({
+          accountId: cfg.id,
+          accountName: cfg.name,
+          engineKind: cfg.kind,
+          provider: providerLabel,
+          model: resolvedModel,
+          projectDir: turn.req.projectDir ?? turn.cwd,
+          threadId: turn.req.threadId,
+          runId: turn.req.turnId,
+          turnIndex: 1,
+          uncachedInputTokens: finalUsage?.input,
+          outputTokens: finalUsage?.output,
+          cacheReadTokens: finalUsage?.cacheRead,
+          cacheWriteTokens: finalUsage?.cacheWrite,
+          cacheWrite1hTokens: finalUsage?.cacheWrite1h,
+          costUsd: finalUsage?.costUsd ?? null,
+          startedAt: stepStartedAt,
+          firstTokenAt: stepFirstTokenAt,
+          endedAt: Date.now(),
+          streaming: stepStreaming,
+          statusCode,
+          errorSummary: r.error,
+          rawUsage: finalUsage ?? undefined
+        })
+      } else if (statusCode !== 200) {
+        recordRequestLog({
+          accountId: cfg.id,
+          accountName: cfg.name,
+          engineKind: cfg.kind,
+          provider: providerLabel,
+          model: resolvedModel,
+          projectDir: turn.req.projectDir ?? turn.cwd,
+          threadId: turn.req.threadId,
+          runId: turn.req.turnId,
+          turnIndex: recordedRequests + 1,
+          startedAt: null,
+          firstTokenAt: null,
+          endedAt: Date.now(),
+          streaming: false,
+          statusCode,
+          errorSummary: r.error
+        })
+      }
       if (caps.supportsUsageQuota) refreshPostRunQuota(cfg, r.ok)
     } catch (e) {
       this.log(cfg.id, `[usage] ${String(e)}\n`)

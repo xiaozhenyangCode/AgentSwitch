@@ -21,7 +21,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   return (
     <>
       <DialogHeader title={t('usage.title')} desc={t('usage.desc')} actions={<RefreshUsage />} onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-10">{loaded && <UsageView />}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-10">{loaded && <UsageView onClose={onClose} />}</div>
     </>
   )
 }

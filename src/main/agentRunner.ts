@@ -181,7 +181,7 @@ function codexTopKeys(codexHome: string): Set<string> {
 
 // ---- claude --------------------------------------------------------------------------------
 
-export function claudeAdapter(s: RunSpec): Adapter {
+export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   let session: string | null = null
   let model: string | null = s.model
   let result: { ok: boolean; error: string | null } | null = null
@@ -195,6 +195,48 @@ export function claudeAdapter(s: RunSpec): Adapter {
   /** Per-message usage, reported instead when the run ends without its `result` (stopped / killed). */
   const streamed = new MessageUsage()
   let streamMsg: string | null = null
+  /** Per-API-call telemetry for Request Log. */
+  interface ClaudeReqTelemetry {
+    model: string | null
+    startedAt: number
+    firstTokenAt: number | null
+    streaming: boolean
+    usage: Usage
+    rawUsage: Record<string, unknown>
+    emitted: boolean
+  }
+  const reqMap = new Map<string, ClaudeReqTelemetry>()
+  let reqStartAt = runStartedAt
+  let reqTurnIndex = 0
+  const mergeClaudeUsage = (entry: ClaudeReqTelemetry, u: any): void => {
+    if (!u || typeof u !== 'object') return
+    const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
+    entry.usage = {
+      input: Math.max(entry.usage.input ?? 0, n(u.input_tokens)),
+      output: Math.max(entry.usage.output ?? 0, n(u.output_tokens)),
+      cacheRead: Math.max(entry.usage.cacheRead ?? 0, n(u.cache_read_input_tokens)) || undefined,
+      cacheWrite: Math.max(entry.usage.cacheWrite ?? 0, n(u.cache_creation_input_tokens)) || undefined,
+      cacheWrite1h: Math.max(entry.usage.cacheWrite1h ?? 0, n(u.cache_creation?.ephemeral_1h_input_tokens)) || undefined,
+      reasoning: Math.max(entry.usage.reasoning ?? 0, n(u.output_tokens_details?.thinking_tokens)) || undefined
+    }
+    entry.rawUsage = { ...entry.rawUsage, ...u }
+  }
+  const flushClaudeReq = (entry: ClaudeReqTelemetry, emit: Emit): void => {
+    if (entry.emitted) return
+    entry.emitted = true
+    reqTurnIndex++
+    emit({
+      t: 'request_usage',
+      model: entry.model || model || s.cfg.defaultModel || null,
+      usage: entry.usage,
+      startedAt: entry.startedAt,
+      firstTokenAt: entry.firstTokenAt,
+      endedAt: Date.now(),
+      streaming: entry.streaming,
+      turnIndex: reqTurnIndex,
+      rawUsage: Object.keys(entry.rawUsage).length ? entry.rawUsage : undefined
+    })
+  }
   const tools = new Map<string, { name: string; input: Record<string, any>; activity: Extract<AgentEvent, { t: 'activity' }> | null }>()
   const permissionMode = s.cfg.autoApprove === 'full' ? 'bypassPermissions'
     : s.cfg.autoApprove === 'edits' ? 'acceptEdits' : claudeCliMode(s.cfg, s.cwd)
@@ -248,15 +290,48 @@ export function claudeAdapter(s: RunSpec): Adapter {
             emit({ t: 'phase', tool: null, bytes: 0 })
           }
           if (ev.type === 'message_start') {
-            streamMsg = ev.message?.id ?? null
-            streamed.add(streamMsg, ev.message?.usage)
+            const msgId: string = ev.message?.id ?? `msg-${reqMap.size + 1}`
+            streamMsg = msgId
+            streamed.add(msgId, ev.message?.usage)
+            const existing = reqMap.get(msgId)
+            if (!existing) {
+              const entry: ClaudeReqTelemetry = {
+                model: ev.message?.model ?? model,
+                startedAt: reqStartAt,
+                firstTokenAt: null,
+                streaming: true,
+                usage: {},
+                rawUsage: {},
+                emitted: false
+              }
+              mergeClaudeUsage(entry, ev.message?.usage)
+              reqMap.set(msgId, entry)
+            } else {
+              if (ev.message?.model) existing.model = ev.message.model
+              mergeClaudeUsage(existing, ev.message?.usage)
+            }
           } else if (ev.type === 'message_delta') {
             streamed.add(streamMsg, ev.usage)
             streamed.final(streamMsg)
+            const entry = streamMsg ? reqMap.get(streamMsg) : undefined
+            if (entry) mergeClaudeUsage(entry, ev.usage)
+          } else if (ev.type === 'message_stop') {
+            const entry = streamMsg ? reqMap.get(streamMsg) : undefined
+            if (entry) {
+              flushClaudeReq(entry, emit)
+              reqStartAt = Date.now()
+            }
           } else if (ev.type === 'content_block_delta') {
             const dl = ev.delta ?? {}
             streamed.stream(streamMsg, estimateTextTokens(String(dl.text ?? dl.partial_json ?? '')))
             if (dl.estimated_tokens) streamed.thinking(streamMsg, Number(dl.estimated_tokens))
+            const entry = streamMsg ? reqMap.get(streamMsg) : undefined
+            if (entry && entry.firstTokenAt === null) {
+              if ((dl.type === 'text_delta' && typeof dl.text === 'string' && dl.text.length > 0) ||
+                  (dl.type === 'thinking_delta' && typeof dl.thinking === 'string' && dl.thinking.length > 0)) {
+                entry.firstTokenAt = Date.now()
+              }
+            }
           }
           if (FRAMES.has(ev.type)) break
           if (ev.type === 'content_block_start') {
@@ -297,7 +372,25 @@ export function claudeAdapter(s: RunSpec): Adapter {
         }
         case 'assistant': {
           const mu = d.message?.usage
-          streamed.add(d.message?.id, mu)
+          const msgId = d.message?.id
+          streamed.add(msgId, mu)
+          if (msgId && mu) {
+            let entry = reqMap.get(msgId)
+            if (!entry) {
+              entry = {
+                model: d.message?.model ?? model,
+                startedAt: reqStartAt,
+                firstTokenAt: null,
+                streaming: false,
+                usage: {},
+                rawUsage: {},
+                emitted: false
+              }
+              reqMap.set(msgId, entry)
+            }
+            if (d.message?.model) entry.model = d.message.model
+            mergeClaudeUsage(entry, mu)
+          }
           if (mu && !d.parent_tool_use_id) {
             const n = (Number(mu.input_tokens) || 0) + (Number(mu.cache_read_input_tokens) || 0) + (Number(mu.cache_creation_input_tokens) || 0)
             if (n > 0) lastContext = n + (Number(mu.output_tokens) || 0)
@@ -323,6 +416,7 @@ export function claudeAdapter(s: RunSpec): Adapter {
             emit(claudeResult(t.name, t.input, t.activity, c, d.tool_use_result))
             if (t.activity.type === 'write' && IMAGE_RE.test(t.activity.target) && !c.is_error) emit({ t: 'output', path: t.activity.target })
           }
+          reqStartAt = Date.now()
           break
         case 'rate_limit_event': {
           const info = d.rate_limit_info ?? {}
@@ -352,6 +446,9 @@ export function claudeAdapter(s: RunSpec): Adapter {
           })
           session = d.session_id ?? session
           result = d.is_error || d.subtype !== 'success' ? { ok: false, error: String(d.result || d.api_error_status || d.subtype || 'error') } : { ok: true, error: null }
+          if (result.ok) {
+            for (const entry of reqMap.values()) flushClaudeReq(entry, emit)
+          }
           break
         }
         default:
@@ -574,6 +671,8 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
   // `exec resume` reports the session's running totals: remember where this turn starts
   const totalsBefore = s.resume ? codexTotalsBefore(codexRollout(codexHome, s.resume)) : null
   let reported = false
+  let turnStartAt = startedAt
+  let turnIndex = 0
   const policy =
     s.cfg.autoApprove === 'full'
       ? ['-c', 'sandbox_mode="danger-full-access"', '-c', 'approval_policy="never"']
@@ -695,6 +794,7 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
           emit({ t: 'session', id: session ?? '', model })
           break
         case 'turn.started':
+          turnStartAt = Date.now()
           break
         case 'item.started':
           itemEvent('started', d.item, emit)
@@ -707,7 +807,20 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
           break
         case 'turn.completed': {
           reported = true
-          emit({ t: 'usage', usage: codexTurnUsage(d.usage ?? {}, totalsBefore) })
+          const turnUsage = codexTurnUsage(d.usage ?? {}, totalsBefore)
+          emit({ t: 'usage', usage: turnUsage })
+          turnIndex++
+          emit({
+            t: 'request_usage',
+            model,
+            usage: turnUsage,
+            startedAt: turnStartAt,
+            firstTokenAt: null,
+            endedAt: Date.now(),
+            streaming: false,
+            turnIndex,
+            rawUsage: d.usage
+          })
           result = { ok: true, error: null }
           break
         }
@@ -754,7 +867,7 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
 
 // ---- agy -----------------------------------------------------------------------------------
 
-export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adapter {
+export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runStartedAt = Date.now()): Adapter {
   let session: string | null = s.resume
   /** The conversation's totals before this run (`result.usage` is the conversation's running total); null: unknown. */
   const totalsBefore: AgyTotals | null = s.resume ? readAgyConversationTotals(s.cfg, s.resume, home) : { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
@@ -767,6 +880,9 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
   let lastContext = 0
   /** Usage of each finished step (one model call), reported when the run ends without its result. */
   const stepUsage = new Map<number, Usage>()
+  let stepStartAt = runStartedAt
+  let reqTurnIndex = 0
+  const stepTiming = new Map<number, { startedAt: number; firstTokenAt: number | null }>()
   /** Sum over the run's finished steps (null: none finished). */
   const stepTotal = (): Usage | null => {
     if (!stepUsage.size) return null
@@ -811,10 +927,20 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
             case 'user_input':
               break
             case 'agent_response': {
+              const stepIdx = typeof u.step_index === 'number' ? u.step_index : -1
+              let timing = stepIdx >= 0 ? stepTiming.get(stepIdx) : undefined
+              if (stepIdx >= 0 && !timing) {
+                timing = { startedAt: stepStartAt, firstTokenAt: null }
+                stepTiming.set(stepIdx, timing)
+              }
               // agy exposes no thinking text (measured 1.5.8); future fields are picked up if they appear
               const th = u.thinking_delta ?? u.thinking
-              if (typeof th === 'string' && th) emit({ t: 'thinking', delta: th })
+              if (typeof th === 'string' && th) {
+                if (timing && timing.firstTokenAt === null) timing.firstTokenAt = Date.now()
+                emit({ t: 'thinking', delta: th })
+              }
               if (typeof u.text_delta === 'string' && u.text_delta) {
+                if (timing && timing.firstTokenAt === null) timing.firstTokenAt = Date.now()
                 if (lastTextStep !== u.step_index && textSoFar.trim()) {
                   textSoFar += '\n\n'
                   emit({ t: 'text', delta: '\n\n' })
@@ -827,8 +953,28 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
               // input_tokens is the uncached part only: the cached prefix is context too
               const stepCtx = (Number(u.usage?.input_tokens) || 0) + (Number(u.usage?.cache_read_tokens) || 0) + (Number(u.usage?.output_tokens) || 0)
               if (u.state === 'DONE' && stepCtx > 0) lastContext = stepCtx
-              if (u.state === 'DONE' && u.usage && typeof u.step_index === 'number')
-                stepUsage.set(u.step_index, { input: Number(u.usage.input_tokens) || 0, output: Number(u.usage.output_tokens) || 0, cacheRead: Number(u.usage.cache_read_tokens) || 0, reasoning: Number(u.usage.thinking_tokens) || 0 })
+              if (u.state === 'DONE' && u.usage && typeof u.step_index === 'number') {
+                const su: Usage = {
+                  input: Number(u.usage.input_tokens) || 0,
+                  output: Number(u.usage.output_tokens) || 0,
+                  cacheRead: Number(u.usage.cache_read_tokens) || undefined,
+                  reasoning: Number(u.usage.thinking_tokens) || 0
+                }
+                stepUsage.set(u.step_index, su)
+                reqTurnIndex++
+                emit({
+                  t: 'request_usage',
+                  model: model || s.cfg.defaultModel || null,
+                  usage: su,
+                  startedAt: timing?.startedAt ?? stepStartAt,
+                  firstTokenAt: timing?.firstTokenAt ?? null,
+                  endedAt: Date.now(),
+                  streaming: true,
+                  turnIndex: reqTurnIndex,
+                  rawUsage: u.usage
+                })
+                stepStartAt = Date.now()
+              }
               const tk = Number(u.usage?.thinking_tokens) || 0
               if (u.state === 'DONE' && tk > 0) {
                 thinkingTokens += tk
@@ -839,6 +985,7 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir)): Adap
             case 'tool': {
               const a = agyTool(u)
               if (a) emit(a)
+              if (u.state !== 'ACTIVE') stepStartAt = Date.now()
               break
             }
             default:
@@ -941,13 +1088,16 @@ function reasonixTool(tool: any, status: 'running' | 'done' | 'error'): Extract<
 
 const reasonixCount = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 
-export function reasonixAdapter(s: RunSpec): Adapter {
+export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   let session: string | null = null
   const spec = splitSpec(s.model || s.cfg.defaultModel, 'reasonix')
   let model = spec.model
   let result: { ok: boolean; error: string | null } | null = null
   let sawDelta = false
   let usage: Usage | null = null
+  let reqStartAt = runStartedAt
+  let firstTokenAt: number | null = null
+  let reqTurnIndex = 0
   const tools = new Map<string, Extract<AgentEvent, { t: 'activity' }>>()
   const args = ['-p', '--output-format', 'stream-json']
   if (spec.model) args.push('--model', spec.model)
@@ -1001,9 +1151,12 @@ export function reasonixAdapter(s: RunSpec): Adapter {
         case 'turn_started':
           if (typeof d.modelRef === 'string') model = d.modelRef.replace(/^[^/]+\//, '')
           rememberSession(d.sessionId, emit)
+          reqStartAt = Date.now()
+          firstTokenAt = null
           break
         case 'text':
           if (typeof d.text === 'string' && d.text) {
+            if (firstTokenAt === null) firstTokenAt = Date.now()
             emit({ t: 'text', delta: d.text })
             sawDelta = true
           }
@@ -1013,7 +1166,10 @@ export function reasonixAdapter(s: RunSpec): Adapter {
           sawDelta = false
           break
         case 'reasoning':
-          if (typeof d.text === 'string' && d.text) emit({ t: 'thinking', delta: d.text })
+          if (typeof d.text === 'string' && d.text) {
+            if (firstTokenAt === null) firstTokenAt = Date.now()
+            emit({ t: 'thinking', delta: d.text })
+          }
           break
         case 'tool_dispatch': {
           if (typeof d.tool?.id !== 'string' || d.tool.partial === true || tools.has(d.tool.id)) break
@@ -1031,6 +1187,8 @@ export function reasonixAdapter(s: RunSpec): Adapter {
           const event = reasonixTool(d.tool, failed ? 'error' : 'done')
           const dispatch = tools.get(d.tool.id)
           emit(dispatch ? { ...event, type: dispatch.type, target: dispatch.target, detail: { ...dispatch.detail, ...event.detail } } : event)
+          reqStartAt = Date.now()
+          firstTokenAt = null
           break
         }
         case 'usage': {
@@ -1047,6 +1205,20 @@ export function reasonixAdapter(s: RunSpec): Adapter {
             context: prompt + out
           }
           emit({ t: 'usage', usage })
+          reqTurnIndex++
+          emit({
+            t: 'request_usage',
+            model: model || s.cfg.defaultModel || null,
+            usage: { input: miss, output: out, cacheRead: hit || undefined, context: prompt + out },
+            startedAt: reqStartAt,
+            firstTokenAt,
+            endedAt: Date.now(),
+            streaming: true,
+            turnIndex: reqTurnIndex,
+            rawUsage: u
+          })
+          reqStartAt = Date.now()
+          firstTokenAt = null
           break
         }
         case 'turn_status':
@@ -1111,8 +1283,8 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
   const startedAt = Date.now()
   const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =
-    cfg.kind === 'claude' ? claudeAdapter(spec) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt)
-      : reasonix ? reasonixAdapter({ ...spec, cfg }) : agyAdapter(spec, env.HOME ?? expandHome(cfg.configDir))
+    cfg.kind === 'claude' ? claudeAdapter(spec, startedAt) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt)
+      : reasonix ? reasonixAdapter({ ...spec, cfg }, startedAt) : agyAdapter(spec, env.HOME ?? expandHome(cfg.configDir), startedAt)
 
   let child: ChildProcess | null = null
   let stopped = false

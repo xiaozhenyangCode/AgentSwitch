@@ -159,15 +159,18 @@ function turnEvents(emit: Emit) {
   let hasTitle = false
   let nextSegment = false
   let messageId: unknown
+  let firstTokenAt: number | null = null
   return {
     tool: (id: string) => tools.get(id)?.call,
     hasTitle: () => hasTitle,
+    firstTokenAt: () => firstTokenAt,
     update(update: AcpFields): void {
       const kind = update.sessionUpdate
       switch (kind) {
         case 'agent_message_chunk': {
           const { content } = update
           if (content?.type !== 'text' || typeof content.text !== 'string' || !content.text) return
+          if (firstTokenAt === null) firstTokenAt = Date.now()
           const id = update.messageId ?? update._meta?.messageId
           if (hasText && (nextSegment || (id != null && messageId != null && id !== messageId))) emit({ t: 'text', delta: '\n\n' })
           emit({ t: 'text', delta: content.text })
@@ -178,6 +181,7 @@ function turnEvents(emit: Emit) {
         }
         case 'agent_thought_chunk':
           if (update.content?.type === 'text' && typeof update.content.text === 'string' && update.content.text) {
+            if (firstTokenAt === null) firstTokenAt = Date.now()
             nextSegment = true
             emit({ t: 'thinking', delta: update.content.text })
           }
@@ -465,7 +469,8 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       prompting = true
       const response = await conn.process.rpc.request<AcpFields>('session/prompt', { sessionId: id, prompt }, undefined, () => { prompting = false })
       prompting = false
-      session.lastPromptAt = Date.now()
+      const endedAt = Date.now()
+      session.lastPromptAt = endedAt
       model = modelOf(session.options, model)
       if (response?.usage && cacheDebugEnabled()) {
         const prefix = agyPrefixHash(session.system, hasThreadHistory)
@@ -485,6 +490,19 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       }
       events.usage(response ?? {})
       if (response?.stopReason !== 'end_turn') return fail(t('main.acpStopReason', { reason: String(response?.stopReason ?? '?') }))
+      if (response?.usage) {
+        emit({
+          t: 'request_usage',
+          model: model || spec.cfg.defaultModel || null,
+          usage: normalizeAcpUsage(response.usage),
+          startedAt: promptAt,
+          firstTokenAt: events.firstTokenAt(),
+          endedAt,
+          streaming: true,
+          turnIndex: session.turns,
+          rawUsage: response.usage
+        })
+      }
       if (!events.hasTitle()) {
         const title = readAgyConversationTitle(spec.cfg, id, conn.home)
         if (title) emit({ t: 'title', title })
