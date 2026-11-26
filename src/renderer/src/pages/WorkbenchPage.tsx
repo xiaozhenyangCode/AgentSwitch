@@ -1667,6 +1667,7 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
   useEscape(() => setOpen(false), open)
   const { list, loading, refresh } = useModels(account.id)
   const eff = effectiveModel(model, account)
+  const defaultModel = account.defaultModel || list?.defaultModel
   const cur = resolveSpec(eff, account.id)
   const picked = resolveSpec(model, account.id).model
   const all = list?.models ?? []
@@ -1693,9 +1694,9 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
       <button
         onClick={() => setOpen((o) => !o)}
         className={`flex h-7 max-w-[260px] items-center gap-1 rounded-full bg-black/[0.045] pr-2 pl-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : ''}`}
-        title={t('wb.subModelHint')}
+        title={model || defaultModel || t('wb.subModelHint')}
       >
-        <span className="truncate">{eff || getProviderCapabilities(account.kind).hasExplicitDefaultModel ? modelLabel(eff, account.id) : t('common.default')}</span>
+        <span className="truncate">{model ? modelLabel(model, account.id) : defaultModel ? t('wb.defaultResolved', { model: modelLabel(defaultModel, account.id) }) : t('common.default')}</span>
         <IconChevronDown size={12} className="shrink-0 text-ink-3" />
       </button>
       {open && (
@@ -1711,7 +1712,7 @@ function ModelCapsule({ account, model, onPick }: { account: ProfileState; model
             <button onClick={() => pick(null)} className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors ${!model ? 'bg-accent/10' : 'hover:bg-black/[0.04]'}`}>
               <span className="min-w-0 flex-1">
                 <span className="block text-[14px] leading-5 text-ink">{t('common.default')}</span>
-                <span className="block truncate text-[10.5px] leading-4 text-ink-3">{account.defaultModel ? t('wb.accountDefault', { model: modelLabel(account.defaultModel, account.id) }) : getProviderCapabilities(account.kind).hasExplicitDefaultModel && list?.defaultModel ? modelLabel(null, account.id) : defaultHint(account.kind)}</span>
+                <span className="block truncate text-[10.5px] leading-4 text-ink-3" title={defaultModel}>{account.defaultModel ? t('wb.accountDefault', { model: account.defaultModel }) : defaultHint(account.kind, list?.defaultModel)}</span>
               </span>
               {!model && <IconCheck size={15} className="text-accent" />}
             </button>

@@ -98,6 +98,9 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
 
   const save = async () => {
     try {
+      const modelConfigChanged = form.configDir !== profile.configDir
+        || envText !== envToText(profile.extraEnv)
+        || (conn?.provider === 'custom' && modelsText !== (conn.models ?? []).join('\n'))
       await window.agentswitch.profiles.update(profile.id, {
         name: form.name,
         ...(conn
@@ -112,6 +115,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
         ...(caps.supportsInteractiveTransport ? { agyTransport: acp ? 'acp' : 'print' } : {}),
         extraEnv: textToEnv(envText)
       })
+      if (modelConfigChanged) refreshModels()
       setPreview(await window.agentswitch.profiles.envPreview(profile.id, previewMode))
       setError(null)
       setSaved(true)
@@ -127,6 +131,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
     if (p) {
       setForm(p)
       setEnvText(envToText(p.extraEnv))
+      refreshModels()
     }
   }
 
@@ -237,7 +242,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
           label={t('cfg.defaultModel')}
           hint={t('cfg.defaultModelHint', { cli: KIND_META[profile.kind].cli })}
         >
-          <input className={mono} value={form.defaultModel ?? ''} onChange={(e) => set('defaultModel', e.target.value)} placeholder={t('cfg.defaultModelPlaceholder')} />
+          <input className={mono} value={form.defaultModel ?? ''} onChange={(e) => set('defaultModel', e.target.value)} title={!defSpec.model ? models?.defaultModel : undefined} placeholder={models?.defaultModel ? t('cfg.defaultModelResolved', { model: models.defaultModel }) : t('cfg.defaultModelPlaceholder')} />
           <div className="mt-2 flex flex-wrap gap-1.5">
             {['', ...(models?.models ?? []).filter((m) => m.group === 'main').map((m) => m.id)].map((m) => (
               <button
@@ -250,7 +255,7 @@ export function ProfileConfigModal({ profile, userData, onClose, onDelete }: Pro
                   set('defaultModel', m ? (withEffort(opt, m, defSpec.effort) ?? '') : '')
                 }}
               >
-                {m ? modelLabel(m, profile.id) : caps.hasExplicitDefaultModel && models?.defaultModel ? modelLabel(null, profile.id) : t('common.default')}
+                {m ? modelLabel(m, profile.id) : t('common.default')}
               </button>
             ))}
             <button className="h-7 rounded-full px-2.5 text-[12px] text-ink-3 hover:bg-fill hover:text-ink" onClick={refreshModels} disabled={modelsLoading} title={t('wb.refetchModels')}>

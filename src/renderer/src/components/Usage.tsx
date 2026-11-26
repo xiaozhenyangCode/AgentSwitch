@@ -18,6 +18,7 @@ import {
   recommendSwitch,
   refreshUsage,
   setModelPrice,
+  syncPrices,
   tokenSum,
   useUsage
 } from '../state/usage'
@@ -27,6 +28,7 @@ import { RequestLogView } from './RequestLogView'
 
 const STALE = 6 * 3600_000
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
+const PRICE_TOOL_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg bg-fill px-2.5 text-[12px] font-medium text-ink-2 hover:bg-fill-hover hover:text-ink disabled:opacity-60'
 const STICKY_HEAD = 'text-[11.5px] text-ink-3 [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-surface-2 [&_th]:shadow-[inset_0_-1px_var(--hairline)]'
 
 /**
@@ -358,7 +360,7 @@ function SourceBadge({ price }: { price: ModelPrice | undefined }) {
         {t('usage.priceEstimate')}
       </span>
     )
-  return <span className={`${cls} bg-fill text-ink-3`}>{price.source === 'litellm' ? 'LiteLLM' : 'CC Switch'}</span>
+  return <span className={`${cls} bg-fill text-ink-3`}>{{ litellm: 'LiteLLM', modelsdev: 'models.dev', openrouter: 'OpenRouter', ccswitch: 'CC Switch' }[price.source]}</span>
 }
 
 interface PriceEditTarget {
@@ -544,15 +546,35 @@ function ModelTable({
   rows,
   models,
   customPrices,
+  syncedAt,
   footnote
 }: {
   rows: [string, UsageTotals][]
   models: Record<string, ModelPrice>
   customPrices: Record<string, PriceRate>
+  syncedAt: number | null
   footnote: string
 }) {
   const { toast } = useApp()
   const [editing, setEditing] = useState<PriceEditTarget | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [, setClock] = useState(0)
+  useEffect(() => {
+    if (syncedAt === null) return
+    const timer = setInterval(() => setClock(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [syncedAt])
+
+  const sync = async () => {
+    setSyncing(true)
+    try {
+      await syncPrices()
+    } catch {
+      // Keep showing the current prices if the renderer loses its IPC connection.
+    } finally {
+      setSyncing(false)
+    }
+  }
   const th = 'px-3 py-2 text-right font-medium whitespace-nowrap'
   const td = 'px-3 py-2.5 text-right whitespace-nowrap tabular-nums'
 
@@ -584,15 +606,23 @@ function ModelTable({
 
   return (
     <>
-      <div className="mb-2.5 flex shrink-0 items-center justify-between gap-2">
+      <div className="mb-2.5 flex shrink-0 flex-wrap items-center justify-between gap-2">
         <div className="text-[12px] font-medium text-ink-3">{t('usage.modelSection')}</div>
-        <button
-          type="button"
-          onClick={() => setEditing({ model: '', editableModel: true, current: null, defaultRate: null, isCustom: false })}
-          className="flex h-7 items-center gap-1 rounded-lg bg-black/[0.045] px-2.5 text-[12px] font-medium text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-ink dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
-        >
-          <IconPlus size={12} /> {t('usage.priceAddCustom')}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11.5px] text-ink-3" title={syncedAt === null ? undefined : new Date(syncedAt).toLocaleString()}>
+            {syncedAt === null ? t('usage.priceBuiltin') : t('usage.priceUpdated', { time: fmtAgo(syncedAt) })}
+          </span>
+          <button type="button" className={PRICE_TOOL_BUTTON} onClick={() => void sync()} disabled={syncing} aria-busy={syncing}>
+            {syncing ? <Spinner size={12} /> : <IconRefresh size={12} />} {t('usage.syncPrices')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing({ model: '', editableModel: true, current: null, defaultRate: null, isCustom: false })}
+            className={PRICE_TOOL_BUTTON}
+          >
+            <IconPlus size={12} /> {t('usage.priceAddCustom')}
+          </button>
+        </div>
       </div>
       <div className={`min-h-0 flex-1 overflow-auto ${CARD}`}>
         <table className="w-full text-[13px]">
@@ -879,6 +909,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
             rows={modelRows}
             models={snap?.models ?? {}}
             customPrices={customPrices}
+            syncedAt={snap?.pricesSyncedAt ?? null}
             footnote={
               t('usage.footnote', { days: snap?.claudeDays ?? 30, date: snap?.pricesAt ?? '' }) +
               (snap?.pricesLive ? '' : t('usage.footnoteOffline')) +

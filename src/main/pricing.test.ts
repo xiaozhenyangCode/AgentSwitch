@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import builtin from './prices.builtin.json'
-import { candidates, cleanRate, costOf, findRate, isLong, parseLiteLLM, type PriceTable } from './pricing'
+import { candidates, cleanRate, costOf, findRate, isLong, mergePriceTables, parseLiteLLM, parseModelsDev, parseOpenRouter, refreshPriceCache, PRICE_SOURCES, type PriceCache, type PriceTable } from './pricing'
 
 const tables = {
   litellm: parseLiteLLM(builtin.litellm),
@@ -31,14 +31,16 @@ describe('LiteLLM table', () => {
     expect(tables.litellm['claude-opus-5-5']).toEqual({ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8 })
     expect(tables.litellm['gpt-6.2-sol']).toEqual({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, long: { threshold: 272000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 } })
   })
-  it('keeps first-party chat entries only, bare names winning', () => {
+  it('accepts new chat providers and prefers bare LiteLLM names at equal cache completeness', () => {
     const t = parseLiteLLM({
       'bedrock/claude-x': { litellm_provider: 'bedrock', input_cost_per_token: 9e-6, output_cost_per_token: 9e-6 },
+      'new-provider/future-chat': { litellm_provider: 'new-provider', mode: 'responses', input_cost_per_token: 2e-6, output_cost_per_token: 4e-6 },
+      'claude-x': { litellm_provider: 'anthropic', input_cost_per_token: 1e-6, output_cost_per_token: 4e-6 },
       'deepseek/deepseek-y': { litellm_provider: 'deepseek', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
       'gpt-z': { litellm_provider: 'openai', mode: 'embedding', input_cost_per_token: 1e-6, output_cost_per_token: 0 },
       'gpt-w': { litellm_provider: 'openai', input_cost_per_token: 1e-6 }
     })
-    expect(t).toEqual({ 'deepseek-y': { input: 1, output: 2 } })
+    expect(t).toEqual({ 'claude-x': { input: 1, output: 4 }, 'deepseek-y': { input: 1, output: 2 }, 'future-chat': { input: 2, output: 4 } })
   })
 })
 
@@ -116,5 +118,62 @@ describe('custom pricing overrides', () => {
       source: 'litellm',
       rate: { input: 4, output: 20 }
     })
+  })
+})
+
+describe('public price sources', () => {
+  const modelsDev = { google: { models: {
+    'future-model': { id: 'google/future-model', cost: { input: 2, output: 12, cache_read: 0.2, cache_write: 0 } },
+    'invalid-model': { cost: { input: -1, output: 1 } }
+  } } }
+  const openRouter = { data: [
+    { id: 'google/future-model', pricing: { prompt: '0.000002', completion: '0.000012', input_cache_read: '0.0000002', input_cache_write: '-1' } },
+    { id: 'openrouter/router', pricing: { prompt: '-1', completion: '-1' } }
+  ] }
+
+  it('keeps per-million models.dev rates and converts OpenRouter per-token strings exactly once', () => {
+    expect(parseModelsDev(modelsDev)).toEqual({ 'future-model': { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 } })
+    expect(parseOpenRouter(openRouter)).toEqual({ 'future-model': { input: 2, output: 12, cacheRead: 0.2 } })
+  })
+
+  it('uses complete cache rates first, breaking ties in source order and preserving custom overrides', () => {
+    const partial = { input: 3, output: 15, cacheRead: 0.3 }
+    const full = { ...partial, cacheWrite: 0 }
+    const online = mergePriceTables({
+      litellm: { 'future-model': partial, 'tie': full },
+      modelsdev: { ...parseModelsDev(modelsDev), 'tie': full },
+      openrouter: { ...parseOpenRouter(openRouter), 'tie': full, 'only-router': partial }
+    })
+    expect(online['future-model'].source).toBe('modelsdev')
+    expect(online.tie.source).toBe('litellm')
+    expect(online['only-router'].source).toBe('openrouter')
+    expect(findRate('new-provider/future-model-2026-11-24-high-tiered:xhigh', { ...tables, online }))
+      .toMatchObject({ key: 'future-model', source: 'modelsdev' })
+    expect(findRate('google/future-model:disabled', { ...tables, online, custom: { 'future-model': full } }))
+      .toMatchObject({ key: 'future-model', source: 'custom' })
+    expect(findRate('future-model-unreleased', { ...tables, online })).toBeNull()
+    expect(findRate('google/future-model-v2', { ...tables, online: { ...online, 'future-model-v2': { key: 'future-model-v2', source: 'openrouter', rate: partial } } }))
+      .toMatchObject({ key: 'future-model-v2', source: 'openrouter' })
+  })
+
+  it('uses source TTLs, revalidates with both headers and preserves the last table on failure', async () => {
+    const now = Date.now()
+    const stale = { models: { 'old-model': { input: 1, output: 2 } }, fetchedAt: now - 2000, etag: '"abc"', lastModified: new Date(0).toUTCString() }
+    const cache: PriceCache = { litellm: stale, openrouter: { ...stale, fetchedAt: now } }
+    const fetch = vi.fn(async (url: string, _headers: Record<string, string>) => {
+      if (url === PRICE_SOURCES.litellm.url) return { status: 304, text: '', headers: {} }
+      if (url === PRICE_SOURCES.modelsdev.url) return { status: 200, text: JSON.stringify(modelsDev), headers: {} }
+      throw new Error('offline')
+    })
+    const updated = await refreshPriceCache(cache, fetch, 1000, false)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledWith(PRICE_SOURCES.litellm.url, {
+      Accept: 'application/json', 'If-None-Match': '"abc"', 'If-Modified-Since': stale.lastModified
+    })
+    expect(updated.litellm?.models).toBe(stale.models)
+    expect(updated.litellm?.fetchedAt).toBeGreaterThan(stale.fetchedAt)
+    expect(updated.modelsdev?.models).toEqual(parseModelsDev(modelsDev))
+    expect(updated.openrouter).toBe(cache.openrouter)
+    await expect(refreshPriceCache(updated, async () => { throw new Error('offline') }, 1000, true)).resolves.toBe(updated)
   })
 })

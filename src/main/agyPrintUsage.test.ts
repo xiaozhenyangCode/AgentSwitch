@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, ProfileConfig, Usage } from '@shared/types'
 import { agyAdapter, type RunSpec } from './agentRunner'
+import { readAgyLatestModel } from './acp/agyOutcome'
 import { agyTurnUsage } from './usageDelta'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/fixture-user-data', getPreferredSystemLanguages: () => ['en'] }, safeStorage: {} }))
@@ -95,6 +96,35 @@ describe('agy print usage', () => {
       { event: 'result', result: { status: 'SUCCESS', usage: { input_tokens: 99_999, cache_read_tokens: 999_999, output_tokens: 9_999 } } }
     ])
     expect(u).toMatchObject({ input: 1_200, cacheRead: 18_500, output: 200 })
+  })
+
+  it('attributes request usage to new SQLite model metadata in a resumed turn', () => {
+    const addModel = (idx: number, model: string) => {
+      const db = new DatabaseSync(join(home, '.gemini/antigravity-cli/conversations', `${conv}.db`))
+      db.prepare('insert into gen_metadata(idx, data) values (?, ?)').run(idx, Uint8Array.from(bField(1, bField(19, [...Buffer.from(model)]))))
+      db.close()
+    }
+    addModel(3, 'gemini-previous-turn')
+    const adapter = agyAdapter(spec(conv), home)
+    const emit = vi.fn()
+    adapter.onLine(step(9, 10, 1, 5), emit)
+    addModel(4, 'gemini-3.8-flash-tiered')
+    adapter.onLine({ event: 'result', result: { status: 'SUCCESS' } }, emit)
+    expect(readAgyLatestModel(cfg, conv, home, 4)).toBeNull()
+    expect(adapter.model()).toBe('gemini-3.8-flash-tiered')
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'request_usage', model: 'gemini-3.8-flash-tiered' }))
+  })
+
+  it('prefers per-step model IDs and retains a result-only ID for other requests', () => {
+    const adapter = agyAdapter(spec(null), home)
+    const emit = vi.fn()
+    const first = step(1, 10, 1, 5)
+    adapter.onLine({ ...first, step_update: { ...first.step_update, model: 'vendor/unlisted-one' } }, emit)
+    adapter.onLine(step(2, 10, 1, 5), emit)
+    adapter.onLine({ event: 'result', result: { status: 'SUCCESS', usage: { model: 'vendor/unlisted-two' } } }, emit)
+    expect(emit.mock.calls.filter(([event]) => event.t === 'request_usage').map(([event]) => event.model))
+      .toEqual(['vendor/unlisted-one', 'vendor/unlisted-two'])
+    expect(adapter.model()).toBe('vendor/unlisted-two')
   })
 
   it('treats a total below the baseline as the run\'s own (agy counted over)', () => {

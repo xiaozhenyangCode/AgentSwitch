@@ -269,15 +269,17 @@ export interface PriceRate {
 }
 
 /** A model seen in the usage data and the price it is billed at. */
+export type OnlinePriceSource = 'litellm' | 'modelsdev' | 'openrouter'
+
 export interface ModelPrice {
   /** Price-table key it matched (null: no price). */
   key: string | null
   /**
-   * custom: user's manual override · litellm: LiteLLM's public table (t3code's source) ·
+   * custom: manual override · litellm/modelsdev/openrouter: public price data ·
    * ccswitch: CC Switch's built-in table · estimate: recorded without a model, priced as the
    * engine's most used model (`key`).
    */
-  source: 'custom' | 'litellm' | 'ccswitch' | 'estimate' | null
+  source: 'custom' | OnlinePriceSource | 'ccswitch' | 'estimate' | null
   rate: PriceRate | null
   /** Official built-in/live rate when overridden by a custom price (for reference / reset preview). */
   defaultRate?: PriceRate | null
@@ -318,9 +320,11 @@ export interface UsageSnapshot {
   models: Record<string, ModelPrice>
   /** User's custom per-model price overrides (lowercased model key -> USD / 1M tokens). */
   customPrices: Record<string, PriceRate>
-  /** Date of the LiteLLM table in use (YYYY-MM-DD); live: fetched (daily), otherwise the built-in snapshot. */
+  /** Date of the most recent public sync or the built-in snapshot (YYYY-MM-DD). */
   pricesAt: string
   pricesLive: boolean
+  pricesSyncedAt: number | null
+  pricesSources?: OnlinePriceSource[]
   updatedAt: number
 }
 
@@ -714,6 +718,7 @@ export const IPC = {
   usageGet: 'usage:get',
   usageRefresh: 'usage:refresh',
   usageSetPrice: 'usage:setPrice',
+  usageSyncPrices: 'usage:syncPrices',
   usageChanged: 'usage:changed',
   requestLogsQuery: 'usage:requestLogsQuery',
   requestLogsChanged: 'usage:requestLogsChanged',

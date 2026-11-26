@@ -40,3 +40,10 @@ export function splitSpec(spec: string | null | undefined, kind?: ProfileKind): 
 }
 
 export const joinSpec = (model: string | null, effort: string | null): string | null => (model ? (effort ? `${model}:${effort}` : model) : null)
+
+/** CLI model IDs are opaque strings, apart from the historical missing-model placeholder. */
+export function cleanModelName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const name = value.trim()
+  return name && !/^unknown$/i.test(name) ? name : null
+}

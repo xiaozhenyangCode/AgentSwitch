@@ -1,21 +1,22 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { parse as parseToml } from 'smol-toml'
 import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, ResolvedRunAttachment, StepRef, Usage } from '@shared/types'
-import { joinSpec, splitSpec } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, getKindConfig, KIND_DEFAULTS, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
-import { agyModelId } from './models'
+import { cleanModelName, joinSpec, splitSpec } from '@shared/modelSpec'
+import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
+import { agyHome, agyModelId, claudeConfigDir, codexDefaultModel, readCodexConfig, resolveEffectiveDefaultModel, resolveRunModel } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
 import { AgyAcpStartupError, runAgyAcp } from './acp/agySession'
-import { readAgyConversationTitle, readAgyConversationTotals } from './acp/agyOutcome'
+import { readAgyConversationTitle, readAgyConversationTotals, readAgyGenerationCheckpoint, readAgyLatestModel } from './acp/agyOutcome'
 import { agyAcpPool } from './acp/pool'
 import { reasonixRedactor } from './reasonix'
 import { threadHistoryArgs, type ThreadHistoryConfig } from './threadHistoryConfig'
 import { isThreadHistoryToolName } from './threadHistoryTools'
 import { prepareAdapterPrompt, promptIncludesPath } from './attachmentInline'
 import { agyTurnUsage, claudeCostBefore, codexTotalsBefore, codexTurnUsage, estimateTextTokens, MessageUsage, runCost, type AgyTotals } from './usageDelta'
+
+export { codexDefaultModel, readCodexConfig } from './models'
 
 /**
  * Runs one non-interactive CLI turn through pipes (no PTY: clean NDJSON, no ANSI/line
@@ -150,13 +151,8 @@ const readJson = (p: string): any => {
 const CLAUDE_MODES = new Set(['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'])
 /** permissions.defaultMode as the terminal would see it (project local > project > user); 'auto' otherwise.
  *  'default' / 'manual' would only deny every prompt in -p mode, so they also map to auto. */
-/** CLAUDE_CONFIG_DIR of the account (the default account keeps its data in ~/.claude). */
-function claudeUserDir(cfg: ProfileConfig): string {
-  const home = expandHome(cfg.configDir)
-  return cfg.configDir === '~' || home === expandHome('~') ? expandHome('~/.claude') : home
-}
 function claudeCliMode(cfg: ProfileConfig, cwd: string): string {
-  const userDir = claudeUserDir(cfg)
+  const userDir = claudeConfigDir(cfg)
   for (const f of [join(cwd, '.claude', 'settings.local.json'), join(cwd, '.claude', 'settings.json'), join(userDir, 'settings.json')]) {
     const m = readJson(f)?.permissions?.defaultMode
     if (typeof m === 'string' && m) return CLAUDE_MODES.has(m) ? m : 'auto'
@@ -183,7 +179,7 @@ function codexTopKeys(codexHome: string): Set<string> {
 
 export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   let session: string | null = null
-  let model: string | null = s.model
+  let model: string | null = null
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
   let sawDelta = false
@@ -191,7 +187,7 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   /** Context size of the latest API request (result.usage sums all requests of the turn). */
   let lastContext = 0
   // total_cost_usd is the resumed session's running total: remember where this run starts
-  const costBefore = claudeCostBefore(claudeUserDir(s.cfg), s.resume)
+  const costBefore = claudeCostBefore(claudeConfigDir(s.cfg), s.resume)
   /** Per-message usage, reported instead when the run ends without its `result` (stopped / killed). */
   const streamed = new MessageUsage()
   let streamMsg: string | null = null
@@ -206,6 +202,7 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
     emitted: boolean
   }
   const reqMap = new Map<string, ClaudeReqTelemetry>()
+  const awaitingModel = new Set<ClaudeReqTelemetry>()
   let reqStartAt = runStartedAt
   let reqTurnIndex = 0
   const mergeClaudeUsage = (entry: ClaudeReqTelemetry, u: any): void => {
@@ -223,11 +220,12 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   }
   const flushClaudeReq = (entry: ClaudeReqTelemetry, emit: Emit): void => {
     if (entry.emitted) return
+    awaitingModel.delete(entry)
     entry.emitted = true
     reqTurnIndex++
     emit({
       t: 'request_usage',
-      model: entry.model || model || s.cfg.defaultModel || null,
+      model: resolveRunModel(s.cfg, entry.model ?? model, s.model),
       usage: entry.usage,
       startedAt: entry.startedAt,
       firstTokenAt: entry.firstTokenAt,
@@ -263,10 +261,11 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
     args,
     stdin: prepareAdapterPrompt(s),
     sessionId: () => session,
-    model: () => model,
+    model: () => resolveRunModel(s.cfg, model, s.model),
     result: () => result,
     // no `result` (stopped, killed, crashed): what the streamed API messages reported; cost unknown
     finish: (emit) => {
+      for (const entry of awaitingModel) flushClaudeReq(entry, emit)
       if (result) return
       const u = streamed.total()
       if (u) emit({ t: 'usage', usage: { ...u, context: lastContext || undefined } })
@@ -276,8 +275,8 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
         case 'system':
           if (d.subtype === 'init') {
             session = d.session_id ?? session
-            model = d.model ?? model
-            emit({ t: 'session', id: session ?? '', model })
+            model = cleanModelName(d.model) ?? model
+            emit({ t: 'session', id: session ?? '', model: resolveRunModel(s.cfg, model, s.model) })
           } else if (d.subtype === 'thinking_tokens') {
             streamed.thinking(streamMsg, Number(d.estimated_tokens) || 0)
             emit({ t: 'thinking', delta: '', tokens: Number(d.estimated_tokens) || undefined })
@@ -290,13 +289,15 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
             emit({ t: 'phase', tool: null, bytes: 0 })
           }
           if (ev.type === 'message_start') {
+            const reportedModel = cleanModelName(ev.message?.model)
+            if (!d.parent_tool_use_id && reportedModel && reportedModel !== '<synthetic>') model = reportedModel
             const msgId: string = ev.message?.id ?? `msg-${reqMap.size + 1}`
             streamMsg = msgId
             streamed.add(msgId, ev.message?.usage)
             const existing = reqMap.get(msgId)
             if (!existing) {
               const entry: ClaudeReqTelemetry = {
-                model: ev.message?.model ?? model,
+                model: reportedModel,
                 startedAt: reqStartAt,
                 firstTokenAt: null,
                 streaming: true,
@@ -307,7 +308,7 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
               mergeClaudeUsage(entry, ev.message?.usage)
               reqMap.set(msgId, entry)
             } else {
-              if (ev.message?.model) existing.model = ev.message.model
+              if (reportedModel) existing.model = reportedModel
               mergeClaudeUsage(existing, ev.message?.usage)
             }
           } else if (ev.type === 'message_delta') {
@@ -318,7 +319,8 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
           } else if (ev.type === 'message_stop') {
             const entry = streamMsg ? reqMap.get(streamMsg) : undefined
             if (entry) {
-              flushClaudeReq(entry, emit)
+              if (entry.model) flushClaudeReq(entry, emit)
+              else awaitingModel.add(entry)
               reqStartAt = Date.now()
             }
           } else if (ev.type === 'content_block_delta') {
@@ -371,6 +373,8 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
           break
         }
         case 'assistant': {
+          const reportedModel = cleanModelName(d.message?.model)
+          if (!d.parent_tool_use_id && reportedModel && reportedModel !== '<synthetic>') model = reportedModel
           const mu = d.message?.usage
           const msgId = d.message?.id
           streamed.add(msgId, mu)
@@ -378,7 +382,7 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
             let entry = reqMap.get(msgId)
             if (!entry) {
               entry = {
-                model: d.message?.model ?? model,
+                model: reportedModel,
                 startedAt: reqStartAt,
                 firstTokenAt: null,
                 streaming: false,
@@ -388,7 +392,7 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
               }
               reqMap.set(msgId, entry)
             }
-            if (d.message?.model) entry.model = d.message.model
+            if (reportedModel) entry.model = reportedModel
             mergeClaudeUsage(entry, mu)
           }
           if (mu && !d.parent_tool_use_id) {
@@ -428,6 +432,8 @@ export function claudeAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
           break
         }
         case 'result': {
+          const usedModels = Object.keys(d.modelUsage ?? {}).filter((key) => key !== '<synthetic>' && cleanModelName(key))
+          model = cleanModelName(d.model) ?? cleanModelName(d.usage?.model) ?? (usedModels.length === 1 ? usedModels[0] : model)
           if (Array.isArray(d.permission_denials) && d.permission_denials.length)
             emit({ t: 'notice', message: deniedText(d.permission_denials.map((x: any) => x?.tool_name ?? 'tool'), s.cfg.autoApprove) })
           const u = d.usage ?? {}
@@ -578,43 +584,6 @@ function codexContext(codexHome: string, session: string): { context: number; wi
   return null
 }
 
-function cleanModelToken(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  if (!trimmed || /^unknown$/i.test(trimmed)) return null
-  return trimmed
-}
-
-export function isUnknownModelName(model: string | null | undefined): boolean {
-  return cleanModelToken(model) === null
-}
-
-/** Reads model and reasoning effort from `<codexHome>/config.toml` (honouring active `profile`). */
-export function readCodexConfig(codexHome: string): { model: string | null; effort: string | null } {
-  try {
-    const raw = readFileSync(join(codexHome, 'config.toml'), 'utf8')
-    const doc = parseToml(raw) as Record<string, unknown>
-    const profileName = typeof doc.profile === 'string' ? doc.profile.trim() : ''
-    const profiles = doc.profiles && typeof doc.profiles === 'object' ? (doc.profiles as Record<string, unknown>) : null
-    const activeProfile =
-      profileName && profiles && profiles[profileName] && typeof profiles[profileName] === 'object'
-        ? (profiles[profileName] as Record<string, unknown>)
-        : null
-    const model = cleanModelToken(activeProfile?.model) ?? cleanModelToken(doc.model)
-    const effort =
-      cleanModelToken(activeProfile?.model_reasoning_effort ?? activeProfile?.reasoning_effort) ??
-      cleanModelToken(doc.model_reasoning_effort ?? doc.reasoning_effort)
-    return { model, effort }
-  } catch {
-    return { model: null, effort: null }
-  }
-}
-
-export function codexDefaultModel(): string {
-  const configured = getKindConfig('codex').models.find((m) => !isUnknownModelName(m))
-  return configured ?? KIND_DEFAULTS.codex.models[0] ?? 'gpt-5-codex'
-}
-
 /**
  * Fallback chain for Codex model name when the event stream omits `model`:
  * 1. Explicit `--model` for this run or account `defaultModel`
@@ -623,53 +592,111 @@ export function codexDefaultModel(): string {
  * Preserves reasoning effort in `<model>:<effort>` format.
  */
 export function resolveCodexFallbackModel(input: { model?: string | null; defaultModel?: string | null; codexHome?: string | null }): string {
-  const explicitRaw = cleanModelToken(input.model) ?? cleanModelToken(input.defaultModel)
+  const explicitRaw = cleanModelName(input.model) ?? cleanModelName(input.defaultModel)
   const explicitSpec = splitSpec(explicitRaw, 'codex')
-  const explicitModel = cleanModelToken(explicitSpec.model)
-  const explicitEffort = cleanModelToken(explicitSpec.effort)
+  const explicitModel = cleanModelName(explicitSpec.model)
+  const explicitEffort = cleanModelName(explicitSpec.effort)
   const cfg = input.codexHome ? readCodexConfig(input.codexHome) : { model: null, effort: null }
   const cfgSpec = splitSpec(cfg.model, 'codex')
-  const baseModel = explicitModel ?? cleanModelToken(cfgSpec.model) ?? codexDefaultModel()
-  const effort = explicitEffort ?? cleanModelToken(cfgSpec.effort) ?? cleanModelToken(cfg.effort)
+  const baseModel = explicitModel ?? cleanModelName(cfgSpec.model) ?? codexDefaultModel()
+  const effort = explicitEffort ?? cleanModelName(cfgSpec.effort) ?? cleanModelName(cfg.effort)
   return joinSpec(baseModel, effort) ?? codexDefaultModel()
 }
 
 function extractCodexStreamModel(d: any): { model: string | null; effort: string | null } {
   if (!d || typeof d !== 'object') return { model: null, effort: null }
   const rawModel =
-    cleanModelToken(d.model) ??
-    cleanModelToken(d.thread?.model) ??
-    cleanModelToken(d.turn?.model) ??
-    cleanModelToken(d.payload?.model) ??
-    cleanModelToken(d.usage?.model) ??
-    cleanModelToken(d.response?.model)
+    cleanModelName(d.model) ??
+    cleanModelName(d.thread?.model) ??
+    cleanModelName(d.turn?.model) ??
+    cleanModelName(d.payload?.model) ??
+    cleanModelName(d.usage?.model) ??
+    cleanModelName(d.response?.model) ??
+    cleanModelName(d.response?.usage?.model)
   const rawEffort =
-    cleanModelToken(d.model_reasoning_effort) ??
-    cleanModelToken(d.reasoning_effort) ??
-    cleanModelToken(d.effort) ??
-    cleanModelToken(d.thread?.model_reasoning_effort) ??
-    cleanModelToken(d.thread?.reasoning_effort) ??
-    cleanModelToken(d.turn?.model_reasoning_effort) ??
-    cleanModelToken(d.turn?.reasoning_effort) ??
-    cleanModelToken(d.payload?.model_reasoning_effort) ??
-    cleanModelToken(d.payload?.reasoning_effort) ??
-    cleanModelToken(d.payload?.effort)
+    cleanModelName(d.model_reasoning_effort) ??
+    cleanModelName(d.reasoning_effort) ??
+    cleanModelName(d.effort) ??
+    cleanModelName(d.thread?.model_reasoning_effort) ??
+    cleanModelName(d.thread?.reasoning_effort) ??
+    cleanModelName(d.turn?.model_reasoning_effort) ??
+    cleanModelName(d.turn?.reasoning_effort) ??
+    cleanModelName(d.payload?.model_reasoning_effort) ??
+    cleanModelName(d.payload?.reasoning_effort) ??
+    cleanModelName(d.payload?.effort)
   if (!rawModel) return { model: null, effort: rawEffort }
   const spec = splitSpec(rawModel, 'codex')
-  return { model: cleanModelToken(spec.model), effort: cleanModelToken(spec.effort) ?? rawEffort }
+  return { model: cleanModelName(spec.model), effort: cleanModelName(spec.effort) ?? rawEffort }
+}
+
+export function codexRolloutEventModel(event: any): string | null {
+  if (event?.type !== 'turn_context' && event?.type !== 'session_meta') return null
+  const { model, effort } = extractCodexStreamModel(event)
+  return joinSpec(model, effort)
+}
+
+/** Read backwards so busy rollouts do not require loading their full contents into memory. */
+function codexRolloutModel(path: string | null, from: number, resumed: boolean): string | null {
+  if (!path) return null
+  let fd: number | null = null
+  try {
+    fd = openSync(path, 'r')
+    let end = statSync(path).size
+    let rest = Buffer.alloc(0)
+    while (end > from) {
+      const start = Math.max(from, end - 128 * 1024)
+      const chunk = Buffer.alloc(end - start)
+      readSync(fd, chunk, 0, chunk.length, start)
+      const data = Buffer.concat([chunk, rest])
+      const partial = start > from
+      const firstBreak = partial ? data.indexOf(10) : -1
+      rest = partial && firstBreak < 0 ? data : Buffer.from(data.subarray(0, firstBreak + 1))
+      if (!partial || firstBreak >= 0) {
+        const lines = data.subarray(firstBreak + 1).toString('utf8').split('\n')
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i].includes('"turn_context"') && (resumed || !lines[i].includes('"session_meta"'))) continue
+          try {
+            const event = JSON.parse(lines[i])
+            const model = codexRolloutEventModel(event)
+            if (model && (!resumed || event.type === 'turn_context')) return model
+          } catch {
+            // An unfinished JSONL record can be present while the CLI is writing.
+          }
+        }
+      }
+      end = start
+    }
+  } catch {
+    // The CLI may exit before creating a rollout.
+  } finally {
+    if (fd !== null) closeSync(fd)
+  }
+  return null
 }
 
 export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter {
   let session: string | null = s.resume
-  const fallbackModel = resolveCodexFallbackModel({ model: s.model, defaultModel: s.cfg.defaultModel, codexHome })
+  const configured = resolveRunModel(s.cfg, null, s.model)
+  const cliDefault = codexHome !== expandHome(s.cfg.extraEnv.CODEX_HOME || s.cfg.configDir)
+    ? resolveEffectiveDefaultModel({ ...s.cfg, configDir: codexHome, extraEnv: { ...s.cfg.extraEnv, CODEX_HOME: codexHome } })
+    : configured
+  const fallbackModel = resolveCodexFallbackModel({ model: cleanModelName(s.model) ?? cleanModelName(s.cfg.defaultModel) ?? cliDefault, codexHome })
   const fallbackEffort = splitSpec(fallbackModel, 'codex').effort
   let model = fallbackModel
+  let streamModel = false
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
   let thoughtSoFar = ''
   const own = s.cfg.autoApprove === 'cli' ? codexTopKeys(codexHome) : new Set<string>()
   // `exec resume` reports the session's running totals: remember where this turn starts
-  const totalsBefore = s.resume ? codexTotalsBefore(codexRollout(codexHome, s.resume)) : null
+  const resumedRollout = s.resume ? codexRollout(codexHome, s.resume) : null
+  const totalsBefore = codexTotalsBefore(resumedRollout)
+  let rolloutStart = 0
+  try {
+    if (resumedRollout) rolloutStart = statSync(resumedRollout).size
+  } catch {
+    // An unavailable rollout should not prevent the run.
+  }
   let reported = false
   let turnStartAt = startedAt
   let turnIndex = 0
@@ -774,11 +801,20 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
   const updateModelFromEvent = (d: any): void => {
     const found = extractCodexStreamModel(d)
     if (found.model) {
-      model = joinSpec(found.model, found.effort ?? fallbackEffort) ?? fallbackModel
+      streamModel = true
+      model = joinSpec(found.model, found.effort ?? splitSpec(model, 'codex').effort ?? fallbackEffort) ?? fallbackModel
     } else if (found.effort) {
       const cur = splitSpec(model, 'codex')
       if (cur.model) model = joinSpec(cur.model, found.effort) ?? model
     }
+  }
+  const useRolloutModel = (): void => {
+    if (streamModel || !session) return
+    const path = codexRollout(codexHome, session)
+    const reported = codexRolloutModel(path, path === resumedRollout ? rolloutStart : 0, session === s.resume)
+    if (!reported) return
+    const spec = splitSpec(reported, 'codex')
+    model = joinSpec(spec.model, spec.effort ?? splitSpec(model, 'codex').effort) ?? model
   }
   return {
     args,
@@ -806,6 +842,7 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
           itemEvent('completed', d.item, emit)
           break
         case 'turn.completed': {
+          useRolloutModel()
           reported = true
           const turnUsage = codexTurnUsage(d.usage ?? {}, totalsBefore)
           emit({ t: 'usage', usage: turnUsage })
@@ -839,6 +876,7 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
       if (!session) return
       // stopped / failed turn (no turn.completed): the rollout still has the running totals
       if (!reported) {
+        useRolloutModel()
         const after = codexTotalsBefore(codexRollout(codexHome, session))
         const u = after ? codexTurnUsage(after, totalsBefore) : null
         if (u && (u.input || u.output || u.cacheRead)) emit({ t: 'usage', usage: u })
@@ -867,11 +905,21 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
 
 // ---- agy -----------------------------------------------------------------------------------
 
-export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runStartedAt = Date.now()): Adapter {
+export function agyAdapter(s: RunSpec, home = agyHome(s.cfg), runStartedAt = Date.now()): Adapter {
   let session: string | null = s.resume
   /** The conversation's totals before this run (`result.usage` is the conversation's running total); null: unknown. */
   const totalsBefore: AgyTotals | null = s.resume ? readAgyConversationTotals(s.cfg, s.resume, home) : { input: 0, output: 0, cacheRead: 0, reasoning: 0 }
-  let model: string | null = s.model
+  const generationStart = s.resume ? readAgyGenerationCheckpoint(s.cfg, s.resume, home) : -1
+  let model: string | null = null
+  let sessionModel: string | null = null
+  const pending: Extract<AgentEvent, { t: 'request_usage' }>[] = []
+  const resolvedModel = () => resolveRunModel(s.cfg, model ?? sessionModel
+    ?? (session ? readAgyLatestModel(s.cfg, session, home, session === s.resume ? generationStart : -1) : null), s.model)
+  const flushRequests = (emit: Emit): void => {
+    if (!pending.length) return
+    const fallback = resolvedModel()
+    for (const request of pending.splice(0)) emit({ ...request, model: request.model ?? fallback })
+  }
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
   let lastTextStep = -1
@@ -882,7 +930,7 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
   const stepUsage = new Map<number, Usage>()
   let stepStartAt = runStartedAt
   let reqTurnIndex = 0
-  const stepTiming = new Map<number, { startedAt: number; firstTokenAt: number | null }>()
+  const stepTiming = new Map<number, { startedAt: number; firstTokenAt: number | null; model: string | null }>()
   /** Sum over the run's finished steps (null: none finished). */
   const stepTotal = (): Usage | null => {
     if (!stepUsage.size) return null
@@ -903,10 +951,11 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
     args,
     stdin: null,
     sessionId: () => session,
-    model: () => model,
+    model: resolvedModel,
     result: () => result,
     // no result event (stopped, killed): the finished steps' own usage; also pick up agy's native title
     finish: (emit) => {
+      flushRequests(emit)
       const steps = result ? null : stepTotal()
       if (steps) emit({ t: 'usage', usage: { ...steps, context: lastContext || undefined } })
       if (session) {
@@ -918,11 +967,13 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
       switch (d.event) {
         case 'init':
           session = d.conversation_id ?? session
-          model = d.init?.model ?? model
-          emit({ t: 'session', id: session ?? '', model })
+          sessionModel = cleanModelName(d.init?.model) ?? cleanModelName(d.init?.usage?.model) ?? cleanModelName(d.model) ?? sessionModel
+          emit({ t: 'session', id: session ?? '', model: resolveRunModel(s.cfg, sessionModel, s.model) })
           break
         case 'step_update': {
           const u = d.step_update ?? {}
+          const requestModel = cleanModelName(u.model) ?? cleanModelName(u.usage?.model) ?? cleanModelName(d.model)
+          model = requestModel ?? model
           switch (u.step_type) {
             case 'user_input':
               break
@@ -930,9 +981,10 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
               const stepIdx = typeof u.step_index === 'number' ? u.step_index : -1
               let timing = stepIdx >= 0 ? stepTiming.get(stepIdx) : undefined
               if (stepIdx >= 0 && !timing) {
-                timing = { startedAt: stepStartAt, firstTokenAt: null }
+                timing = { startedAt: stepStartAt, firstTokenAt: null, model: null }
                 stepTiming.set(stepIdx, timing)
               }
+              if (timing && requestModel) timing.model = requestModel
               // agy exposes no thinking text (measured 1.5.8); future fields are picked up if they appear
               const th = u.thinking_delta ?? u.thinking
               if (typeof th === 'string' && th) {
@@ -962,9 +1014,9 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
                 }
                 stepUsage.set(u.step_index, su)
                 reqTurnIndex++
-                emit({
+                const request: Extract<AgentEvent, { t: 'request_usage' }> = {
                   t: 'request_usage',
-                  model: model || s.cfg.defaultModel || null,
+                  model: timing?.model ?? requestModel,
                   usage: su,
                   startedAt: timing?.startedAt ?? stepStartAt,
                   firstTokenAt: timing?.firstTokenAt ?? null,
@@ -972,7 +1024,9 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
                   streaming: true,
                   turnIndex: reqTurnIndex,
                   rawUsage: u.usage
-                })
+                }
+                if (request.model && !pending.length) emit(request)
+                else pending.push(request)
                 stepStartAt = Date.now()
               }
               const tk = Number(u.usage?.thinking_tokens) || 0
@@ -998,7 +1052,9 @@ export function agyAdapter(s: RunSpec, home = expandHome(s.cfg.configDir), runSt
           if (Array.isArray(r.denied_actions) && r.denied_actions.length)
             emit({ t: 'notice', message: deniedText(r.denied_actions.map((x: any) => x?.display_name ?? x?.action ?? 'tool'), s.cfg.autoApprove) })
           emit({ t: 'usage', usage: { ...agyTurnUsage(r.usage ?? {}, totalsBefore, stepTotal()), context: lastContext || undefined } })
-          session = r.conversation_id ?? session
+          session = r.conversation_id ?? d.conversation_id ?? session
+          model = cleanModelName(r.model) ?? cleanModelName(r.usage?.model) ?? cleanModelName(d.model) ?? model
+          flushRequests(emit)
           result = r.status === 'SUCCESS' ? { ok: true, error: null } : { ok: false, error: String(r.error ?? r.status ?? 'error') }
           break
         }
@@ -1091,7 +1147,14 @@ const reasonixCount = (value: unknown): number => typeof value === 'number' && N
 export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter {
   let session: string | null = null
   const spec = splitSpec(s.model || s.cfg.defaultModel, 'reasonix')
-  let model = spec.model
+  let model: string | null = null
+  const pending: Extract<AgentEvent, { t: 'request_usage' }>[] = []
+  const resolvedModel = () => resolveRunModel(s.cfg, model, s.model)
+  const flushRequests = (emit: Emit): void => {
+    if (!pending.length) return
+    const fallback = resolvedModel()
+    for (const request of pending.splice(0)) emit({ ...request, model: request.model ?? fallback })
+  }
   let result: { ok: boolean; error: string | null } | null = null
   let sawDelta = false
   let usage: Usage | null = null
@@ -1114,7 +1177,7 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
 
   const rememberSession = (id: unknown, emit: Emit): void => {
     if (typeof id !== 'string' || !id) return
-    if (!session) emit({ t: 'session', id, model })
+    if (!session) emit({ t: 'session', id, model: resolvedModel() })
     session = id
   }
 
@@ -1122,12 +1185,15 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
     args,
     stdin: prompt + (missingImages.length ? '\n\n' + missingImages.map((path) => `- ${path}`).join('\n') : ''),
     sessionId: () => session,
-    model: () => model,
+    model: resolvedModel,
     result: () => result,
+    finish: flushRequests,
     onLine: (d, emit) => {
       if (!d || typeof d !== 'object') return
       if (d.type === 'result') {
+        model = cleanModelName(d.model) ?? cleanModelName(d.usage?.model) ?? model
         rememberSession(d.session_id, emit)
+        flushRequests(emit)
         if (Array.isArray(d.permission_denials) && d.permission_denials.length)
           emit({ t: 'notice', message: deniedText(d.permission_denials.map((x: any) => x?.tool_name ?? x?.tool ?? 'tool'), s.cfg.autoApprove) })
         const costCny = Number(d.cost_quote?.valuations?.CNY?.money?.amount ?? NaN)
@@ -1149,7 +1215,7 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
       }
       switch (d.kind) {
         case 'turn_started':
-          if (typeof d.modelRef === 'string') model = d.modelRef.replace(/^[^/]+\//, '')
+          model = cleanModelName(d.model) ?? cleanModelName(cleanModelName(d.modelRef)?.replace(/^[^/]+\//, '')) ?? model
           rememberSession(d.sessionId, emit)
           reqStartAt = Date.now()
           firstTokenAt = null
@@ -1194,6 +1260,7 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
         case 'usage': {
           const u = d.usage
           if (!u || typeof u !== 'object') break
+          model = cleanModelName(u.model) ?? cleanModelName(d.model) ?? model
           const prompt = reasonixCount(u.promptTokens)
           const out = reasonixCount(u.completionTokens)
           const hit = reasonixCount(u.cacheHitTokens)
@@ -1206,9 +1273,9 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
           }
           emit({ t: 'usage', usage })
           reqTurnIndex++
-          emit({
+          const request: Extract<AgentEvent, { t: 'request_usage' }> = {
             t: 'request_usage',
-            model: model || s.cfg.defaultModel || null,
+            model,
             usage: { input: miss, output: out, cacheRead: hit || undefined, context: prompt + out },
             startedAt: reqStartAt,
             firstTokenAt,
@@ -1216,7 +1283,9 @@ export function reasonixAdapter(s: RunSpec, runStartedAt = Date.now()): Adapter 
             streaming: true,
             turnIndex: reqTurnIndex,
             rawUsage: u
-          })
+          }
+          if (request.model && !pending.length) emit(request)
+          else pending.push(request)
           reqStartAt = Date.now()
           firstTokenAt = null
           break
@@ -1283,7 +1352,7 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
   const startedAt = Date.now()
   const redact = reasonix ? reasonixRedactor(managedHome) : (text: string) => text
   const adapter =
-    cfg.kind === 'claude' ? claudeAdapter(spec, startedAt) : cfg.kind === 'codex' ? codexAdapter(spec, expandHome(cfg.configDir), startedAt)
+    cfg.kind === 'claude' ? claudeAdapter(spec, startedAt) : cfg.kind === 'codex' ? codexAdapter(spec, env.CODEX_HOME ?? expandHome(cfg.configDir), startedAt)
       : reasonix ? reasonixAdapter({ ...spec, cfg }, startedAt) : agyAdapter(spec, env.HOME ?? expandHome(cfg.configDir), startedAt)
 
   let child: ChildProcess | null = null
@@ -1309,7 +1378,7 @@ function runPrintAgent(spec: RunSpec, cfg: ProfileConfig, emit: Emit, onLog: (te
         if (/no stored key for/i.test(error)) error = t('reasonix.noKey')
       }
       if (error && (cfg.apiKey || reasonix) && isInvalidKeyError(error)) error = `${error}\n${t('apikey.checkKey')}`
-      resolve({ ok: ok && !stopped, stopped, text: '', sessionId: adapter.sessionId(), model: adapter.model(), error: stopped ? null : error, rateLimited })
+      resolve({ ok: ok && !stopped, stopped, text: '', sessionId: adapter.sessionId(), model: resolveRunModel(cfg, adapter.model(), spec.model), error: stopped ? null : error, rateLimited })
     }
     if (!bin) return finish(false, t('main.cliNotInstalled', { kind: cfg.kind }))
     if (reasonix && !cfg.imported && !managedHome) return finish(false, t('reasonix.noKey'))

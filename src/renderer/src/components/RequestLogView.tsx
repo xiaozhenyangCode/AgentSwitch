@@ -254,8 +254,8 @@ function RequestLogDetail({
             </div>
             <div>
               <div className="text-[11px] text-ink-3">{t('reqLog.col.model')}</div>
-              <div className="mt-0.5 truncate font-mono text-ink" title={entry.model}>
-                {entry.model}
+              <div className="mt-0.5 truncate font-mono text-ink" title={entry.model || '—'}>
+                {entry.model || '—'}
               </div>
             </div>
             {entry.turnIndex != null && (
@@ -678,8 +678,8 @@ export function RequestLogView({
                         )
                       case 'model':
                         return (
-                          <td key={col.key} className="max-w-[280px] truncate px-2.5 py-2 font-mono text-[11.5px] whitespace-nowrap text-ink" title={entry.model}>
-                            {entry.model}
+                          <td key={col.key} className="max-w-[280px] truncate px-2.5 py-2 font-mono text-[11.5px] whitespace-nowrap text-ink" title={entry.model || '—'}>
+                            {entry.model || '—'}
                           </td>
                         )
                       case 'cost':

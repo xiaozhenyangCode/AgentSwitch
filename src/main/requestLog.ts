@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { cleanModelName } from '@shared/modelSpec'
 import type {
   ProfileConfig,
   ProfileId,
@@ -375,7 +376,7 @@ export function recordRequestLog(input: RecordRequestLogInput): RequestLogEntry 
     accountName: input.accountName,
     engineKind: input.engineKind,
     provider: input.provider,
-    model: priced.model || 'unknown',
+    model: priced.model,
     projectDir: input.projectDir ?? null,
     threadId: input.threadId ?? null,
     runId: input.runId ?? null,
@@ -473,7 +474,7 @@ export function queryRequestLogs(query: RequestLogQuery = {}): RequestLogPage {
       `SELECT
         COUNT(*) AS total,
         COUNT(DISTINCT account_id) AS accounts,
-        COUNT(DISTINCT model) AS models,
+        COUNT(DISTINCT CASE WHEN lower(trim(model)) NOT IN ('', 'unknown') THEN model END) AS models,
         SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS status2xx,
         SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END) AS status429,
         SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS statusError
@@ -517,7 +518,7 @@ export function queryRequestLogs(query: RequestLogQuery = {}): RequestLogPage {
     accountName: String(r.account_name),
     engineKind: String(r.engine_kind) as ProfileKind,
     provider: String(r.provider),
-    model: String(r.model),
+    model: cleanModelName(r.model) ?? '',
     projectDir: r.project_dir ?? null,
     threadId: r.thread_id ?? null,
     runId: r.run_id ?? null,
@@ -536,7 +537,7 @@ export function queryRequestLogs(query: RequestLogQuery = {}): RequestLogPage {
   }))
 
   const availableModels = (
-    conn.prepare("SELECT DISTINCT model FROM request_logs WHERE model != '' ORDER BY model ASC").all() as { model: string }[]
+    conn.prepare("SELECT DISTINCT model FROM request_logs WHERE lower(trim(model)) NOT IN ('', 'unknown') ORDER BY model ASC").all() as { model: string }[]
   ).map((r) => r.model)
   const availableEngines = (
     conn.prepare('SELECT DISTINCT engine_kind FROM request_logs ORDER BY engine_kind ASC').all() as { engine_kind: string }[]

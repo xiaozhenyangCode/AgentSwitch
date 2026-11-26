@@ -22,6 +22,8 @@ vi.mock('../profiles', () => ({
   buildSpawnSpec: stubs.buildSpawnSpec,
   getConfig: stubs.getConfig,
   kindBinaryPath: () => '/fake/agy',
+  hasProfile: () => false,
+  getKindConfig: () => ({ models: ['gemini-test-default'] }),
   expandHome: (p: string) => p
 }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), spawn: stubs.spawn }))
@@ -154,6 +156,39 @@ describe('agy ACP runs', () => {
     cli.send({ id: create.id, result: { sessionId } })
     return cli.request('session/prompt')
   }
+
+  it('uses response model IDs ahead of the explicit selection and configured default', async () => {
+    const { run, cli } = await begin({ model: 'requested-model' })
+    const prompt = await sendPrompt(cli)
+    cli.send({ id: prompt.id, result: { ...result, usage: { ...usage, model: 'gemini-3.8-flash-tiered' } } })
+    await expect(run.done).resolves.toMatchObject({ ok: true, model: 'gemini-3.8-flash-tiered' })
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'request_usage', model: 'gemini-3.8-flash-tiered' }))
+  })
+
+  it('uses only model metadata written after the prompt checkpoint', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentswitch-acp-model-'))
+    const dir = join(home, '.gemini/antigravity-cli/conversations')
+    mkdirSync(dir, { recursive: true })
+    const db = new DatabaseSync(join(dir, sessionId + '.db'))
+    try {
+      db.exec('create table steps(idx integer primary key); create table gen_metadata(idx integer primary key, data blob)')
+      const insertModel = (idx: number, id: string) => {
+        const bytes = Buffer.from(id)
+        db.prepare('insert into gen_metadata values (?, ?)').run(idx, Buffer.concat([Buffer.from([10, 3 + bytes.length, 154, 1, bytes.length]), bytes]))
+      }
+      stubs.buildSpawnSpec.mockReturnValue({ env: { HOME: home } })
+      insertModel(1, 'gemini-previous-turn')
+      const { run, cli } = await begin()
+      const prompt = await sendPrompt(cli)
+      insertModel(2, 'gemini-3.8-flash-tiered')
+      cli.send({ id: prompt.id, result })
+      await expect(run.done).resolves.toMatchObject({ ok: true, model: 'gemini-3.8-flash-tiered' })
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'request_usage', model: 'gemini-3.8-flash-tiered' }))
+    } finally {
+      db.close()
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
 
   it.each([true, false])('pairs accepted images with their prompt paths (image capability %s)', async (image) => {
     const cwd = mkdtempSync(join(tmpdir(), 'agentswitch-acp-images-'))
@@ -493,7 +528,7 @@ describe('agy ACP runs', () => {
     )
     await expect(run.done).resolves.toMatchObject({ ok: true, sessionId })
     expect(emit.mock.calls.map(([event]) => event)).toEqual([
-      { t: 'session', id: sessionId, model: null },
+      { t: 'session', id: sessionId, model: 'gemini-test-default' },
       { t: 'title', title: 'Probe session' },
       { t: 'text', delta: 'Before.' },
       ...['running', 'running', 'running'].map((status) => expect.objectContaining({ t: 'activity', id: 'agy:call_1', target: 'echo acp-probe', type: 'run', status })),
@@ -504,7 +539,7 @@ describe('agy ACP runs', () => {
       { t: 'usage', usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2, context: 64, contextWindow: 1048576 } },
       expect.objectContaining({
         t: 'request_usage',
-        model: null,
+        model: 'gemini-test-default',
         streaming: true,
         turnIndex: 1,
         usage: { input: 50, output: 6, cacheRead: 8, reasoning: 2 }

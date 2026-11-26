@@ -32,6 +32,10 @@ export async function refreshUsage(): Promise<void> {
   emit(await window.agentswitch.usage.refresh(getSettings().probeClaude))
 }
 
+export async function syncPrices(): Promise<void> {
+  emit(await window.agentswitch.usage.syncPrices())
+}
+
 /** Saves or clears (`rate === null`) a custom per-model price override (USD / 1M tokens). */
 export async function setModelPrice(model: string, rate: PriceRate | null): Promise<UsageSnapshot> {
   const next = await window.agentswitch.usage.setPrice(model, rate)

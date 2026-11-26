@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
+import { cleanModelName } from '@shared/modelSpec'
 import { cleanTitle } from '@shared/markers'
 import { expandHome } from '../profiles'
 import type { ProfileConfig } from '@shared/types'
@@ -28,6 +29,28 @@ export function readAgyConversationTitle(cfg: ProfileConfig, id: string, home = 
   } catch {
     return null
   }
+}
+
+/** Generation rows from a resumed conversation must not supply the previous turn's model. */
+export function readAgyGenerationCheckpoint(cfg: ProfileConfig, sessionId: string, home: string): number {
+  if (!/^[\w-]+$/.test(sessionId)) return -1
+  const path = agyConversationDb({ ...cfg, configDir: home }, sessionId)
+  return withDb(path, (db) => Number(db.prepare('select max(idx) as idx from gen_metadata').get()?.idx ?? -1)) ?? -1
+}
+
+export function readAgyLatestModel(cfg: ProfileConfig, sessionId: string, home = expandHome(cfg.configDir), after = -1): string | null {
+  if (!/^[\w-]+$/.test(sessionId)) return null
+  const path = agyConversationDb({ ...cfg, configDir: home }, sessionId)
+  return withDb(path, (db) => {
+    const stmt = db.prepare('select data from gen_metadata where idx > ? order by idx desc')
+    for (const { data } of stmt.iterate(after)) {
+      if (!(data instanceof Uint8Array)) continue
+      const value = pbAll(Buffer.from(data), [1, 19])[0]
+      const model = Buffer.isBuffer(value) ? cleanModelName(value.toString('utf8')) : null
+      if (model) return model
+    }
+    return null
+  })
 }
 
 /**

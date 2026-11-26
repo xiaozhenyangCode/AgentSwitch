@@ -89,7 +89,7 @@ import { PtyManager } from './ptyManager'
 import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
-import { onUsageChange, refreshUsage, setCustomPrice, snapshot as usageSnapshot, startUsage } from './usage'
+import { onUsageChange, refreshUsage, setCustomPrice, syncPrices, snapshot as usageSnapshot, startUsage } from './usage'
 import { onRequestLogChange, queryRequestLogs } from './requestLog'
 import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
@@ -262,12 +262,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     broadcast()
   })
   ipcMain.handle(IPC.profilesUpdate, (_e, id: unknown, patch: Partial<ProfileConfig>) => {
-    updateProfile(assertId(id), patch)
-    if (patch?.apiKey) forgetModels(assertId(id)) // custom endpoint's model list changed
+    const pid = assertId(id)
+    const before = getConfig(pid)
+    const after = updateProfile(pid, patch)
+    if (before.configDir !== after.configDir || JSON.stringify(before.extraEnv) !== JSON.stringify(after.extraEnv)
+      || JSON.stringify(before.apiKey) !== JSON.stringify(after.apiKey)) forgetModels(pid)
     broadcast()
   })
   ipcMain.handle(IPC.profilesReset, (_e, id: unknown) => {
-    resetProfile(assertId(id))
+    const pid = assertId(id)
+    resetProfile(pid)
+    forgetModels(pid)
     broadcast()
   })
   ipcMain.handle(IPC.profilesRemove, (_e, id: unknown) => {
@@ -497,6 +502,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   startUsage()
   ipcMain.handle(IPC.usageGet, () => usageSnapshot())
   ipcMain.handle(IPC.usageRefresh, (_e, probe?: boolean) => refreshUsage(probe === true))
+  ipcMain.handle(IPC.usageSyncPrices, () => syncPrices(true))
   ipcMain.handle(IPC.usageSetPrice, (_e, model: unknown, rate: unknown) => {
     if (typeof model !== 'string' || !model.trim()) throw new Error('bad model')
     if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) throw new Error('bad rate')

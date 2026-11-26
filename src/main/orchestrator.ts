@@ -7,6 +7,7 @@ import type { AgentEvent, ChatEvent, Usage, ProfileConfig, ProfileId, ResolvedRu
 import { runAgent, type RunHandle } from './agentRunner'
 import { agyAcpPool } from './acp/pool'
 import { FileBaseline } from './fileBaseline'
+import { resolveRunModel } from './models'
 import { recordLimited, recordQuota, recordRun, refreshPostRunQuota } from './usage'
 import { mapStatusCode, recordRequestLog, resolveProviderLabel } from './requestLog'
 import { allowRoot } from './fileProtocol'
@@ -832,7 +833,7 @@ export class Orchestrator {
             accountName: cfg.name,
             engineKind: cfg.kind,
             provider: providerLabel,
-            model: event.model || step.model || cfg.defaultModel || null,
+            model: resolveRunModel(cfg, event.model, step.model),
             projectDir: turn.req.projectDir ?? turn.cwd,
             threadId: turn.req.threadId,
             runId: turn.req.turnId,
@@ -936,7 +937,7 @@ export class Orchestrator {
     this.onState()
     // usage & quota bookkeeping never blocks the turn
     try {
-      const resolvedModel = r.model || step.model || cfg.defaultModel || null
+      const resolvedModel = resolveRunModel(cfg, r.model, step.model)
       if (stepUsage || r.ok) recordRun(cfg.id, resolvedModel, stepUsage)
       const statusCode = mapStatusCode({
         ok: r.ok,

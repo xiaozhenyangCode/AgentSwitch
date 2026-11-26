@@ -1,9 +1,8 @@
-import type { PriceRate } from '@shared/types'
+import type { OnlinePriceSource, PriceRate } from '@shared/types'
 
 /**
- * Token -> USD at the vendors' API list prices (USD per million tokens), from LiteLLM's public
- * table (refreshed daily, as t3code does; offline: the snapshot in prices.builtin.json) and, for
- * models it does not list yet, CC Switch's built-in table (snapshot).
+ * Token pricing in USD per million. Public tables are cached locally, with the packaged
+ * LiteLLM and CC Switch snapshot available on first launch and offline.
  */
 
 export type PriceTable = Record<string, PriceRate>
@@ -26,30 +25,36 @@ const MODEL_ALIASES: Record<string, string> = {
   'codex-mini-latest': 'codex-mini'
 }
 
-/** Names to try for a model as CLIs report it, most specific first. */
+const bareName = (name: string): string => name.trim().toLowerCase().split('/').at(-1) ?? ''
+const own = (table: PriceTable | undefined, key: string): PriceRate | undefined =>
+  table && Object.hasOwn(table, key) ? table[key] : undefined
+
+/** Names to try after the exact ID, with only known CLI decorations removed. */
 export function candidates(model: string): string[] {
-  let m = model.trim().toLowerCase()
-  m = m.slice(m.lastIndexOf('/') + 1) // anthropic/…, openai/…, models/…, deepseek/…
-  m = m.replace(/^(?:us|eu|apac|global)\.(?:anthropic\.)?|^anthropic\./, '') // bedrock ids
-  m = m.replace(/@.*$/, '') // vertex: claude-…@20250514
-  m = m.replace(/:.*$/, '') // effort / tag suffix: gemini-4-neon:high, gpt-5.3-codex:xhigh, bedrock …-v2:0
-  m = m.replace(/\[[^\]]*\]$/, '') // claude-opus-5-5[1m]
-  m = m.replace(/-v\d+$/, '')
-  if (!m) return []
-  const out = [m]
-  const alias = MODEL_ALIASES[m]
-  if (alias && alias !== m) out.push(alias)
-  // drop trailing segments: dates (-20251001), variants (-codex, -preview-05-06, -latest), …
-  for (let s = m; s.lastIndexOf('-') > 0; ) {
-    s = s.slice(0, s.lastIndexOf('-'))
-    // never fall back to a bare family name ("claude", "gpt", "gemini-3")
-    if (!/[-.]/.test(s) || /^(claude|gemini)-[\d.]+$/.test(s)) break
-    if (!out.includes(s)) out.push(s)
+  let name = bareName(model)
+    .replace(/^(?:us|eu|apac|global)\.(?:anthropic\.)?|^anthropic\./, '')
+    .replace(/:(?:minimal|low|medium|high|xhigh|max|ultra|none|disabled|\d+)$/, '')
+    .replace(/\[[^\]]*\]$/, '')
+    .replace(/@\d{8}$/, '')
+    .replace(/-v\d+$/, '')
+  const out: string[] = []
+  while (name) {
+    if (!out.includes(name)) out.push(name)
+    const alias = MODEL_ALIASES[name]
+    if (alias && !out.includes(alias)) out.push(alias)
+    const shorter = name.replace(/-(?:\d{8}|20\d{2}-\d{2}-\d{2}|(?:preview-)?\d{2}-\d{2}|v\d+|minimal|low|medium|high|xhigh|max|ultra|none|disabled|tiered|latest|preview|thinking|codex)$/, '')
+    if (shorter === name || /^(claude|gemini)-[\d.]+$/.test(shorter) || !/[-.]/.test(shorter)) break
+    name = shorter
   }
   return out
 }
 
-export type PriceSource = 'custom' | 'litellm' | 'ccswitch'
+export const PRICE_SOURCES = {
+  litellm: { url: 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json', parse: parseLiteLLM },
+  modelsdev: { url: 'https://models.dev/api.json', parse: parseModelsDev },
+  openrouter: { url: 'https://openrouter.ai/api/v1/models', parse: parseOpenRouter }
+}
+export type PriceSource = 'custom' | OnlinePriceSource | 'ccswitch'
 
 export interface Match {
   key: string
@@ -59,53 +64,81 @@ export interface Match {
 
 export interface PriceTables {
   custom?: PriceTable
+  online?: Record<string, Match>
   litellm: PriceTable
   ccswitch: PriceTable
 }
 
-/** The rate a model is billed at: user custom overrides first, then LiteLLM, then CC Switch. */
-export function findRate(model: string, t: PriceTables): Match | null {
-  if (t.custom) {
-    const exact = model.trim().toLowerCase()
-    if (exact && t.custom[exact]) return { key: exact, rate: t.custom[exact], source: 'custom' }
-    for (const c of candidates(model)) if (t.custom[c]) return { key: c, rate: t.custom[c], source: 'custom' }
+const cacheCompleteness = (rate: PriceRate): number => Number(rate.cacheRead !== undefined && rate.cacheWrite !== undefined)
+
+export function mergePriceTables(tables: Partial<Record<OnlinePriceSource, PriceTable>>): Record<string, Match> {
+  const merged: Record<string, Match> = Object.create(null)
+  for (const source of Object.keys(PRICE_SOURCES) as OnlinePriceSource[]) {
+    for (const [key, rate] of Object.entries(tables[source] ?? {})) {
+      const previous = merged[key]
+      if (!previous || cacheCompleteness(rate) > cacheCompleteness(previous.rate)) merged[key] = { key, rate, source }
+    }
   }
-  if (FREE.has(model)) return { key: model, rate: { input: 0, output: 0 }, source: 'litellm' }
-  const names = candidates(model)
-  for (const c of names) if (t.litellm[c]) return { key: c, rate: t.litellm[c], source: 'litellm' }
-  for (const c of names) if (t.ccswitch[c]) return { key: c, rate: t.ccswitch[c], source: 'ccswitch' }
+  return merged
+}
+
+export function findRate(model: string, tables: PriceTables): Match | null {
+  const exact = model.trim().toLowerCase()
+  const names = [...new Set([exact, bareName(model), ...candidates(model)])].filter(Boolean)
+  for (const key of names) {
+    const rate = own(tables.custom, key)
+    if (rate) return { key, rate, source: 'custom' }
+  }
+  if (FREE.has(exact)) return { key: exact, rate: { input: 0, output: 0 }, source: 'litellm' }
+  for (const key of names) {
+    const online = tables.online && Object.hasOwn(tables.online, key) ? tables.online[key] : undefined
+    if (online) return online
+    const litellm = own(tables.litellm, key)
+    if (litellm) return { key, rate: litellm, source: 'litellm' }
+    const ccswitch = own(tables.ccswitch, key)
+    if (ccswitch) return { key, rate: ccswitch, source: 'ccswitch' }
+  }
   return null
 }
 
-const FIRST_PARTY = new Set(['anthropic', 'openai', 'gemini', 'vertex_ai-language-models', 'deepseek', 'xai'])
-const PREFIX = /^(deepseek|gemini|xai|openai|anthropic)\//
+const FIRST_PARTY = new Set(['anthropic', 'openai', 'google', 'gemini', 'vertex_ai-language-models', 'deepseek', 'xai', 'x-ai'])
+
+function insertRate(out: PriceTable, ranks: Map<string, number>, name: string, rate: PriceRate, rank: number): void {
+  const key = bareName(name)
+  const score = cacheCompleteness(rate) * 4 + rank
+  if (!key || score <= (ranks.get(key) ?? -1)) return
+  ranks.set(key, score)
+  out[key] = rate
+}
+
+function perMillion(value: unknown, factor: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined
+  const rate = Number((value * factor).toPrecision(15))
+  return Number.isFinite(rate) ? rate : undefined
+}
 
 /**
  * LiteLLM's model_prices_and_context_window.json (whole, or filtered by scripts/update-prices.mjs)
- * -> rates per million tokens. Keeps the model makers' own chat entries (bare names win over
- * prefixed aliases) and the lowest long-context tier; entries without input/output rates are dropped.
+ * -> USD per million for chat and responses models, including their lowest long-context tier.
  */
 export function parseLiteLLM(doc: unknown): PriceTable {
-  const out: PriceTable = {}
+  const out: PriceTable = Object.create(null)
+  const ranks = new Map<string, number>()
   if (!doc || typeof doc !== 'object') return out
-  const per = (v: unknown): number | undefined => (typeof v === 'number' && isFinite(v) && v >= 0 ? Math.round(v * 1e12) / 1e6 : undefined)
+  const per = (v: unknown): number | undefined => perMillion(v, 1e6)
   for (const [name, raw] of Object.entries(doc as Record<string, any>)) {
     if (!raw || typeof raw !== 'object') continue
-    if (raw.litellm_provider !== undefined && !FIRST_PARTY.has(raw.litellm_provider)) continue
     if (raw.mode && raw.mode !== 'chat' && raw.mode !== 'responses') continue
-    const bare = name.toLowerCase().replace(PREFIX, '')
-    if (bare.includes('/')) continue
     const input = per(raw.input_cost_per_token)
     const output = per(raw.output_cost_per_token)
     if (input === undefined || output === undefined) continue
-    if (out[bare] && name.toLowerCase() !== bare) continue
     const rate: PriceRate = { input, output }
     const cr = per(raw.cache_read_input_token_cost)
     const cw = per(raw.cache_creation_input_token_cost)
     const cw1h = per(raw.cache_creation_input_token_cost_above_1hr)
     if (cr !== undefined) rate.cacheRead = cr
-    if (cw) rate.cacheWrite = cw
-    if (cw1h) rate.cacheWrite1h = cw1h
+    if (cw !== undefined) rate.cacheWrite = cw
+    if (cw1h !== undefined) rate.cacheWrite1h = cw1h
     const tier = Object.keys(raw)
       .map((k) => Number(/^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1]))
       .filter((x) => x > 0)
@@ -120,12 +153,83 @@ export function parseLiteLLM(doc: unknown): PriceTable {
         const lw = per(raw[`cache_creation_input_token_cost${sfx}`])
         if (lo !== undefined) rate.long.output = lo
         if (lr !== undefined) rate.long.cacheRead = lr
-        if (lw) rate.long.cacheWrite = lw
+        if (lw !== undefined) rate.long.cacheWrite = lw
       }
     }
-    out[bare] = rate
+    insertRate(out, ranks, name, rate, name.includes('/') ? Number(FIRST_PARTY.has(raw.litellm_provider)) : 2)
   }
   return out
+}
+
+export function parseModelsDev(doc: unknown): PriceTable {
+  const out: PriceTable = Object.create(null)
+  const ranks = new Map<string, number>()
+  if (!doc || typeof doc !== 'object') return out
+  for (const [provider, entry] of Object.entries(doc)) {
+    if (!entry?.models || typeof entry.models !== 'object') continue
+    for (const [key, raw] of Object.entries(entry.models) as [string, any][]) {
+      if (!raw?.cost) continue
+      const rate = cleanRate({ input: raw.cost.input, output: raw.cost.output, cacheRead: raw.cost.cache_read, cacheWrite: raw.cost.cache_write })
+      if (!rate) continue
+      const name = typeof raw.id === 'string' && raw.id ? raw.id : key
+      insertRate(out, ranks, name.includes('/') ? name : `${provider}/${name}`, rate, Number(FIRST_PARTY.has(provider)))
+    }
+  }
+  return out
+}
+
+export function parseOpenRouter(doc: unknown): PriceTable {
+  const out: PriceTable = Object.create(null)
+  const ranks = new Map<string, number>()
+  const data = (doc as { data?: unknown } | null)?.data
+  if (!Array.isArray(data)) return out
+  const per = (value: unknown): number | undefined =>
+    perMillion(typeof value === 'string' && value.trim() ? Number(value) : value, 1e6)
+  for (const row of data) {
+    if (typeof row?.id !== 'string' || !row.pricing) continue
+    const p = row.pricing
+    const rate = cleanRate({ input: per(p.prompt), output: per(p.completion), cacheRead: per(p.input_cache_read), cacheWrite: per(p.input_cache_write) })
+    if (rate) insertRate(out, ranks, row.id, rate, 0)
+  }
+  return out
+}
+
+export interface PriceCacheEntry {
+  models: PriceTable
+  fetchedAt: number
+  etag?: string
+  lastModified?: string
+}
+export type PriceCache = Partial<Record<OnlinePriceSource, PriceCacheEntry>>
+export type PriceFetch = (url: string, headers: Record<string, string>) => Promise<{
+  status: number
+  text: string
+  headers: Record<string, string>
+}>
+
+export async function refreshPriceCache(cache: PriceCache, fetch: PriceFetch, ttl: number, force: boolean): Promise<PriceCache> {
+  const pending = (Object.entries(PRICE_SOURCES) as [OnlinePriceSource, typeof PRICE_SOURCES[OnlinePriceSource]][])
+    .filter(([source]) => force || !cache[source] || Date.now() - cache[source].fetchedAt >= ttl)
+  const updated = await Promise.allSettled(pending.map(async ([source, { url, parse }]) => {
+    const previous = cache[source]
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (previous?.etag) headers['If-None-Match'] = previous.etag
+    if (previous?.lastModified) headers['If-Modified-Since'] = previous.lastModified
+    const response = await fetch(url, headers)
+    const models = response.status === 304 && previous
+      ? previous.models
+      : response.status === 200 ? parse(JSON.parse(response.text)) : null
+    if (!models || !Object.keys(models).length) return null
+    const entry: PriceCacheEntry = {
+      models,
+      fetchedAt: Date.now(),
+      etag: response.headers.etag ?? (response.status === 304 ? previous?.etag : undefined),
+      lastModified: response.headers['last-modified'] ?? (response.status === 304 ? previous?.lastModified : undefined)
+    }
+    return [source, entry] as const
+  }))
+  const results = updated.flatMap((r) => r.status === 'fulfilled' && r.value ? [r.value] : [])
+  return results.length ? { ...cache, ...Object.fromEntries(results) } : cache
 }
 
 /** The long-context tier applies to a request whose prompt (input incl. cache) exceeds the threshold. */

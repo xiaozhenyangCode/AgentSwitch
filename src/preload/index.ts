@@ -145,6 +145,7 @@ const api = {
     get: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageGet),
     /** probe=true sends one tiny haiku message per claude account to pull fresh quota (uses quota). */
     refresh: (probe = false): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageRefresh, probe),
+    syncPrices: (): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSyncPrices),
     setPrice: (model: string, rate: PriceRate | null): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSetPrice, model, rate),
     onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb),
     requestLogs: (query?: RequestLogQuery): Promise<RequestLogPage> => ipcRenderer.invoke(IPC.requestLogsQuery, query),

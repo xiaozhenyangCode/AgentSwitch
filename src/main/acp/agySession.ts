@@ -4,16 +4,17 @@ import { open } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve, sep } from 'node:path'
 import { cleanTitle } from '@shared/markers'
 import { formatInlineCodePath } from '@shared/fileReferences'
-import { joinSpec, splitSpec } from '@shared/modelSpec'
+import { cleanModelName, joinSpec, splitSpec } from '@shared/modelSpec'
 import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption, Usage } from '@shared/types'
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
 import { prepareAdapterPrompt, promptIncludesPath } from '../attachmentInline'
 import { t } from '../i18n'
+import { resolveRunModel } from '../models'
 import { isThreadHistoryToolName, threadTools } from '../threadHistoryTools'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
 import { JsonRpcError } from './jsonrpc'
-import { agyOutcomeReader, readAgyConversationTitle } from './agyOutcome'
+import { agyOutcomeReader, readAgyConversationTitle, readAgyGenerationCheckpoint, readAgyLatestModel } from './agyOutcome'
 import { agyAcpPool, type AcpConnection, type AcpFields } from './pool'
 import { cancelledPermission, permissions, PERMISSION_TIMEOUT, type PermissionReply } from './permissions'
 import { sanitize } from './stderr'
@@ -290,10 +291,10 @@ function optionValues(option: AcpFields | undefined): string[] {
     .flatMap((entry) => typeof entry?.value === 'string' ? [entry.value] : [])
 }
 
-function modelOf(options: AcpFields[], fallback: string | null): string | null {
-  const model = options.find((option) => option?.id === 'model')?.currentValue
+function modelOf(options: AcpFields[]): string | null {
+  const model = cleanModelName(options.find((option) => option?.id === 'model' || option?.category === 'model')?.currentValue)
   const effort = options.find((option) => option?.category === 'thought_level')?.currentValue
-  return typeof model === 'string' ? joinSpec(model, typeof effort === 'string' ? effort : null) : fallback
+  return joinSpec(model, cleanModelName(effort))
 }
 
 function retainedOptions(config: AcpFields): AcpFields[] {
@@ -306,7 +307,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
   let prompting = false
   let connection: AcpConnection | undefined
   let sessionId = spec.resume
-  let model = spec.model
+  let model = resolveRunModel(spec.cfg, null, spec.model)
   let cancelTimer: NodeJS.Timeout | undefined
   let cancelPermissions: (() => void) | undefined
   let finishPrompt: (() => void) | undefined
@@ -377,7 +378,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       writes.push('thought_level')
       await setOption(effortOption, picked.effort)
     }
-    model = modelOf(session.options, model)
+    model = resolveRunModel(spec.cfg, modelOf(session.options), spec.model)
     return writes
   }
 
@@ -436,8 +437,13 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       })
     }
 
+    let updateModel: string | null = null
     const unwatch = conn.watch(id, {
-      update: (update) => { if (prompting) events.update(update) },
+      update: (update) => {
+        if (!prompting) return
+        updateModel = cleanModelName(update.model) ?? cleanModelName(update.usage?.model) ?? updateModel
+        events.update(update)
+      },
       permission
     })
     const cleanup = (): void => {
@@ -462,6 +468,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
 
       const reader = agyOutcomeReader(spec.cfg, id, log, conn.home)
       const start = reader.checkpoint()
+      const generationStart = readAgyGenerationCheckpoint(spec.cfg, id, conn.home)
       if (stopped) return result(false)
       const promptAt = Date.now()
       const previousPromptAt = session.lastPromptAt
@@ -471,7 +478,8 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       prompting = false
       const endedAt = Date.now()
       session.lastPromptAt = endedAt
-      model = modelOf(session.options, model)
+      model = resolveRunModel(spec.cfg, cleanModelName(response?.model) ?? cleanModelName(response?.usage?.model)
+        ?? updateModel ?? modelOf(session.options) ?? readAgyLatestModel(spec.cfg, id, conn.home, generationStart), spec.model)
       if (response?.usage && cacheDebugEnabled()) {
         const prefix = agyPrefixHash(session.system, hasThreadHistory)
         const system = appendSystem ? 'append' : 'inline'
@@ -493,7 +501,7 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       if (response?.usage) {
         emit({
           t: 'request_usage',
-          model: model || spec.cfg.defaultModel || null,
+          model,
           usage: normalizeAcpUsage(response.usage),
           startedAt: promptAt,
           firstTokenAt: events.firstTokenAt(),

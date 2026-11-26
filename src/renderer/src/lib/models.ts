@@ -48,4 +48,5 @@ const DEFAULT_HINT_KEY: Record<ProfileKind, 'model.followClaude' | 'model.follow
   reasonix: 'model.followReasonix'
 }
 
-export const defaultHint = (kind: ProfileKind): string => t(DEFAULT_HINT_KEY[kind])
+export const defaultHint = (kind: ProfileKind, model?: string): string =>
+  model ? `${t(DEFAULT_HINT_KEY[kind])} · ${model}` : t(DEFAULT_HINT_KEY[kind])

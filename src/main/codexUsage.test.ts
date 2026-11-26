@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { net } from 'electron'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -41,6 +42,7 @@ vi.mock('./profiles', async (importOriginal) => {
   }
 })
 
+import { getEffectiveDefaultModel, listModels, resolveEffectiveDefaultModel, resolveRunModel } from './models'
 import { codexAdapter, codexDefaultModel, readCodexConfig, resolveCodexFallbackModel, type RunSpec } from './agentRunner'
 
 const tables = {
@@ -80,6 +82,8 @@ function makeRunSpec(cfg: ProfileConfig, model: string | null = null): RunSpec {
 
 afterEach(() => {
   mockProfiles.length = 0
+  vi.unstubAllEnvs()
+  vi.mocked(net.fetch).mockReset()
   while (dirs.length > 1) {
     const dir = dirs.pop()!
     rmSync(dir, { recursive: true, force: true })
@@ -231,5 +235,133 @@ describe('historical codex unknown-model usage fallback in snapshot', () => {
     usage.recordRun('codex-legacy', null, { input: 100_000, output: 50_000, cacheRead: 0 })
     const snap2 = usage.snapshot()
     expect(snap2.models['gpt-5.3-codex:high']).toMatchObject({ key: 'gpt-5.3-codex', source: 'litellm' })
+  })
+})
+
+describe('Codex rollout model IDs', () => {
+  const timestamp = new Date().toISOString()
+  const context = (model: string, time = timestamp) => ({ type: 'turn_context', timestamp: time, payload: { model } })
+  const count = (input: number) => ({
+    type: 'event_msg', timestamp, payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: input, output_tokens: input / 10 }
+    } }
+  })
+
+  it('reads the latest current-turn model when a resumed stream omits it', () => {
+    const cfg = makeCodexProfile({ defaultModel: 'saved-selection' })
+    const session = 'fixture-resume'
+    const dir = join(cfg.configDir, 'sessions/2026/11/26')
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, `rollout-${session}.jsonl`)
+    const old = context('old-model', new Date(Date.parse(timestamp) - 60_000).toISOString())
+    writeFileSync(file, JSON.stringify(old) + '\n')
+    const adapter = codexAdapter({ ...makeRunSpec(cfg), resume: session }, cfg.configDir, Date.parse(timestamp))
+    writeFileSync(file, [old, context('openai/new-codex-id'), { type: 'message', text: 'x'.repeat(180_000) }].map((d) => JSON.stringify(d)).join('\n'))
+    const emit = vi.fn()
+    adapter.onLine({ type: 'turn.completed', usage: { input_tokens: 150, output_tokens: 15 } }, emit)
+    expect(adapter.model()).toBe('openai/new-codex-id')
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'request_usage', model: 'openai/new-codex-id' }))
+  })
+
+  it('attributes leading token counts to the first turn model and uses session metadata if needed', async () => {
+    const { codexFileDays } = await import('./usage')
+    const file = join(tempDir('codex-file-days-'), 'rollout.jsonl')
+    const write = (...events: object[]) => writeFileSync(file, events.map((d) => JSON.stringify(d)).join('\n'))
+    const meta = { type: 'session_meta', timestamp, payload: { model: 'session-default' } }
+    write(meta, count(100), context('first-turn'), count(250), context('second-turn'), count(300))
+    expect(Object.values(await codexFileDays(file, 0, 0))[0]).toMatchObject({
+      'first-turn': { input: 250, output: 25 }, 'second-turn': { input: 50, output: 5 }
+    })
+    write(meta, count(100))
+    expect(Object.values(await codexFileDays(file, 0, 0))[0]).toMatchObject({ 'session-default': { input: 100 } })
+  })
+})
+
+describe('effective CLI default models', () => {
+  it('reads Claude env, user settings, catalog default and custom API-key defaults', () => {
+    const cfg = makeCodexProfile({ kind: 'claude', id: 'claude-default-test' })
+    const catalog = join(cfg.configDir, 'cache/model-catalog')
+    mkdirSync(catalog, { recursive: true })
+    writeFileSync(join(catalog, 'fixture-cc.json'), JSON.stringify({
+      fetchedAt: 1,
+      catalog: { config: { defaultModel: 'claude-future', models: [{ section: 'main', id: 'claude-future' }] } }
+    }))
+    expect(resolveEffectiveDefaultModel(cfg)).toBe('claude-future')
+    writeFileSync(join(cfg.configDir, 'settings.json'), JSON.stringify({ model: 'claude-settings' }))
+    expect(resolveEffectiveDefaultModel(cfg)).toBe('claude-settings')
+    const env = { ...cfg, extraEnv: { ANTHROPIC_MODEL: 'env-model' } }
+    expect(resolveEffectiveDefaultModel(env)).toBe('env-model')
+    expect(resolveEffectiveDefaultModel({ ...env, apiKey: { provider: 'custom', models: ['custom-model'] } })).toBe('custom-model')
+    expect(resolveRunModel(env, 'custom-provider/Runtime-New:variant', 'explicit-model')).toBe('custom-provider/Runtime-New:variant')
+  })
+
+  it('uses the Codex catalog priority and refreshes cached TOML model and effort', async () => {
+    const cfg = makeCodexProfile({ id: 'codex-default-fixture' })
+    mockProfiles.push(cfg)
+    writeFileSync(join(cfg.configDir, 'models_cache.json'), JSON.stringify({ models: [
+      { slug: 'later-model', visibility: 'list', priority: 4 },
+      { slug: 'catalog-first', visibility: 'list', priority: 1 }
+    ] }))
+    expect((await listModels(cfg.id)).defaultModel).toBe('catalog-first')
+    writeFileSync(join(cfg.configDir, 'config.toml'), 'model = "configured-next"\nmodel_reasoning_effort = "high"\n')
+    expect(getEffectiveDefaultModel(cfg.id)).toBe('catalog-first')
+    expect((await listModels(cfg.id, true)).defaultModel).toBe('configured-next:high')
+    expect(getEffectiveDefaultModel(cfg.id)).toBe('configured-next:high')
+  })
+
+  it('reads the most specific agy settings and falls back to the model catalog', async () => {
+    const cfg = makeCodexProfile({ kind: 'gemini', id: 'gemini-default-fixture' })
+    mockProfiles.push(cfg)
+    const gemini = join(cfg.configDir, '.gemini')
+    mkdirSync(join(gemini, 'antigravity-cli'), { recursive: true })
+    expect(resolveEffectiveDefaultModel(cfg, [{ id: 'gemini-future', label: 'Future', group: 'main', defaultEffort: 'medium' }])).toBe('gemini-future-medium')
+    writeFileSync(join(gemini, 'settings.json'), JSON.stringify({ model: 'gemini-older' }))
+    writeFileSync(join(gemini, 'antigravity-cli/settings.json'), JSON.stringify({ selectedModel: 'gemini-3.8-flash-tiered' }))
+    expect((await listModels(cfg.id)).defaultModel).toBe('gemini-3.8-flash-tiered')
+  })
+})
+
+describe('price sync integration', () => {
+  it('recalculates model and account costs, persists results, and preserves custom prices offline', async () => {
+    state.userDataDir = tempDir('agentswitch-sync-prices-')
+    const cfg = makeCodexProfile({ id: 'codex-price-sync' })
+    mockProfiles.push(cfg)
+    for (const key of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'all_proxy', 'ALL_PROXY']) vi.stubEnv(key, undefined)
+    vi.resetModules()
+    const usage = await import('./usage')
+    const listener = vi.fn()
+    usage.onUsageChange(listener)
+    const model = 'custom-provider/Not-Listed-Yet'
+    const edit = 'model-with-custom-price'
+    usage.recordRun(cfg.id, model, { input: 1_000_000 })
+    usage.recordRun(cfg.id, edit, { input: 1_000_000 })
+    usage.setCustomPrice(edit, { input: 8, output: 13 })
+    expect(usage.snapshot().models[model]).toMatchObject({ source: null, key: null })
+    vi.mocked(net.fetch).mockImplementation(async (url) => {
+      if (String(url).includes('openrouter.ai')) throw new Error('offline')
+      const data = String(url).includes('models.dev')
+        ? { provider: { models: { 'not-listed-yet': { cost: { input: 2, output: 3 } } } } }
+        : { [edit]: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000001 } }
+      return new Response(JSON.stringify(data), { headers: { ETag: '"fixture-v1"' } })
+    })
+    const synced = await usage.syncPrices(true)
+    expect(synced.pricesSources).toEqual(['litellm', 'modelsdev'])
+    expect(synced.pricesSyncedAt).toBeGreaterThan(0)
+    expect(synced.models[model]).toMatchObject({ source: 'modelsdev', key: 'not-listed-yet' })
+    expect(synced.models[edit]).toMatchObject({ source: 'custom', rate: { input: 8 } })
+    expect(synced.accounts[cfg.id].total.costUsd).toBe(10)
+    expect(listener).toHaveBeenCalledWith(synced)
+    expect(JSON.parse(readFileSync(join(state.userDataDir, 'prices-cache.v2.json'), 'utf8')).modelsdev.etag).toBe('"fixture-v1"')
+    vi.mocked(net.fetch).mockRejectedValue(new Error('offline'))
+    const offline = await usage.syncPrices(true)
+    expect(offline.pricesSyncedAt).toBe(synced.pricesSyncedAt)
+    expect(offline.accounts[cfg.id].total.costUsd).toBe(10)
+
+    vi.resetModules()
+    const restarted = await import('./usage')
+    const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
+    expect(restarted.priceForRequest(model, tokens).costUsd).toBe(2)
+    expect(restarted.priceForRequest(edit, tokens).costUsd).toBe(8)
+    expect(restarted.snapshot().pricesSyncedAt).toBe(synced.pricesSyncedAt)
   })
 })

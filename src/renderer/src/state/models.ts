@@ -5,7 +5,7 @@ import { EFFORT_SUFFIX_RE } from '@shared/modelSpec'
 /** Per-account sub-model lists fetched from the main process (catalog / CLI / cache / static). */
 
 const lists = new Map<ProfileId, ModelList>()
-const loading = new Set<ProfileId>()
+const loading = new Map<ProfileId, Promise<ModelList | null>>()
 const listeners = new Set<() => void>()
 let version = 0
 const notify = () => {
@@ -13,20 +13,20 @@ const notify = () => {
   listeners.forEach((l) => l())
 }
 
-export async function loadModels(id: ProfileId, refresh = false): Promise<ModelList | null> {
-  if (loading.has(id)) return lists.get(id) ?? null
-  loading.add(id)
-  notify()
-  try {
-    const l = await window.agentswitch.models.list(id, refresh)
-    lists.set(id, l)
-    return l
-  } catch {
-    return null
-  } finally {
+export function loadModels(id: ProfileId, refresh = false): Promise<ModelList | null> {
+  const pending = loading.get(id)
+  if (pending && !refresh) return pending
+  const request = window.agentswitch.models.list(id, refresh).then((list) => {
+    if (loading.get(id) === request) lists.set(id, list)
+    return list
+  }).catch(() => null).finally(() => {
+    if (loading.get(id) !== request) return
     loading.delete(id)
     notify()
-  }
+  })
+  loading.set(id, request)
+  notify()
+  return request
 }
 
 export function useModels(id: ProfileId | null | undefined): { list: ModelList | null; loading: boolean; refresh: () => void } {

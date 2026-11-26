@@ -183,6 +183,18 @@ describe('requestLog SQLite persistence, pagination, filtering & pruning', () =>
     rmSync(tempDir, { recursive: true, force: true })
   })
 
+  it('persists unlisted model IDs and leaves their costs unset', () => {
+    const profile = { accountId: 'agy-1', accountName: 'agy', engineKind: 'gemini', provider: 'Google', statusCode: 200 } as const
+    const model = 'new-provider/Gemini-Next-v9-special'
+    const entry = recordRequestLog({ ...profile, model, uncachedInputTokens: 100, outputTokens: 5 })
+    expect(entry).toMatchObject({ model, costUsd: null })
+    recordRequestLog({ ...profile, model: 'unknown' })
+    const page = queryRequestLogs()
+    expect(page.entries.map((row) => row.model)).toEqual(['', model])
+    expect(page.availableModels).toEqual([model])
+    expect(page.counts.models).toBe(1)
+  })
+
   it('persists entries, filters by status/engine/model, and paginates newest-first', () => {
     const baseTs = Date.now() - 10_000
     const statuses = [200, 429, 401, 499, 500] as const
@@ -278,6 +290,19 @@ describe('requestLog SQLite persistence, pagination, filtering & pruning', () =>
     const res = queryRequestLogs({ limit: 10 })
     expect(res.total).toBe(3)
     expect(res.entries.map((e) => e.id)).toEqual(['fresh-4', 'fresh-3', 'fresh-2'])
+  })
+
+  it('lets a Claude result name a request that omitted its model on the stream', () => {
+    const cfg: ProfileConfig = {
+      id: 'claude-fixture', name: 'Claude', kind: 'claude', configDir: tmpdir(), imported: false,
+      loginCommand: 'claude', runCommand: 'claude', extraEnv: {}, defaultModel: '', autoApprove: 'edits', createdAt: 0
+    }
+    const adapter = claudeAdapter({ cfg, model: 'configured-model', system: null, prompt: 'Hi', cwd: tmpdir(), outDir: tmpdir(), images: [], resume: null })
+    const emit = vi.fn()
+    adapter.onLine({ type: 'stream_event', event: { type: 'message_start', message: { id: 'one', usage: { input_tokens: 20 } } } }, emit)
+    adapter.onLine({ type: 'stream_event', event: { type: 'message_stop' } }, emit)
+    adapter.onLine({ type: 'result', subtype: 'success', modelUsage: { 'provider/brand-new-model': {} } }, emit)
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ t: 'request_usage', model: 'provider/brand-new-model' }))
   })
 
   it('claudeAdapter emits one request_usage per LLM round-trip with growing cache hits', () => {

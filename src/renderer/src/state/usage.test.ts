@@ -130,6 +130,7 @@ describe('account quota card list and rate-limit state', () => {
       customPrices: {},
       pricesAt: '2026-11-25',
       pricesLive: false,
+      pricesSyncedAt: null,
       updatedAt: now
     }
 

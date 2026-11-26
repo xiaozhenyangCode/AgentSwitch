@@ -5,15 +5,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaErrorKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
-import { codexDefaultModel, isUnknownModelName, readCodexConfig, resolveCodexFallbackModel, runAgent } from './agentRunner'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, OnlinePriceSource, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaErrorKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import { codexRolloutEventModel, runAgent } from './agentRunner'
+import { codexConfigDir, codexDefaultModel, readCodexConfig, resolveRunModel } from './models'
+import { cleanModelName } from '@shared/modelSpec'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
-import { cleanRate, costOf, findRate, isLong, parseLiteLLM, type Match, type PriceTable, type PriceTables } from './pricing'
+import { cleanRate, costOf, findRate, isLong, mergePriceTables, parseLiteLLM, PRICE_SOURCES, refreshPriceCache, type Match, type PriceCache, type PriceCacheEntry, type PriceFetch, type PriceTable, type PriceTables } from './pricing'
 import { claudeSessionLog } from './usageDelta'
 import { buildSpawnSpec, expandHome, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
-import { realHome } from './shellEnv'
+import { getBaseEnv, realHome } from './shellEnv'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
@@ -29,7 +31,7 @@ import { nativeSessionEntries, type NativeSessions } from './historyResume'
  * Tokens are kept per day and model; cost is computed when the snapshot is built, at the vendors'
  * API list prices (see pricing.ts), so a newer price table re-prices all history.
  *
- * Stats: userData/usage-stats.json · quota: userData/quota-cache.json · prices: userData/prices-litellm.json.
+ * Stats: userData/usage-stats.json · quota: userData/quota-cache.json · prices: userData/prices-cache.v2.json.
  */
 
 const CLAUDE_DAYS = 30
@@ -44,6 +46,7 @@ interface FileEntry {
   size: number
   profileId: ProfileId
   days: Days
+  modelAttribution?: number
 }
 interface Stats {
   /**
@@ -63,7 +66,8 @@ interface Stats {
 
 const statsFile = (): string => join(app.getPath('userData'), 'usage-stats.json')
 const quotaFile = (): string => join(app.getPath('userData'), 'quota-cache.json')
-const pricesFile = (): string => join(app.getPath('userData'), 'prices-litellm.json')
+const pricesFile = (): string => join(app.getPath('userData'), 'prices-cache.v2.json')
+const legacyPricesFile = (): string => join(app.getPath('userData'), 'prices-litellm.json')
 const customPricesFile = (): string => join(app.getPath('userData'), 'prices-custom.json')
 
 const zero = (): Bucket => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, runs: 0 })
@@ -86,7 +90,6 @@ const tokensOf = (b: Partial<Bucket>): number => n(b.input) + n(b.output) + n(b.
 
 // ---- prices -----------------------------------------------------------------------------------------
 
-const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const PRICES_TTL = DAY
 
 const ccswitch: PriceTable = {}
@@ -94,17 +97,17 @@ for (const [k, v] of Object.entries(builtinPrices.ccswitch)) {
   const r = cleanRate(v)
   if (r) ccswitch[k] = r
 }
-/** LiteLLM's table as last fetched (null: never; the built-in snapshot applies). */
-let live: { fetchedAt: number; models: PriceTable } | null = loadLive()
-let customPrices: PriceTable = loadCustomPrices()
-let tables: PriceTables = { custom: customPrices, litellm: { ...parseLiteLLM(builtinPrices.litellm), ...(live?.models ?? {}) }, ccswitch }
+let live = loadPriceCache()
+const customPrices = loadCustomPrices()
+const mergedPrices = (cache: PriceCache) => mergePriceTables(Object.fromEntries(Object.entries(cache).map(([key, entry]) => [key, entry.models])))
+const tables: PriceTables = { custom: customPrices, online: mergedPrices(live), litellm: parseLiteLLM(builtinPrices.litellm), ccswitch }
 const matches = new Map<string, Match | null>()
 
 function loadCustomPrices(): PriceTable {
   try {
     const j = JSON.parse(readFileSync(customPricesFile(), 'utf8'))
-    if (!j || typeof j !== 'object' || Array.isArray(j)) return {}
-    const out: PriceTable = {}
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return Object.create(null)
+    const out: PriceTable = Object.create(null)
     for (const [k, v] of Object.entries(j as Record<string, unknown>)) {
       const key = k.trim().toLowerCase()
       const r = cleanRate(v)
@@ -112,7 +115,7 @@ function loadCustomPrices(): PriceTable {
     }
     return out
   } catch {
-    return {}
+    return Object.create(null)
   }
 }
 
@@ -135,7 +138,6 @@ export function setCustomPrice(model: string, rate: PriceRate | null): UsageSnap
     if (!cleaned) throw new Error('Invalid price rate')
     customPrices[key] = cleaned
   }
-  tables = { ...tables, custom: customPrices }
   matches.clear()
   saveCustomPrices()
   const snap = snapshot()
@@ -143,45 +145,103 @@ export function setCustomPrice(model: string, rate: PriceRate | null): UsageSnap
   return snap
 }
 
-function loadLive(): { fetchedAt: number; models: PriceTable } | null {
+function readCachedPrices(value: any): PriceCacheEntry | null {
+  if (!Number.isFinite(value?.fetchedAt) || !value.models || typeof value.models !== 'object') return null
+  const models: PriceTable = Object.create(null)
+  for (const [key, raw] of Object.entries(value.models)) {
+    const rate = cleanRate(raw)
+    if (rate) models[key] = rate
+  }
+  return Object.keys(models).length ? {
+    models,
+    fetchedAt: value.fetchedAt,
+    etag: typeof value.etag === 'string' ? value.etag : undefined,
+    lastModified: typeof value.lastModified === 'string' ? value.lastModified : undefined
+  } : null
+}
+
+function loadPriceCache(): PriceCache {
   try {
-    const j = JSON.parse(readFileSync(pricesFile(), 'utf8'))
-    if (typeof j?.fetchedAt !== 'number' || !j.models) return null
-    const models: PriceTable = {}
-    for (const [k, v] of Object.entries(j.models)) {
-      const r = cleanRate(v)
-      if (r) models[k] = r
+    const raw = JSON.parse(readFileSync(pricesFile(), 'utf8'))
+    const cache: PriceCache = {}
+    for (const key of Object.keys(PRICE_SOURCES) as OnlinePriceSource[]) {
+      const entry = readCachedPrices(raw?.[key])
+      if (entry) cache[key] = entry
     }
-    return { fetchedAt: j.fetchedAt, models }
+    if (Object.keys(cache).length) return cache
   } catch {
-    return null
+    // Older installations may have a LiteLLM-only cache.
+  }
+  try {
+    const entry = readCachedPrices(JSON.parse(readFileSync(legacyPricesFile(), 'utf8')))
+    return entry ? { litellm: entry } : {}
+  } catch {
+    return {}
   }
 }
 
-let pricesPending: Promise<void> | null = null
+let pricesPending: { request: Promise<UsageSnapshot>; force: boolean } | null = null
 
-/** Fetches LiteLLM's table once a day (t3code does the same); failures keep the last table. */
-function refreshPrices(): Promise<void> {
-  if (pricesPending || (live && Date.now() - live.fetchedAt < PRICES_TTL)) return pricesPending ?? Promise.resolve()
-  pricesPending = (async () => {
-    try {
-      const res = await net.fetch(LITELLM_URL, { headers: { Accept: 'application/json' } })
-      if (!res.ok) return
-      const models = parseLiteLLM(await res.json())
-      if (Object.keys(models).length < 50) return // not the table we expect
-      live = { fetchedAt: Date.now(), models }
-      tables = { custom: customPrices, litellm: { ...parseLiteLLM(builtinPrices.litellm), ...models }, ccswitch }
+export function syncPrices(force = false): Promise<UsageSnapshot> {
+  if (pricesPending) {
+    return !force || pricesPending.force ? pricesPending.request : pricesPending.request.then(() => syncPrices(true))
+  }
+  const request = refreshPriceCache(live, fetchPriceJson, PRICES_TTL, force).then((cache) => {
+    const updated = cache !== live
+    if (updated) {
+      live = cache
+      tables.online = mergedPrices(cache)
       matches.clear()
-      mkdirSync(app.getPath('userData'), { recursive: true })
-      writeFileSync(pricesFile(), JSON.stringify(live))
-      changed()
-    } catch {
-      /* offline: keep the last table */
-    } finally {
-      pricesPending = null
+      try {
+        const file = pricesFile()
+        mkdirSync(app.getPath('userData'), { recursive: true })
+        const tmp = `${file}.${process.pid}.tmp`
+        writeFileSync(tmp, JSON.stringify(cache), 'utf8')
+        renameSync(tmp, file)
+      } catch {
+        // The online prices also remain available in memory.
+      }
     }
-  })()
-  return pricesPending
+    const result = snapshot()
+    if (updated) listener?.(result)
+    return result
+  }).finally(() => { pricesPending = null })
+  pricesPending = { request, force }
+  return request
+}
+
+const fetchPriceJson: PriceFetch = async (url, headers) => {
+  let env: NodeJS.ProcessEnv = { ...process.env }
+  try {
+    env = { ...getBaseEnv(), ...env }
+  } catch {
+    // Login-shell environment may still be initializing.
+  }
+  const proxy = env.https_proxy || env.HTTPS_PROXY || env.http_proxy || env.HTTP_PROXY || env.all_proxy || env.ALL_PROXY
+  if (proxy) {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '--disable', '--silent', '--show-error', '--max-time', '8', '--compressed', '--dump-header', '-',
+        ...Object.entries(headers).flatMap(([key, value]) => ['--header', `${key}: ${value}`]), url
+      ]
+      const curl = process.platform === 'win32' ? 'curl.exe' : '/usr/bin/curl'
+      execFile(curl, args, { env: { ...env, https_proxy: proxy }, timeout: 8000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout) => {
+        if (error) return reject(error)
+        // curl can print a proxy CONNECT response before the origin response.
+        let remaining = stdout
+        let block: RegExpExecArray | null
+        let response: { status: number; headers: Record<string, string> } | null = null
+        while ((block = /^HTTP\/\S+ (\d{3})[\s\S]*?\r?\n\r?\n/.exec(remaining))) {
+          response = { status: Number(block[1]), headers: parseCurlHeaderBlock(block[0]) }
+          remaining = remaining.slice(block[0].length)
+        }
+        if (!response) return reject(new Error('Missing price response headers'))
+        resolve({ ...response, text: remaining })
+      })
+    })
+  }
+  const response = await net.fetch(url, { headers, signal: AbortSignal.timeout(8000), credentials: 'omit', cache: 'no-store' })
+  return { status: response.status, text: await response.text(), headers: Object.fromEntries(response.headers) }
 }
 
 function priceOf(model: string): Match | null {
@@ -189,13 +249,13 @@ function priceOf(model: string): Match | null {
   return matches.get(model) ?? null
 }
 
-/** Computes USD cost for a single request using the active price tables (custom > LiteLLM > built-in). */
+/** Computes USD cost for a single request using the active custom, cached and built-in price tables. */
 export function priceForRequest(
   model: string | null | undefined,
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h?: number },
   fallbackCostUsd?: number | null
 ): { model: string; costUsd: number | null } {
-  const m = (model ?? '').trim()
+  const m = cleanModelName(model) ?? ''
   const hit = m ? priceOf(m) : null
   if (hit) {
     const prompt = n(tokens.input) + n(tokens.cacheRead) + n(tokens.cacheWrite)
@@ -208,7 +268,7 @@ export function priceForRequest(
 
 /** Bucket key of a request (or run) of `model` whose prompt was `prompt` tokens. */
 function modelKey(model: string | null | undefined, prompt: number): string {
-  const m = (model ?? '').trim()
+  const m = cleanModelName(model) ?? ''
   return isLong(priceOf(m)?.rate, prompt) ? `${m}|long` : m
 }
 
@@ -518,14 +578,14 @@ export function snapshot(): UsageSnapshot {
     if (codexAccountRateCache.has(c.id)) return codexAccountRateCache.get(c.id) ?? null
     const candidatesList = [
       c.defaultModel,
-      readCodexConfig(expandHome(c.configDir)).model,
+      readCodexConfig(codexConfigDir(c)).model,
       usedMost.get('codex')?.key,
       codexDefaultModel()
     ]
     let matched: (Match & { estimate: true }) | null = null
     for (const candidate of candidatesList) {
-      if (!candidate || isUnknownModelName(candidate)) continue
-      const hit = priceOf(candidate)
+      if (!cleanModelName(candidate)) continue
+      const hit = candidate ? priceOf(candidate) : null
       if (hit) {
         matched = { ...hit, estimate: true }
         break
@@ -534,10 +594,10 @@ export function snapshot(): UsageSnapshot {
     codexAccountRateCache.set(c.id, matched)
     return matched
   }
-  const models: Record<string, ModelPrice> = {}
+  const models: Record<string, ModelPrice> = Object.create(null)
   const recordModelPrice = (displayModel: string, m: (Match & { estimate?: boolean }) | null): void => {
     if (models[displayModel]) return
-    const def = m?.source === 'custom' ? findRate(displayModel, { litellm: tables.litellm, ccswitch: tables.ccswitch }) : null
+    const def = m?.source === 'custom' ? findRate(displayModel, { online: tables.online, litellm: tables.litellm, ccswitch: tables.ccswitch }) : null
     models[displayModel] = {
       key: m?.key ?? null,
       source: m?.estimate ? 'estimate' : (m?.source ?? null),
@@ -548,9 +608,9 @@ export function snapshot(): UsageSnapshot {
   const priced = (c: ProfileConfig, key: string, b: Bucket): { bucket: Bucket; model: string } => {
     const rawModel = modelOf(key)
     const long = rawModel !== key
-    if (c.kind === 'codex' && (isUnknownModelName(rawModel) || rawModel === unrecorded('codex'))) {
+    if (c.kind === 'codex' && (!cleanModelName(rawModel) || rawModel === unrecorded('codex'))) {
       const m = (rawModel.startsWith(UNRECORDED) ? priceOf(rawModel) : null) ?? codexFallbackRateFor(c)
-      const displayModel = m ? unrecorded('codex') : rawModel
+      const displayModel = unrecorded('codex')
       recordModelPrice(displayModel, m)
       return {
         model: displayModel,
@@ -590,6 +650,8 @@ export function snapshot(): UsageSnapshot {
         }
     accounts[c.id] = a
   }
+  const pricesSources = Object.keys(live) as OnlinePriceSource[]
+  const pricesSyncedAt = pricesSources.length ? Math.max(...Object.values(live).map((entry) => entry.fetchedAt)) : null
   return {
     accounts,
     backfill,
@@ -597,8 +659,10 @@ export function snapshot(): UsageSnapshot {
     daily: [...daily.values()].filter((d) => tokensOf(d) > 0 || d.runs > 0),
     models,
     customPrices: { ...customPrices },
-    pricesAt: live ? dayKey(live.fetchedAt) : builtinPrices.fetchedAt,
-    pricesLive: !!live,
+    pricesAt: pricesSyncedAt === null ? builtinPrices.fetchedAt : dayKey(pricesSyncedAt),
+    pricesLive: pricesSyncedAt !== null,
+    pricesSyncedAt,
+    pricesSources,
     updatedAt: Date.now()
   }
 }
@@ -611,13 +675,7 @@ export function snapshot(): UsageSnapshot {
  */
 export function recordRun(profileId: ProfileId, model: string | null, u: Usage | null): void {
   migrate()
-  let effectiveModel = model
-  if (isUnknownModelName(effectiveModel) && hasProfile(profileId)) {
-    const cfg = getConfig(profileId)
-    if (cfg.kind === 'codex') {
-      effectiveModel = resolveCodexFallbackModel({ defaultModel: cfg.defaultModel, codexHome: expandHome(cfg.configDir) })
-    }
-  }
+  const effectiveModel = cleanModelName(model) ?? (hasProfile(profileId) ? resolveRunModel(getConfig(profileId)) : null)
   const days = (stats.runs[profileId] ??= {})
   put(days, Date.now(), modelKey(effectiveModel, n(u?.context)), { ...(u ?? {}), runs: 1 })
   changed()
@@ -1195,41 +1253,46 @@ async function claudeFileDays(path: string, since: number, cut: number): Promise
   return days
 }
 
-async function codexFileDays(path: string, since: number, cut: number): Promise<Days> {
-  // token_count carries running totals: attribute each increase to its day and the turn's model
+export async function codexFileDays(path: string, since: number, cut: number): Promise<Days> {
+  // token_count carries running totals: attribute each increase to its day and the turn's model.
   const days: Days = {}
   let prev: any = null
-  let model = ''
+  let model: string | null = null
+  let sessionModel: string | null = null
+  const pending: { ts: number; prompt: number; usage: Partial<Bucket> }[] = []
+  const flush = (fallback: string | null): void => {
+    for (const row of pending.splice(0)) put(days, row.ts, modelKey(fallback, row.prompt), row.usage)
+  }
   const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity })
   for await (const line of rl) {
-    if (line.includes('"turn_context"')) {
-      try {
-        const d = JSON.parse(line)
-        if (d.type === 'turn_context' && d.payload?.model) model = String(d.payload.model)
-      } catch {
-        /* partial line */
-      }
-      continue
-    }
-    if (!line.includes('"token_count"') || !line.includes('"total_token_usage"')) continue
+    if (!line.includes('"turn_context"') && !line.includes('"session_meta"') && !line.includes('"total_token_usage"')) continue
     let d: any
     try {
       d = JSON.parse(line)
     } catch {
       continue
     }
+    if (d.type === 'session_meta') sessionModel = codexRolloutEventModel(d) ?? sessionModel
+    else if (d.type === 'turn_context') {
+      model = codexRolloutEventModel(d) ?? model
+      if (model) flush(model)
+    }
+    if (d.payload?.type !== 'token_count') continue
     const t = d.payload?.info?.total_token_usage
     if (!t) continue
     const ts = toMs(d.timestamp)
     const delta = (k: string): number => Math.max(0, n(t[k]) - n(prev?.[k]))
-    const inc = { input: delta('input_tokens'), cached: delta('cached_input_tokens'), cw: delta('cache_write_input_tokens'), out: delta('output_tokens'), rs: delta('reasoning_output_tokens') }
+    const input = delta('input_tokens')
+    const output = delta('output_tokens')
+    const cached = Math.min(delta('cached_input_tokens'), input)
+    const usage = { input: input - cached, output, cacheRead: cached, cacheWrite: delta('cache_write_input_tokens'), reasoning: delta('reasoning_output_tokens') }
     prev = t
-    if (!inWindow(ts, since, cut)) continue
-    if (!inc.input && !inc.out) continue
+    if (!inWindow(ts, since, cut) || (!input && !output)) continue
     const prompt = n(d.payload.info.last_token_usage?.input_tokens)
-    const cached = Math.min(inc.cached, inc.input)
-    put(days, ts, modelKey(model, prompt), { input: inc.input - cached, cacheRead: cached, cacheWrite: inc.cw, output: inc.out, reasoning: inc.rs })
+    if (model) put(days, ts, modelKey(model, prompt), usage)
+    else pending.push({ ts, prompt, usage })
   }
+  flush(sessionModel)
   return days
 }
 
@@ -1323,9 +1386,17 @@ function ownSessionFiles(): { path: string; profileId: ProfileId; kind: string; 
   return [...out.values()]
 }
 
+const CODEX_MODEL_ATTRIBUTION = 1
+const needsCodexAttribution = (entry: FileEntry): boolean =>
+  entry.modelAttribution !== CODEX_MODEL_ATTRIBUTION
+  && Object.values(entry.days).some((models) => Object.keys(models).some((model) => !cleanModelName(model) || model === unrecorded('codex')))
+
 async function readLegacy(): Promise<void> {
+  const alreadyDone = stats.legacyDone
   const since30 = Date.now() - CLAUDE_DAYS * DAY
   for (const f of ownSessionFiles()) {
+    const previous = stats.legacy[f.path]
+    if (alreadyDone && (f.kind !== 'codex' || !previous || !needsCodexAttribution(previous))) continue
     try {
       const st = statSync(f.path)
       const days =
@@ -1334,13 +1405,14 @@ async function readLegacy(): Promise<void> {
           : f.kind === 'codex'
             ? await codexFileDays(f.path, f.since, stats.legacyUntil)
             : agyFileDays(f.path, f.since, stats.legacyUntil, st.mtimeMs)
-      stats.legacy[f.path] = { mtime: st.mtimeMs, size: st.size, profileId: f.profileId, days }
+      stats.legacy[f.path] = { mtime: st.mtimeMs, size: st.size, profileId: f.profileId, days, ...(f.kind === 'codex' ? { modelAttribution: CODEX_MODEL_ATTRIBUTION } : {}) }
       changed()
     } catch {
       /* unreadable: skip */
     }
     await new Promise((r) => setImmediate(r))
   }
+  if (alreadyDone) return
   // the logs replace the old run totals of the days they cover (run counts stay)
   const covered = new Set<string>()
   for (const f of Object.values(stats.legacy)) for (const [day, models] of Object.entries(f.days)) if (Object.values(models).some((b) => tokensOf(b) > 0)) covered.add(`${f.profileId}|${day}`)
@@ -1362,7 +1434,7 @@ export function runBackfill(): Promise<void> {
     changed()
     try {
       migrate()
-      if (!stats.legacyDone) await readLegacy()
+      if (!stats.legacyDone || Object.values(stats.legacy).some((f) => f.profileId.startsWith('codex-') && needsCodexAttribution(f))) await readLegacy()
       const entries = listHistory(true)
       const cuts = importedCutoffs()
       const since = Date.now() - CLAUDE_DAYS * DAY
@@ -1392,11 +1464,11 @@ export function runBackfill(): Promise<void> {
         if (e.kind === 'claude' && st.mtimeMs < since) continue
         seen.add(path)
         const prev = stats.files[path]
-        if (prev && prev.mtime === st.mtimeMs && prev.size === st.size && prev.profileId === e.profileId) continue
+        if (prev && prev.mtime === st.mtimeMs && prev.size === st.size && prev.profileId === e.profileId && (e.kind !== 'codex' || !needsCodexAttribution(prev))) continue
         const cut = cuts.get(e.nativeId) ?? 0
         try {
           const days = e.kind === 'claude' ? await claudeFileDays(path, since, cut) : e.kind === 'codex' ? await codexFileDays(path, 0, cut) : agyFileDays(path, 0, cut, e.updatedAt || st.mtimeMs)
-          stats.files[path] = { mtime: st.mtimeMs, size: st.size, profileId: e.profileId, days }
+          stats.files[path] = { mtime: st.mtimeMs, size: st.size, profileId: e.profileId, days, ...(e.kind === 'codex' ? { modelAttribution: CODEX_MODEL_ATTRIBUTION } : {}) }
           changed()
         } catch {
           /* unreadable file: skip */
@@ -1466,7 +1538,8 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
         recordRun(c.id, r.model ?? 'haiku', usage)
       })
   )
-  await Promise.all([codexTask, agyTask, claudeTask, refreshPrices()])
+  void syncPrices()
+  await Promise.all([codexTask, agyTask, claudeTask])
   void runBackfill()
   changed()
   return snapshot()
@@ -1484,7 +1557,7 @@ export function startUsage(): void {
     }
   }, 4000)
   setTimeout(() => void runBackfill(), 8000)
-  setTimeout(() => void refreshPrices(), 10_000)
-  setInterval(() => void refreshPrices(), 6 * 3600_000)
+  setTimeout(() => void syncPrices(), 10_000)
+  setInterval(() => void syncPrices(), 6 * 3600_000)
   setInterval(() => void runBackfill(), 30 * 60_000)
 }
