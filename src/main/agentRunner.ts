@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import type { AgentEvent, AutoApprove, ProfileConfig, QuotaWindow, ResolvedRunAttachment, StepRef, Usage } from '@shared/types'
-import { splitSpec } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
+import { joinSpec, splitSpec } from '@shared/modelSpec'
+import { buildSpawnSpec, expandHome, getConfig, getKindConfig, KIND_DEFAULTS, kindBinaryPath, reasonixManagedProfilePath } from './profiles'
 import { agyModelId } from './models'
 import { t } from './i18n'
 import { isClaudeModelWarning, isInvalidKeyError } from './apiKey'
@@ -480,8 +481,92 @@ function codexContext(codexHome: string, session: string): { context: number; wi
   return null
 }
 
+function cleanModelToken(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || /^unknown$/i.test(trimmed)) return null
+  return trimmed
+}
+
+export function isUnknownModelName(model: string | null | undefined): boolean {
+  return cleanModelToken(model) === null
+}
+
+/** Reads model and reasoning effort from `<codexHome>/config.toml` (honouring active `profile`). */
+export function readCodexConfig(codexHome: string): { model: string | null; effort: string | null } {
+  try {
+    const raw = readFileSync(join(codexHome, 'config.toml'), 'utf8')
+    const doc = parseToml(raw) as Record<string, unknown>
+    const profileName = typeof doc.profile === 'string' ? doc.profile.trim() : ''
+    const profiles = doc.profiles && typeof doc.profiles === 'object' ? (doc.profiles as Record<string, unknown>) : null
+    const activeProfile =
+      profileName && profiles && profiles[profileName] && typeof profiles[profileName] === 'object'
+        ? (profiles[profileName] as Record<string, unknown>)
+        : null
+    const model = cleanModelToken(activeProfile?.model) ?? cleanModelToken(doc.model)
+    const effort =
+      cleanModelToken(activeProfile?.model_reasoning_effort ?? activeProfile?.reasoning_effort) ??
+      cleanModelToken(doc.model_reasoning_effort ?? doc.reasoning_effort)
+    return { model, effort }
+  } catch {
+    return { model: null, effort: null }
+  }
+}
+
+export function codexDefaultModel(): string {
+  const configured = getKindConfig('codex').models.find((m) => !isUnknownModelName(m))
+  return configured ?? KIND_DEFAULTS.codex.models[0] ?? 'gpt-5-codex'
+}
+
+/**
+ * Fallback chain for Codex model name when the event stream omits `model`:
+ * 1. Explicit `--model` for this run or account `defaultModel`
+ * 2. Local `<codexHome>/config.toml` (active profile or top-level `model`)
+ * 3. Codex engine default model
+ * Preserves reasoning effort in `<model>:<effort>` format.
+ */
+export function resolveCodexFallbackModel(input: { model?: string | null; defaultModel?: string | null; codexHome?: string | null }): string {
+  const explicitRaw = cleanModelToken(input.model) ?? cleanModelToken(input.defaultModel)
+  const explicitSpec = splitSpec(explicitRaw, 'codex')
+  const explicitModel = cleanModelToken(explicitSpec.model)
+  const explicitEffort = cleanModelToken(explicitSpec.effort)
+  const cfg = input.codexHome ? readCodexConfig(input.codexHome) : { model: null, effort: null }
+  const cfgSpec = splitSpec(cfg.model, 'codex')
+  const baseModel = explicitModel ?? cleanModelToken(cfgSpec.model) ?? codexDefaultModel()
+  const effort = explicitEffort ?? cleanModelToken(cfgSpec.effort) ?? cleanModelToken(cfg.effort)
+  return joinSpec(baseModel, effort) ?? codexDefaultModel()
+}
+
+function extractCodexStreamModel(d: any): { model: string | null; effort: string | null } {
+  if (!d || typeof d !== 'object') return { model: null, effort: null }
+  const rawModel =
+    cleanModelToken(d.model) ??
+    cleanModelToken(d.thread?.model) ??
+    cleanModelToken(d.turn?.model) ??
+    cleanModelToken(d.payload?.model) ??
+    cleanModelToken(d.usage?.model) ??
+    cleanModelToken(d.response?.model)
+  const rawEffort =
+    cleanModelToken(d.model_reasoning_effort) ??
+    cleanModelToken(d.reasoning_effort) ??
+    cleanModelToken(d.effort) ??
+    cleanModelToken(d.thread?.model_reasoning_effort) ??
+    cleanModelToken(d.thread?.reasoning_effort) ??
+    cleanModelToken(d.turn?.model_reasoning_effort) ??
+    cleanModelToken(d.turn?.reasoning_effort) ??
+    cleanModelToken(d.payload?.model_reasoning_effort) ??
+    cleanModelToken(d.payload?.reasoning_effort) ??
+    cleanModelToken(d.payload?.effort)
+  if (!rawModel) return { model: null, effort: rawEffort }
+  const spec = splitSpec(rawModel, 'codex')
+  return { model: cleanModelToken(spec.model), effort: cleanModelToken(spec.effort) ?? rawEffort }
+}
+
 export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): Adapter {
   let session: string | null = s.resume
+  const fallbackModel = resolveCodexFallbackModel({ model: s.model, defaultModel: s.cfg.defaultModel, codexHome })
+  const fallbackEffort = splitSpec(fallbackModel, 'codex').effort
+  let model = fallbackModel
   let result: { ok: boolean; error: string | null } | null = null
   let textSoFar = ''
   let thoughtSoFar = ''
@@ -587,17 +672,27 @@ export function codexAdapter(s: RunSpec, codexHome: string, startedAt: number): 
         if (done || phase === 'started') emit(other(`item.${phase}:${item?.type ?? '?'}`, item))
     }
   }
+  const updateModelFromEvent = (d: any): void => {
+    const found = extractCodexStreamModel(d)
+    if (found.model) {
+      model = joinSpec(found.model, found.effort ?? fallbackEffort) ?? fallbackModel
+    } else if (found.effort) {
+      const cur = splitSpec(model, 'codex')
+      if (cur.model) model = joinSpec(cur.model, found.effort) ?? model
+    }
+  }
   return {
     args,
     stdin: full(s),
     sessionId: () => session,
-    model: () => s.model,
+    model: () => model,
     result: () => result,
     onLine: (d, emit) => {
+      updateModelFromEvent(d)
       switch (d.type) {
         case 'thread.started':
           session = d.thread_id ?? session
-          emit({ t: 'session', id: session ?? '', model: s.model })
+          emit({ t: 'session', id: session ?? '', model })
           break
         case 'turn.started':
           break

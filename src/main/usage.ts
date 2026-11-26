@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
-import { runAgent } from './agentRunner'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import { codexDefaultModel, isUnknownModelName, readCodexConfig, resolveCodexFallbackModel, runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
 import { cleanRate, costOf, findRate, isLong, parseLiteLLM, type Match, type PriceTable, type PriceTables } from './pricing'
@@ -349,20 +349,57 @@ export function snapshot(): UsageSnapshot {
     const e = best ? priceOf(best.key) : null
     return e ? { ...e, estimate: true } : null
   }
-  const models: Record<string, ModelPrice> = {}
-  const priced = (key: string, b: Bucket): Bucket => {
-    const model = modelOf(key)
-    const m = rateOf(model)
-    if (!models[model]) {
-      const def = m?.source === 'custom' ? findRate(model, { litellm: tables.litellm, ccswitch: tables.ccswitch }) : null
-      models[model] = {
-        key: m?.key ?? null,
-        source: m?.estimate ? 'estimate' : (m?.source ?? null),
-        rate: m?.rate ?? null,
-        ...(def ? { defaultRate: def.rate } : {})
+  // For historical Codex records with empty/`unknown` model, estimate using the account's configured model.
+  const codexAccountRateCache = new Map<ProfileId, (Match & { estimate: true }) | null>()
+  const codexFallbackRateFor = (c: ProfileConfig): (Match & { estimate: true }) | null => {
+    if (codexAccountRateCache.has(c.id)) return codexAccountRateCache.get(c.id) ?? null
+    const candidatesList = [
+      c.defaultModel,
+      readCodexConfig(expandHome(c.configDir)).model,
+      usedMost.get('codex')?.key,
+      codexDefaultModel()
+    ]
+    let matched: (Match & { estimate: true }) | null = null
+    for (const candidate of candidatesList) {
+      if (!candidate || isUnknownModelName(candidate)) continue
+      const hit = priceOf(candidate)
+      if (hit) {
+        matched = { ...hit, estimate: true }
+        break
       }
     }
-    return { ...b, costUsd: m ? costOf(b, m.rate, model !== key) : b.costUsd, unpriced: m ? 0 : tokensOf(b) }
+    codexAccountRateCache.set(c.id, matched)
+    return matched
+  }
+  const models: Record<string, ModelPrice> = {}
+  const recordModelPrice = (displayModel: string, m: (Match & { estimate?: boolean }) | null): void => {
+    if (models[displayModel]) return
+    const def = m?.source === 'custom' ? findRate(displayModel, { litellm: tables.litellm, ccswitch: tables.ccswitch }) : null
+    models[displayModel] = {
+      key: m?.key ?? null,
+      source: m?.estimate ? 'estimate' : (m?.source ?? null),
+      rate: m?.rate ?? null,
+      ...(def ? { defaultRate: def.rate } : {})
+    }
+  }
+  const priced = (c: ProfileConfig, key: string, b: Bucket): { bucket: Bucket; model: string } => {
+    const rawModel = modelOf(key)
+    const long = rawModel !== key
+    if (c.kind === 'codex' && (isUnknownModelName(rawModel) || rawModel === unrecorded('codex'))) {
+      const m = (rawModel.startsWith(UNRECORDED) ? priceOf(rawModel) : null) ?? codexFallbackRateFor(c)
+      const displayModel = m ? unrecorded('codex') : rawModel
+      recordModelPrice(displayModel, m)
+      return {
+        model: displayModel,
+        bucket: { ...b, costUsd: m ? costOf(b, m.rate, long) : b.costUsd, unpriced: m ? 0 : tokensOf(b) }
+      }
+    }
+    const m = rateOf(rawModel)
+    recordModelPrice(rawModel, m)
+    return {
+      model: rawModel,
+      bucket: { ...b, costUsd: m ? costOf(b, m.rate, long) : b.costUsd, unpriced: m ? 0 : tokensOf(b) }
+    }
   }
   const daily = new Map<string, DailyUsage>()
   for (const c of configs) {
@@ -377,8 +414,7 @@ export function snapshot(): UsageSnapshot {
     for (const days of per.get(c.id) ?? [])
       for (const [k, buckets] of Object.entries(days))
         for (const [key, b] of Object.entries(buckets)) {
-          const v = priced(key, b)
-          const model = modelOf(key)
+          const { bucket: v, model } = priced(c, key, b)
           const id = `${k}\n${c.id}\n${model}`
           const { cacheWrite1h: _, ...t } = v
           daily.set(id, add(daily.get(id) ?? { ...zero(), day: k, profileId: c.id, model }, t))
@@ -409,8 +445,15 @@ export function snapshot(): UsageSnapshot {
  */
 export function recordRun(profileId: ProfileId, model: string | null, u: Usage | null): void {
   migrate()
+  let effectiveModel = model
+  if (isUnknownModelName(effectiveModel) && hasProfile(profileId)) {
+    const cfg = getConfig(profileId)
+    if (cfg.kind === 'codex') {
+      effectiveModel = resolveCodexFallbackModel({ defaultModel: cfg.defaultModel, codexHome: expandHome(cfg.configDir) })
+    }
+  }
   const days = (stats.runs[profileId] ??= {})
-  put(days, Date.now(), modelKey(model, n(u?.context)), { ...(u ?? {}), runs: 1 })
+  put(days, Date.now(), modelKey(effectiveModel, n(u?.context)), { ...(u ?? {}), runs: 1 })
   changed()
 }
 
@@ -970,7 +1013,8 @@ async function codexFileDays(path: string, since: number, cut: number): Promise<
     if (!inWindow(ts, since, cut)) continue
     if (!inc.input && !inc.out) continue
     const prompt = n(d.payload.info.last_token_usage?.input_tokens)
-    put(days, ts, modelKey(model, prompt), { input: Math.max(0, inc.input - inc.cached), cacheRead: inc.cached, cacheWrite: inc.cw, output: inc.out, reasoning: inc.rs })
+    const cached = Math.min(inc.cached, inc.input)
+    put(days, ts, modelKey(model, prompt), { input: inc.input - cached, cacheRead: cached, cacheWrite: inc.cw, output: inc.out, reasoning: inc.rs })
   }
   return days
 }

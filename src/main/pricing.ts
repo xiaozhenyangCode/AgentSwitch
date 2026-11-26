@@ -20,23 +20,31 @@ export interface Tokens {
 /** Names that never cost anything (claude's locally generated messages). */
 const FREE = new Set(['<synthetic>'])
 
+/** Canonical aliases for CLI model names whose keys differ from LiteLLM / CC Switch. */
+const MODEL_ALIASES: Record<string, string> = {
+  'codex-1': 'o3',
+  'codex-mini-latest': 'codex-mini'
+}
+
 /** Names to try for a model as CLIs report it, most specific first. */
 export function candidates(model: string): string[] {
   let m = model.trim().toLowerCase()
-  m = m.slice(m.lastIndexOf('/') + 1) // anthropic/…, models/…, deepseek/…
+  m = m.slice(m.lastIndexOf('/') + 1) // anthropic/…, openai/…, models/…, deepseek/…
   m = m.replace(/^(?:us|eu|apac|global)\.(?:anthropic\.)?|^anthropic\./, '') // bedrock ids
   m = m.replace(/@.*$/, '') // vertex: claude-…@20250514
-  m = m.replace(/:.*$/, '') // effort / tag suffix: gemini-4-neon:high, bedrock …-v2:0
+  m = m.replace(/:.*$/, '') // effort / tag suffix: gemini-4-neon:high, gpt-5.3-codex:xhigh, bedrock …-v2:0
   m = m.replace(/\[[^\]]*\]$/, '') // claude-opus-5-5[1m]
   m = m.replace(/-v\d+$/, '')
   if (!m) return []
   const out = [m]
+  const alias = MODEL_ALIASES[m]
+  if (alias && alias !== m) out.push(alias)
   // drop trailing segments: dates (-20251001), variants (-codex, -preview-05-06, -latest), …
   for (let s = m; s.lastIndexOf('-') > 0; ) {
     s = s.slice(0, s.lastIndexOf('-'))
     // never fall back to a bare family name ("claude", "gpt", "gemini-3")
     if (!/[-.]/.test(s) || /^(claude|gemini)-[\d.]+$/.test(s)) break
-    out.push(s)
+    if (!out.includes(s)) out.push(s)
   }
   return out
 }

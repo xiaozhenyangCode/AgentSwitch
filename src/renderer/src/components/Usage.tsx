@@ -310,9 +310,15 @@ const cacheHit = (u: UsageTotals): number | null => {
 const fmtPct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(1)}%`)
 const fmtRate = (v: number | undefined) => (v === undefined ? '—' : String(Math.round(v * 1e4) / 1e4))
 
+const isUnidentifiedModel = (m: string): boolean => !m.trim() || m.startsWith('?') || /^unknown$/i.test(m.trim())
+
 /** `?claude`: tokens recorded before models were (see main/usage.ts UNRECORDED). */
 const modelLabel = (m: string): string =>
-  m.startsWith('?') ? t('usage.priceUnrecorded', { kind: KIND_META[m.slice(1) as ProfileKind]?.name ?? '' }).trim() : m || t('usage.priceUnknownModel')
+  m.startsWith('?')
+    ? t('usage.priceUnrecorded', { kind: KIND_META[m.slice(1) as ProfileKind]?.name ?? '' }).trim()
+    : !m.trim() || /^unknown$/i.test(m.trim())
+      ? t('usage.priceUnknownModel')
+      : m
 
 function SourceBadge({ price }: { price: ModelPrice | undefined }) {
   const cls = 'shrink-0 whitespace-nowrap rounded px-1.5 py-px text-[10.5px]'
@@ -584,12 +590,12 @@ function ModelTable({
                   models[model] ?? (customPrices[key] ? { key, source: 'custom', rate: customPrices[key] } : undefined)
                 const r = p?.rate
                 const isCustom = p?.source === 'custom' || !!customPrices[key]
-                const canEdit = !!model && !model.startsWith('?')
+                const canEdit = !isUnidentifiedModel(model)
                 return (
                   <tr key={model} className="border-b border-black/[0.05] last:border-0">
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <span className={`truncate text-[12px] text-ink ${model.startsWith('?') || !model ? '' : 'font-mono'}`}>{modelLabel(model)}</span>
+                        <span className={`truncate text-[12px] text-ink ${canEdit ? 'font-mono' : ''}`}>{modelLabel(model)}</span>
                         <SourceBadge price={p} />
                       </div>
                       {p?.key && (p.source === 'estimate' || p.key !== key) && (
@@ -604,7 +610,7 @@ function ModelTable({
                     <td className={`${td} text-ink-2`}>{fmtPct(cacheHit(u))}</td>
                     <td className={`${td} font-medium text-ink`}>{r && tokenSum(u) > 0 ? fmtCost(u.costUsd) : '—'}</td>
                     <td className="px-3 py-2.5 pr-4 text-right whitespace-nowrap">
-                      {canEdit && (
+                      {canEdit ? (
                         <div className="inline-flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -625,6 +631,13 @@ function ModelTable({
                             </button>
                           )}
                         </div>
+                      ) : (
+                        <span
+                          className="text-[11px] text-ink-3/80"
+                          title={p?.source === 'estimate' ? t('usage.priceEstimateTip') : t('usage.priceUnknownActionTip')}
+                        >
+                          {p?.source === 'estimate' ? t('usage.priceAutoEstimated') : t('usage.priceUnknownAction')}
+                        </span>
                       )}
                     </td>
                   </tr>
