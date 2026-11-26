@@ -196,8 +196,9 @@ export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | n
   return out
 }
 
-/** Reasonix reports cache misses as uncached input. */
+/** Share of uncached input, cache reads and cache writes served from cache, as in the usage panel. */
 export function cacheHitPercentage(usage: Usage): number | null {
-  const input = (usage.input ?? 0) + (usage.cacheRead ?? 0)
-  return input > 0 ? Math.round((usage.cacheRead ?? 0) / input * 100) : null
+  const cacheRead = usage.cacheRead ?? 0
+  const prompt = (usage.input ?? 0) + cacheRead + (usage.cacheWrite ?? 0)
+  return prompt > 0 ? Math.round(cacheRead / prompt * 100) : null
 }

@@ -1,14 +1,14 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants, realpathSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, resolve, sep } from 'node:path'
 import { cleanTitle } from '@shared/markers'
 import { joinSpec, splitSpec } from '@shared/modelSpec'
-import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption } from '@shared/types'
+import type { AgentEvent, AutoApprove, PermissionEvent, PermissionOption, Usage } from '@shared/types'
 import { agyTool, capText, full, other, RATE_LIMIT_RE, type RunHandle, type RunResult, type RunSpec } from '../agentRunner'
 import { isInvalidKeyError } from '../apiKey'
 import { t } from '../i18n'
-import { isThreadHistoryToolName } from '../threadHistoryTools'
+import { isThreadHistoryToolName, threadTools } from '../threadHistoryTools'
 import { ACP_SETUP_TIMEOUT } from './acpProcess'
 import { JsonRpcError } from './jsonrpc'
 import { agyOutcomeReader, readAgyConversationTitle } from './agyOutcome'
@@ -28,6 +28,25 @@ const EDIT_PERMISSIONS = new Set(['edit', 'delete', 'move', 'read', 'search', 'f
 /** Kinds that change files: under `edits` they must stay inside the project, like agy's own accept-edits. */
 const WRITE_KINDS = new Set(['edit', 'delete', 'move'])
 const PATH_KEY = /path|file|target|dest|source/i
+
+export function agyPrefixHash(system: string | null, hasThreadHistory: boolean): string {
+  const prefix = JSON.stringify({ system, tools: hasThreadHistory ? threadTools : [] }, (_key, value) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]))
+  })
+  return createHash('sha256').update(prefix).digest('hex').slice(0, 16)
+}
+
+export const cacheDebugEnabled = (): boolean => process.env.AGENTSWITCH_DEBUG_ACP_CACHE === '1'
+
+export function normalizeAcpUsage(usage: AcpFields): Pick<Usage, 'input' | 'output' | 'cacheRead' | 'reasoning'> {
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cacheRead: usage.cachedReadTokens || undefined,
+    reasoning: usage.thoughtTokens
+  }
+}
 
 /** realpath of the nearest existing ancestor, so /var vs /private/var and new files compare correctly. */
 function realish(p: string): string {
@@ -203,10 +222,8 @@ function turnEvents(emit: Emit) {
       }
     },
     usage(result: AcpFields): void {
-      const usage = result.usage ?? {}
       emit({ t: 'usage', usage: {
-        input: usage.inputTokens, output: usage.outputTokens, cacheRead: usage.cachedReadTokens || undefined,
-        reasoning: usage.thoughtTokens, context: used || undefined, contextWindow: size || undefined
+        ...normalizeAcpUsage(result.usage ?? {}), context: used || undefined, contextWindow: size || undefined
       } })
     },
     finish(): void {
@@ -365,7 +382,8 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
     if (stopped) return result(false)
 
     const events = turnEvents(emit)
-    const hasThreadHistory = conn.session(id).hasThreadHistory
+    const session = conn.session(id)
+    const { hasThreadHistory } = session
     const turn = Symbol('agy turn')
     cancelPermissions = () => permissions.cancelAll((entry) => entry.turn === turn)
 
@@ -437,10 +455,24 @@ export function runAgyAcp(spec: RunSpec, emit: Emit, onLog: Log): RunHandle {
       const reader = agyOutcomeReader(spec.cfg, id, log, conn.home)
       const start = reader.checkpoint()
       if (stopped) return result(false)
+      const promptAt = Date.now()
+      const previousPromptAt = session.lastPromptAt
+      session.turns++
       prompting = true
       const response = await conn.process.rpc.request<AcpFields>('session/prompt', { sessionId: id, prompt }, undefined, () => { prompting = false })
       prompting = false
-      model = modelOf(conn.session(id).options, model)
+      session.lastPromptAt = Date.now()
+      model = modelOf(session.options, model)
+      if (response?.usage && cacheDebugEnabled()) {
+        const prefix = agyPrefixHash(session.system, hasThreadHistory)
+        const system = appendSystem ? 'append' : 'inline'
+        const gap = previousPromptAt === undefined ? '-' : ((promptAt - previousPromptAt) / 1000).toFixed(1)
+        const normalized = normalizeAcpUsage(response.usage)
+        const cacheRead = normalized.cacheRead ?? 0
+        const input = (normalized.input ?? 0) + cacheRead
+        const hit = input > 0 ? `${(cacheRead / input * 100).toFixed(1)}%` : '-'
+        log(`[ACP cache] session=${id} path=${path} turn=${session.turns} prefix=${prefix} system=${system} gap=${gap} raw=${JSON.stringify(response.usage)} normalized=${JSON.stringify(normalized)} hit=${hit}\n`)
+      }
       if (stopped || response?.stopReason === 'cancelled') {
         stopped = true
         // a cancelled prompt still reports what it used so far

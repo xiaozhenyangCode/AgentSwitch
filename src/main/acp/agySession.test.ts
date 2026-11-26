@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AutoApprove, ProfileConfig } from '@shared/types'
 import { runAgent, type RunSpec } from '../agentRunner'
 import { cleanupAllPersistentThreadHistory, upsertPersistentThreadHistory } from '../threadHistoryConfig'
-import { createThreadHistoryReader } from '../threadHistoryTools'
+import { createThreadHistoryReader, threadTools } from '../threadHistoryTools'
 import { startAcpProcess } from './acpProcess'
-import { autoDecision } from './agySession'
+import { agyPrefixHash, autoDecision, normalizeAcpUsage } from './agySession'
 import { JsonRpc } from './jsonrpc'
 import { agyAcpPool, IDLE_MS } from './pool'
 import { permissions, PERMISSION_TIMEOUT } from './permissions'
@@ -39,6 +39,44 @@ const text = (s: string, type = 'agent_message_chunk') => ({ sessionUpdate: type
 const call = (status: string, extra = {}) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status, ...extra })
 const usage = { inputTokens: 50, outputTokens: 6, cachedReadTokens: 8, thoughtTokens: 2 }
 const result = { stopReason: 'end_turn', usage }
+const cacheDebugEnv = 'AGENTSWITCH_DEBUG_ACP_CACHE'
+
+describe('agy ACP cache diagnostics', () => {
+  it.each([
+    ['a single call', usage, { input: 50, output: 6, cacheRead: 8, reasoning: 2 }],
+    ['a turn with multiple tool calls', { inputTokens: 12_000, outputTokens: 600, cachedReadTokens: 300_000, thoughtTokens: 200 },
+      { input: 12_000, output: 600, cacheRead: 300_000, reasoning: 200 }],
+    ['no cache reads', { ...usage, cachedReadTokens: 0 }, { input: 50, output: 6, cacheRead: undefined, reasoning: 2 }],
+    ['a high cache hit', { ...usage, inputTokens: 1, cachedReadTokens: 99_999 },
+      { input: 1, output: 6, cacheRead: 99_999, reasoning: 2 }]
+  ])('preserves uncached input for %s', (_label, raw, expected) => {
+    expect(normalizeAcpUsage(raw)).toStrictEqual(expected)
+  })
+
+  it('hashes the fixed system and the mounted tool schemas', () => {
+    const hash = agyPrefixHash(spec.system, true)
+    expect(hash).toMatch(/^[0-9a-f]{16}$/)
+    expect(agyPrefixHash(spec.system, true)).toBe(hash)
+    expect(agyPrefixHash('Changed system', true)).not.toBe(hash)
+    expect(agyPrefixHash(spec.system, false)).not.toBe(hash)
+  })
+
+  it('ignores object key order throughout the tool schema', () => {
+    const hash = agyPrefixHash(spec.system, true)
+    const [tool] = threadTools
+    const original = tool.inputSchema
+    const reordered = {
+      ...Object.fromEntries(Object.entries(original).reverse()),
+      properties: Object.fromEntries(Object.entries(original.properties).reverse())
+    }
+    Object.defineProperty(tool, 'inputSchema', { value: reordered })
+    try {
+      expect(agyPrefixHash(spec.system, true)).toBe(hash)
+    } finally {
+      Object.defineProperty(tool, 'inputSchema', { value: original })
+    }
+  })
+})
 
 type Message = { id?: number; method?: string; params?: any; result?: unknown; error?: { code: number; message: string } }
 
@@ -100,6 +138,7 @@ describe('agy ACP runs', () => {
     agyAcpPool.retire(id)
     cleanupAllPersistentThreadHistory()
     vi.useRealTimers()
+    vi.unstubAllEnvs()
   })
 
   async function begin(specPatch: Partial<RunSpec> = {}) {
@@ -124,6 +163,67 @@ describe('agy ACP runs', () => {
     ({ id: 51, method: 'session/request_permission', params: { sessionId, toolCall, options: choices } })
   const permission = () => emit.mock.calls.map(([e]) => e).find((e) => e.t === 'permission')!
   const cancelled = { outcome: { outcome: 'cancelled' } }
+  const cacheLogs = () => log.mock.calls.map(([line]) => line).filter((line) => line.startsWith('[ACP cache]'))
+
+  it('logs the same session and prefix across three turns with refreshed history', async () => {
+    vi.stubEnv(cacheDebugEnv, '1')
+    vi.setSystemTime(1_000)
+    const history = [{ id: 'm1', turnId: 'turn', profileId: null, speaker: 'User', time: 1, text: 'First' }]
+    const { run, cli } = await begin({ threadHistory: upsertPersistentThreadHistory(id, ref.threadId, history) })
+    const create = await cli.request('session/new')
+    cli.send({ id: create.id, result: { sessionId } })
+    const first = await cli.request('session/prompt')
+    vi.setSystemTime(5_000)
+    cli.send({ id: first.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
+
+    const warmUsage = { inputTokens: 12_000, outputTokens: 6, cachedReadTokens: 300_000, thoughtTokens: 2 }
+    for (const [index, [start, end]] of [[7_000, 11_000], [14_600, 17_000]].entries()) {
+      vi.setSystemTime(start)
+      const number = index + 2
+      const prompt = `Turn ${number}`
+      history.push({ ...history[0], id: `m${number}`, text: prompt })
+      const threadHistory = upsertPersistentThreadHistory(id, ref.threadId, history)
+      const warm = runAgent({ ...spec, threadHistory, resume: sessionId, prompt }, emit, log)
+      const request = await cli.request('session/prompt', number)
+      expect(request.params).toEqual({ sessionId, prompt: [{ type: 'text', text: prompt }] })
+      vi.setSystemTime(end)
+      cli.send({ id: request.id, result: { ...result, usage: warmUsage } })
+      await expect(warm.done).resolves.toMatchObject({ ok: true })
+    }
+
+    const prefix = agyPrefixHash(spec.system, true)
+    const warmLog = `raw=${JSON.stringify(warmUsage)} normalized={"input":12000,"output":6,"cacheRead":300000,"reasoning":2} hit=96.2%\n`
+    expect(cacheLogs()).toEqual([
+      `[ACP cache] session=${sessionId} path=new turn=1 prefix=${prefix} system=append gap=- raw=${JSON.stringify(usage)} normalized={"input":50,"output":6,"cacheRead":8,"reasoning":2} hit=13.8%\n`,
+      `[ACP cache] session=${sessionId} path=warm turn=2 prefix=${prefix} system=append gap=2.0 ${warmLog}`,
+      `[ACP cache] session=${sessionId} path=warm turn=3 prefix=${prefix} system=append gap=3.6 ${warmLog}`
+    ])
+    expect(cli.sent.filter(({ method }) => method === 'session/new' || method === 'session/resume')).toEqual([create])
+    expect(startAcpProcess).toHaveBeenCalledTimes(1)
+  })
+
+  it('emits no cache diagnostics when the debug variable is unset', async () => {
+    vi.stubEnv(cacheDebugEnv, undefined)
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
+    expect(cacheLogs()).toEqual([])
+  })
+
+  it('logs usage returned by a cancelled prompt with no input', async () => {
+    vi.stubEnv(cacheDebugEnv, '1')
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    const emptyUsage = { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, thoughtTokens: 0 }
+    cli.send({ id: prompt.id, result: { stopReason: 'cancelled', usage: emptyUsage } })
+    await expect(run.done).resolves.toMatchObject({ stopped: true })
+    expect(emit).toHaveBeenCalledWith({ t: 'usage', usage: expect.objectContaining({ input: 0, output: 0, cacheRead: undefined, reasoning: 0 }) })
+    expect(cacheLogs()).toEqual([
+      `[ACP cache] session=${sessionId} path=new turn=1 prefix=${agyPrefixHash(spec.system, false)} system=append gap=- raw=${JSON.stringify(emptyUsage)} normalized={"input":0,"output":0,"reasoning":0} hit=-\n`
+    ])
+  })
 
   it('keeps the history MCP mounted across a warm refresh and sends identical args after retirement', async () => {
     const firstEntry = { id: 'm1', turnId: 'turn', profileId: null, speaker: 'User', time: 1, text: 'First' }

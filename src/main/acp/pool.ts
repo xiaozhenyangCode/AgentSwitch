@@ -28,6 +28,8 @@ interface SessionState {
   threadHistoryPath?: string
   options: AcpFields[]
   revision: number
+  turns: number
+  lastPromptAt?: number
 }
 
 export class AcpConnection {
@@ -41,7 +43,7 @@ export class AcpConnection {
   session(id: string): SessionState {
     let session = this.sessions.get(id)
     if (!session) {
-      session = { active: false, system: null, hasThreadHistory: false, options: [], revision: 0 }
+      session = { active: false, system: null, hasThreadHistory: false, options: [], revision: 0, turns: 0 }
       this.sessions.set(id, session)
     }
     return session
