@@ -128,6 +128,16 @@ export const IconChevronDown = (p: P) => (
     <path d="m6 9 6 6 6-6" />
   </svg>
 )
+export const IconChevronLeft = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m15 18-6-6 6-6" />
+  </svg>
+)
+export const IconChevronRight = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m9 18 6-6-6-6" />
+  </svg>
+)
 export const IconDownload = (p: P) => (
   <svg {...base(p)}>
     <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />

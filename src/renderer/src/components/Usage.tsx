@@ -175,7 +175,7 @@ function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUs
 }
 
 /** "3 分钟前更新" + 刷新用量. The Claude probe is a setting (设置 › 用量与刷新). */
-export function RefreshUsage() {
+export function RefreshUsage({ onRefreshed }: { onRefreshed?: () => void }) {
   const [busy, setBusy] = useState(false)
   const { probeClaude } = useSettings()
   const snap = useUsage()
@@ -184,6 +184,7 @@ export function RefreshUsage() {
     setBusy(true)
     try {
       await refreshUsage()
+      onRefreshed?.()
     } finally {
       setBusy(false)
     }
@@ -736,7 +737,7 @@ type UsageTab = 'logs' | 'accounts' | 'models'
 let lastUsageTab: UsageTab = 'logs'
 
 /** 用量限额 page body: multi-tab view (Request Logs, Providers/Accounts, Models). */
-export function UsageView({ onClose }: { onClose?: () => void }) {
+export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void; refreshToken?: number }) {
   const { profiles } = useApp()
   const snap = useUsage()
   const [tab, setTabState] = useState<UsageTab>(lastUsageTab)
@@ -766,7 +767,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
       alive = false
       unsub()
     }
-  }, [])
+  }, [refreshToken])
 
   const from = periodFrom(period)
   const rows = (snap?.daily ?? []).filter((d) => from === null || d.day >= from)
@@ -839,7 +840,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
         })}
       </div>
 
-      {tab === 'logs' && <RequestLogView onCloseDialog={onClose} onCountsChange={updateLogTotal} />}
+      {tab === 'logs' && <RequestLogView onCloseDialog={onClose} onCountsChange={updateLogTotal} refreshToken={refreshToken} />}
 
       {tab === 'accounts' && (
         <div className="flex min-h-0 flex-1 flex-col">

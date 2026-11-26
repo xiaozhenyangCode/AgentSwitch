@@ -25,7 +25,7 @@ import { priceForRequest } from './usage'
 
 export const REQUEST_LOG_MAX_AGE_MS = 30 * 86400_000
 export const REQUEST_LOG_MAX_ROWS = 10_000
-const DEFAULT_LIMIT = 100
+const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 500
 const RAW_USAGE_MAX_CHARS = 4096
 const PRUNE_EVERY_N_WRITES = 20
@@ -448,8 +448,11 @@ function buildStatusFilter(statusCode: RequestLogStatusFilter | undefined, param
 /** Paginated, filtered query of persisted request logs ordered newest-first. */
 export function queryRequestLogs(query: RequestLogQuery = {}): RequestLogPage {
   const conn = getDb()
-  const offset = Math.max(0, Math.floor(query.offset ?? 0))
-  const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(query.limit ?? DEFAULT_LIMIT)))
+  const offset = typeof query.offset === 'number' && Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset)) : 0
+  const limit =
+    typeof query.limit === 'number' && Number.isFinite(query.limit)
+      ? Math.min(MAX_LIMIT, Math.max(1, Math.floor(query.limit)))
+      : DEFAULT_LIMIT
 
   const where: string[] = []
   const params: (string | number)[] = []

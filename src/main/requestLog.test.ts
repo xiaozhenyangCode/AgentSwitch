@@ -260,6 +260,60 @@ describe('requestLog SQLite persistence, pagination, filtering & pruning', () =>
     expect(queryRequestLogs({ model: 'claude-sonnet-4-6' }).filteredTotal).toBe(3)
   })
 
+  it('defaults to 20 entries per page and slices filtered newest-first pages without duplicates or gaps', () => {
+    const baseTs = Date.now() - 100_000
+    for (let i = 0; i < 58; i++) {
+      // Group pairs on identical timestamps to verify deterministic rowid DESC tie-breaking across page boundaries
+      const ts = baseTs + Math.floor(i / 2) * 1000
+      recordRequestLog({
+        id: `log-${String(i).padStart(2, '0')}`,
+        timestamp: ts,
+        accountId: i % 3 === 0 ? 'acct-claude' : 'acct-codex',
+        accountName: i % 3 === 0 ? 'Claude' : 'Codex',
+        engineKind: i % 3 === 0 ? 'claude' : 'codex',
+        provider: i % 3 === 0 ? 'Anthropic' : 'OpenAI',
+        model: i % 3 === 0 ? 'claude-sonnet-4-6' : 'gpt-5.3-codex',
+        statusCode: i % 5 === 0 ? 429 : 200
+      })
+    }
+
+    // Default query returns first 20 rows only, with full total = 58
+    const p1 = queryRequestLogs()
+    expect(p1.entries).toHaveLength(20)
+    expect(p1.total).toBe(58)
+    expect(p1.filteredTotal).toBe(58)
+    expect(p1.counts.total).toBe(58)
+    expect(p1.hasMore).toBe(true)
+
+    const p2 = queryRequestLogs({ offset: 20, limit: 20 })
+    const p3 = queryRequestLogs({ offset: 40, limit: 20 })
+    expect(p2.entries).toHaveLength(20)
+    expect(p3.entries).toHaveLength(18)
+    expect(p3.hasMore).toBe(false)
+
+    // Union of all 3 pages covers all 58 entries strictly newest-first with zero duplicates or gaps
+    const allIds = [...p1.entries, ...p2.entries, ...p3.entries].map((e) => e.id)
+    expect(allIds).toHaveLength(58)
+    expect(new Set(allIds).size).toBe(58)
+    expect(allIds[0]).toBe('log-57')
+    expect(allIds[57]).toBe('log-00')
+
+    // Filtering happens BEFORE pagination slicing, while counts.total / total stays full count (58)
+    const codexP1 = queryRequestLogs({ engineKind: 'codex', offset: 0, limit: 20 })
+    const codexP2 = queryRequestLogs({ engineKind: 'codex', offset: 20, limit: 20 })
+    expect(codexP1.total).toBe(58)
+    expect(codexP1.counts.total).toBe(58)
+    expect(codexP1.filteredTotal).toBe(38)
+    expect(codexP1.entries).toHaveLength(20)
+    expect(codexP2.entries).toHaveLength(18)
+    expect(codexP2.hasMore).toBe(false)
+    expect(new Set([...codexP1.entries, ...codexP2.entries].map((e) => e.id)).size).toBe(38)
+
+    // Non-finite offset/limit safely fall back to defaults
+    const safe = queryRequestLogs({ offset: Number.NaN, limit: Number.POSITIVE_INFINITY })
+    expect(safe.entries).toHaveLength(20)
+  })
+
   it('prunes records older than maxAgeMs and enforces maxRows capacity cap', () => {
     const now = Date.now()
     // 1 expired record (40 days old) + 5 fresh records
