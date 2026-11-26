@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
-import { useEscape } from '../lib/escStack'
 import { KINDS, type HistoryEntry, type ProfileKind, type ThemeMode } from '@shared/types'
 import { LOCALES, LOCALE_NAMES, translate, type LanguagePref, type MsgKey } from '@shared/i18n'
 import { useApp, type SettingsSection } from '../state/AppContext'
@@ -10,6 +9,7 @@ import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settin
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
+import { SheetCloseButton, WorkspaceSheetModal } from './WorkspaceSheetModal'
 import { useChatStatus } from '../state/chat'
 import type { ImportPreviewResult } from '@shared/transfer'
 import {
@@ -268,35 +268,6 @@ function highlight(text: string, q: string): ReactNode {
  * drafts). Opens with ⌘, / the sidebar / the app menu; closes with ×, Esc or a click outside.
  */
 export function SettingsDialog() {
-  const { settingsOpen, closeSettings } = useApp()
-  // stays mounted for the 150 ms close animation
-  const [mounted, setMounted] = useState(settingsOpen)
-  useEffect(() => {
-    if (settingsOpen) return setMounted(true)
-    const h = setTimeout(() => setMounted(false), 150)
-    return () => clearTimeout(h)
-  }, [settingsOpen])
-  if (!mounted && !settingsOpen) return null
-  const shown = settingsOpen
-  return (
-    <div
-      className={`no-drag fixed inset-0 z-40 flex items-center justify-center bg-(--scrim-soft) ${shown ? 'scrim-in' : 'scrim-out'}`}
-      onMouseDown={(e) => e.target === e.currentTarget && closeSettings()}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('set.title')}
-        className={`flex h-[580px] max-h-[85vh] w-[800px] max-w-[90vw] overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.22),0_8px_24px_rgba(0,0,0,0.10)] ${shown ? 'sheet-in' : 'sheet-out'}`}
-      >
-        <SettingsBody />
-      </div>
-    </div>
-  )
-}
-
-function SettingsBody() {
   const { settingsOpen, settingsSection: section, openSettings, closeSettings, confirmState } = useApp()
   const [q, setQ] = useState('')
   const input = useRef<HTMLInputElement>(null)
@@ -304,18 +275,17 @@ function SettingsBody() {
   const hits = useMemo(() => (query ? searchItems(query) : []), [query])
   const searching = !!query
 
-  // first Esc clears the search, the next one closes; ⌘W closes directly (a dialog on top gets both first)
-  useEscape(
-    () => {
-      if (q) {
-        setQ('')
-        input.current?.focus()
-      } else closeSettings()
-    },
-    settingsOpen,
-    closeSettings
-  )
+  const clearSearch = () => {
+    setQ('')
+    input.current?.focus()
+  }
+  const onEsc = () => {
+    if (q) clearSearch()
+    else closeSettings()
+  }
+
   useEffect(() => {
+    if (!settingsOpen) return
     const onKey = (e: KeyboardEvent) => {
       if (confirmState) return // a dialog on top owns the keyboard
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
@@ -326,7 +296,7 @@ function SettingsBody() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [q, confirmState, closeSettings])
+  }, [settingsOpen, confirmState])
 
   const count = (id: SettingsSection) => hits.filter((h) => h.section === id).length
   const go = (id: SettingsSection) => {
@@ -335,9 +305,16 @@ function SettingsBody() {
   }
 
   return (
-    <>
-      <aside className="flex w-[210px] shrink-0 flex-col border-r border-hairline bg-black/[0.025]">
-        <div className="px-3 pt-3.5 pb-2.5">
+    <WorkspaceSheetModal
+      open={settingsOpen}
+      onClose={closeSettings}
+      onEsc={onEsc}
+      onExited={() => setQ('')}
+      ariaLabel={t('set.title')}
+      bodyClassName="overflow-hidden"
+    >
+      <aside className="flex w-[min(224px,30%)] shrink-0 flex-col border-r border-hairline bg-surface-2/70">
+        <div className="shrink-0 px-3 pt-3.5 pb-2.5">
           <div className="flex h-8 items-center gap-1.5 rounded-lg bg-surface px-2.5 shadow-[0_0_0_1px_var(--ring)] focus-within:shadow-[0_0_0_1px_var(--accent),0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)]">
             <IconSearch size={14} className="shrink-0 text-ink-3" />
             <input
@@ -349,13 +326,13 @@ function SettingsBody() {
               className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3"
             />
             {q && (
-              <button onClick={() => (setQ(''), input.current?.focus())} title={t('set.searchClear')} className="-mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-black/[0.06] hover:text-ink">
+              <button onClick={clearSearch} title={t('set.searchClear')} className="-mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-black/[0.06] hover:text-ink">
                 <IconX size={11} />
               </button>
             )}
           </div>
         </div>
-        <nav className="space-y-0.5 px-2.5">
+        <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2.5 pb-3">
           {SECTIONS.map(({ id, Icon }) => {
             const n = searching ? count(id) : 0
             const active = !searching && section === id
@@ -363,6 +340,7 @@ function SettingsBody() {
               <button
                 key={id}
                 onClick={() => go(id)}
+                aria-current={active ? 'true' : undefined}
                 className={`flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors ${
                   active ? 'bg-accent font-medium text-white' : searching && !n ? 'text-ink-3/70 hover:bg-black/[0.04]' : 'text-ink hover:bg-black/[0.04]'
                 }`}
@@ -376,21 +354,21 @@ function SettingsBody() {
         </nav>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 pr-3 pl-7">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-hairline pr-3 pl-7">
           <h1 className="min-w-0 flex-1 truncate text-[17px] font-semibold tracking-tight text-ink">
             {searching ? t('set.searchResults') : t(SECTION_KEY[section])}
             {searching && hits.length > 0 && <span className="ml-2 text-[13px] font-normal text-ink-3">{t('set.searchCount', { n: hits.length })}</span>}
           </h1>
-          <button onClick={closeSettings} title={t('set.close')} aria-label={t('set.close')} className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink">
-            <IconX size={14} />
-          </button>
+          <SheetCloseButton onClick={closeSettings} label={t('set.close')} />
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-8">
-          {searching ? <Results hits={hits} query={query} onClear={() => (setQ(''), input.current?.focus())} onOpen={go} /> : <Section id={section} />}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[760px] px-7 py-6">
+            {searching ? <Results hits={hits} query={query} onClear={clearSearch} onOpen={go} /> : <Section id={section} />}
+          </div>
         </div>
       </section>
-    </>
+    </WorkspaceSheetModal>
   )
 }
 
@@ -585,7 +563,7 @@ function ThemeThumb({ mode }: { mode: ThemeMode }) {
       </div>
     </div>
   )
-  return <div className="flex h-[58px] w-full overflow-hidden rounded-lg shadow-[0_0_0_1px_var(--ring)]">{mode === 'system' ? [pane(false), pane(true)] : pane(mode === 'dark')}</div>
+  return <div className="flex aspect-[2.3] min-h-14 w-full overflow-hidden rounded-lg shadow-[0_0_0_1px_var(--ring)]">{mode === 'system' ? [pane(false), pane(true)] : pane(mode === 'dark')}</div>
 }
 
 function ThemeBlock({ title }: { title: ReactNode }) {

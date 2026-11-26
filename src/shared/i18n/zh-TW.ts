@@ -142,11 +142,13 @@ export const zhTW: Dict = {
 
   // ---- engines page
   'eng.title': '模型引擎',
+  'eng.all': '全部引擎',
   'eng.desc': '安裝命令列工具並新增帳號。每個帳號的登入資訊相互獨立，可以同時使用多個帳號。',
   'eng.found': '已找到 {cli}',
   'eng.notFound': '沒有找到 {cli}',
   'eng.updating': '正在更新…',
   'eng.installing': '正在安裝，通常需要 1–2 分鐘…',
+  'eng.installed': '已安裝',
   'eng.notInstalled': '尚未安裝',
   'eng.viewProgress': '檢視進度',
   'eng.installingBadge': '安裝中',

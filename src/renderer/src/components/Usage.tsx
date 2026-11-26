@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
+import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
 import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { useApp } from '../state/AppContext'
@@ -27,6 +27,7 @@ import { RequestLogView } from './RequestLogView'
 
 const STALE = 6 * 3600_000
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
+const STICKY_HEAD = 'text-[11.5px] text-ink-3 [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-surface-2 [&_th]:shadow-[inset_0_-1px_var(--hairline)]'
 
 /**
  * Fill in the brand's official colors; the gradient spans the whole track (background-size), so
@@ -121,7 +122,7 @@ function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; model?: str
         // right-aligned to the chip (it sits at the card's right edge) so the panel opens inwards;
         // pt bridges the gap so moving the pointer onto it doesn't close the hover popover
         <div className="absolute top-full right-0 z-40 w-[360px] max-w-[calc(100vw-64px)] pt-1.5">
-          <div className="max-h-[min(420px,60vh)] overflow-y-auto rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_36px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+          <div className="max-h-[min(420px,60vh)] overflow-y-auto rounded-xl bg-surface p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_36px_rgba(0,0,0,0.18)]">
             {q.groups.map((g) => {
               const five = liveWindow(g.fiveHour)
               const seven = liveWindow(g.sevenDay)
@@ -553,7 +554,7 @@ function ModelTable({
   const { toast } = useApp()
   const [editing, setEditing] = useState<PriceEditTarget | null>(null)
   const th = 'px-3 py-2 text-right font-medium whitespace-nowrap'
-  const td = 'px-3 py-2.5 text-right tabular-nums'
+  const td = 'px-3 py-2.5 text-right whitespace-nowrap tabular-nums'
 
   // Include any custom-priced model not present in the current period so users can always edit/reset it.
   const seen = new Set(rows.map(([m]) => m.toLowerCase()))
@@ -583,7 +584,7 @@ function ModelTable({
 
   return (
     <>
-      <div className="mt-6 mb-2.5 flex items-center justify-between gap-2">
+      <div className="mb-2.5 flex shrink-0 items-center justify-between gap-2">
         <div className="text-[12px] font-medium text-ink-3">{t('usage.modelSection')}</div>
         <button
           type="button"
@@ -593,11 +594,11 @@ function ModelTable({
           <IconPlus size={12} /> {t('usage.priceAddCustom')}
         </button>
       </div>
-      <div className={`overflow-hidden ${CARD}`}>
+      <div className={`min-h-0 flex-1 overflow-auto ${CARD}`}>
         <table className="w-full text-[13px]">
-          <thead>
-            <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
-              <th className="px-4 py-2 text-left font-medium">{t('usage.priceModel')}</th>
+          <thead className={STICKY_HEAD}>
+            <tr>
+              <th className="min-w-[10rem] px-4 py-2 text-left font-medium">{t('usage.priceModel')}</th>
               <th className={th}>{t('usage.priceInput')}</th>
               <th className={th}>{t('usage.priceOutput')}</th>
               <th className={th}>{t('usage.priceCacheRead')}</th>
@@ -620,12 +621,12 @@ function ModelTable({
                 return (
                   <tr key={model} className="border-b border-black/[0.05] last:border-0">
                     <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <span className={`truncate text-[12px] text-ink ${canEdit ? 'font-mono' : ''}`}>{modelLabel(model)}</span>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className={`wrap-anywhere text-[12px] text-ink ${canEdit ? 'font-mono' : ''}`}>{modelLabel(model)}</span>
                         <SourceBadge price={p} />
                       </div>
                       {p?.key && (p.source === 'estimate' || p.key !== key) && (
-                        <div className="mt-0.5 font-mono text-[10.5px] text-ink-3">{t('usage.priceMatched', { key: p.key })}</div>
+                        <div className="mt-0.5 font-mono text-[10.5px] wrap-anywhere text-ink-3">{t('usage.priceMatched', { key: p.key })}</div>
                       )}
                     </td>
                     <td className={`${td} ${isCustom ? 'font-medium text-accent' : 'text-ink-2'}`}>{fmtRate(r?.input)}</td>
@@ -679,7 +680,7 @@ function ModelTable({
           </tbody>
         </table>
       </div>
-      <p className="mt-2.5 px-1 text-[11.5px] leading-relaxed text-ink-3">{footnote}</p>
+      <p className="mt-2.5 shrink-0 px-1 text-[11.5px] leading-relaxed text-ink-3">{footnote}</p>
       {editing && <CustomPriceModal target={editing} onClose={() => setEditing(null)} />}
     </>
   )
@@ -694,6 +695,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
   const snap = useUsage()
   const [tab, setTabState] = useState<UsageTab>(lastUsageTab)
   const [logTotal, setLogTotal] = useState<number>(0)
+  const updateLogTotal = useCallback((counts: RequestLogPage['counts']) => setLogTotal(counts.total), [])
   const setTab = (next: UsageTab) => {
     lastUsageTab = next
     setTabState(next)
@@ -737,7 +739,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
   const modelCount = modelRows.length + extraCustomCount
   const cards = quotaCardProfiles(profiles)
   const idlest = idlestAccounts(profiles, snap)
-  const num = 'px-4 py-3 text-right tabular-nums'
+  const num = 'px-4 py-3 text-right whitespace-nowrap tabular-nums'
   const unpriced = total.unpriced ?? 0
 
   const tabs: { id: UsageTab; label: string; count: number }[] = [
@@ -747,7 +749,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
   ]
 
   const periodBar = (
-    <div className="mb-4 flex items-center gap-1 rounded-[10px] bg-fill p-0.5 text-[12.5px] w-fit">
+    <div className="flex w-fit items-center gap-1 rounded-[10px] bg-fill p-0.5 text-[12.5px]">
       {PERIODS.map((p) => (
         <button
           key={p}
@@ -761,9 +763,8 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
   )
 
   return (
-    <div>
-      {/* Top multi-dimensional tab bar */}
-      <div className="mb-5 flex items-center gap-1 border-b border-hairline" role="tablist">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-hairline px-8" role="tablist">
         {tabs.map((item) => {
           const active = tab === item.id
           return (
@@ -773,7 +774,7 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
               role="tab"
               aria-selected={active}
               onClick={() => setTab(item.id)}
-              className={`relative -mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] font-medium transition-colors ${
+              className={`relative -mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
                 active
                   ? 'border-accent text-ink'
                   : 'border-transparent text-ink-3 hover:text-ink-2'
@@ -792,86 +793,88 @@ export function UsageView({ onClose }: { onClose?: () => void }) {
         })}
       </div>
 
-      {tab === 'logs' && <RequestLogView onCloseDialog={onClose} onCountsChange={(c) => setLogTotal(c.total)} />}
+      {tab === 'logs' && <RequestLogView onCloseDialog={onClose} onCountsChange={updateLogTotal} />}
 
       {tab === 'accounts' && (
-        <div>
-          {periodBar}
-          <div className="grid grid-cols-4 gap-3">
-            <Stat
-              label={t('usage.statCost')}
-              value={fmtCost(total.costUsd)}
-              sub={unpriced > 0 ? t('usage.statCostUnpriced', { n: fmtTokens(unpriced) }) : t('usage.statCostSub')}
-            />
-            <Stat label={t('usage.statTokens')} value={fmtTokens(tokenSum(total))} sub={t('usage.statTodaySub', { n: fmtTokens(total.output) })} />
-            <Stat label={t('usage.statCacheHit')} value={fmtPct(cacheHit(total))} sub={t('usage.statCacheHitSub', { n: fmtTokens(total.cacheRead) })} />
-            <Stat label={t('usage.statRuns')} value={String(total.runs)} sub={t('usage.statRunsSub')} />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 px-8 pt-4 pb-3">{periodBar}</div>
+          <div className="@container min-h-0 flex-1 overflow-auto px-8 pb-8">
+            <div className="grid grid-cols-2 gap-3 @[680px]:grid-cols-4">
+              <Stat
+                label={t('usage.statCost')}
+                value={fmtCost(total.costUsd)}
+                sub={unpriced > 0 ? t('usage.statCostUnpriced', { n: fmtTokens(unpriced) }) : t('usage.statCostSub')}
+              />
+              <Stat label={t('usage.statTokens')} value={fmtTokens(tokenSum(total))} sub={t('usage.statTodaySub', { n: fmtTokens(total.output) })} />
+              <Stat label={t('usage.statCacheHit')} value={fmtPct(cacheHit(total))} sub={t('usage.statCacheHitSub', { n: fmtTokens(total.cacheRead) })} />
+              <Stat label={t('usage.statRuns')} value={String(total.runs)} sub={t('usage.statRunsSub')} />
+            </div>
+
+            <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
+            {cards.length ? (
+              <div className="grid grid-cols-1 gap-3 @[660px]:grid-cols-2 @[1080px]:grid-cols-3">
+                {cards.map((p) => (
+                  <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
+                ))}
+              </div>
+            ) : (
+              <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
+            )}
+
+            <SectionTitle>{t('usage.detailSection')}</SectionTitle>
+            {!profiles.length ? (
+              <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noData')}</div>
+            ) : (
+              <div className={CARD}>
+                <table className="w-full text-[13px]">
+                  <thead className={STICKY_HEAD}>
+                    <tr>
+                      <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
+                      <th className="px-4 py-2 text-right font-medium whitespace-nowrap">{t('usage.colTokens')}</th>
+                      <th className="px-4 py-2 text-right font-medium whitespace-nowrap">{t('usage.colCacheHit')}</th>
+                      <th className="px-4 py-2 text-right font-medium whitespace-nowrap">{t('usage.colRuns')}</th>
+                      <th className="px-4 py-2 text-right font-medium whitespace-nowrap">{t('usage.colCost')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {profiles.map((p) => {
+                      const u = byAccount.get(p.id)
+                      return (
+                        <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2.5">
+                              <ProfileAvatar profile={p} size={22} />
+                              <span className="font-medium wrap-anywhere text-ink">{p.name}</span>
+                            </div>
+                          </td>
+                          <td
+                            className={num}
+                            title={
+                              u
+                                ? t('usage.cellTip', { input: fmtTokens(u.input), output: fmtTokens(u.output), cacheRead: fmtTokens(u.cacheRead), cacheWrite: fmtTokens(u.cacheWrite) }) +
+                                  (u.reasoning ? t('usage.cellTipReasoning', { n: fmtTokens(u.reasoning) }) : '')
+                                : undefined
+                            }
+                          >
+                            {u ? fmtTokens(tokenSum(u)) : '—'}
+                          </td>
+                          <td className={`${num} text-ink-2`}>{u ? fmtPct(cacheHit(u)) : '—'}</td>
+                          <td className={`${num} text-ink-2`}>{u?.runs || '—'}</td>
+                          <td className={`${num} font-medium text-ink`}>{u && u.costUsd > 0 ? fmtCost(u.costUsd) : '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-
-          <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
-          {cards.length ? (
-            <div className="grid grid-cols-2 gap-3">
-              {cards.map((p) => (
-                <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
-              ))}
-            </div>
-          ) : (
-            <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
-          )}
-
-          <SectionTitle>{t('usage.detailSection')}</SectionTitle>
-          {!profiles.length ? (
-            <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noData')}</div>
-          ) : (
-            <div className={`overflow-hidden ${CARD}`}>
-              <table className="w-full text-[13px]">
-                <thead>
-                  <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
-                    <th className="px-4 py-2 text-left font-medium">{t('usage.colAccount')}</th>
-                    <th className="px-4 py-2 text-right font-medium">{t('usage.colTokens')}</th>
-                    <th className="px-4 py-2 text-right font-medium">{t('usage.colCacheHit')}</th>
-                    <th className="px-4 py-2 text-right font-medium">{t('usage.colRuns')}</th>
-                    <th className="px-4 py-2 text-right font-medium">{t('usage.colCost')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {profiles.map((p) => {
-                    const u = byAccount.get(p.id)
-                    return (
-                      <tr key={p.id} className="border-b border-black/[0.05] last:border-0">
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2.5">
-                            <ProfileAvatar profile={p} size={22} />
-                            <span className="truncate font-medium text-ink">{p.name}</span>
-                          </div>
-                        </td>
-                        <td
-                          className={num}
-                          title={
-                            u
-                              ? t('usage.cellTip', { input: fmtTokens(u.input), output: fmtTokens(u.output), cacheRead: fmtTokens(u.cacheRead), cacheWrite: fmtTokens(u.cacheWrite) }) +
-                                (u.reasoning ? t('usage.cellTipReasoning', { n: fmtTokens(u.reasoning) }) : '')
-                              : undefined
-                          }
-                        >
-                          {u ? fmtTokens(tokenSum(u)) : '—'}
-                        </td>
-                        <td className={`${num} text-ink-2`}>{u ? fmtPct(cacheHit(u)) : '—'}</td>
-                        <td className={`${num} text-ink-2`}>{u?.runs || '—'}</td>
-                        <td className={`${num} font-medium text-ink`}>{u && u.costUsd > 0 ? fmtCost(u.costUsd) : '—'}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       )}
 
       {tab === 'models' && (
-        <div>
-          {periodBar}
+        <div className="flex min-h-0 flex-1 flex-col px-8 pt-4 pb-6">
+          <div className="mb-3 shrink-0">{periodBar}</div>
           <ModelTable
             rows={modelRows}
             models={snap?.models ?? {}}

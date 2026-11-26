@@ -144,11 +144,13 @@ export const zhCN = {
 
   // ---- engines page
   'eng.title': '模型引擎',
+  'eng.all': '全部引擎',
   'eng.desc': '安装命令行工具并添加账号。每个账号的登录信息相互独立，可以同时使用多个账号。',
   'eng.found': '已找到 {cli}',
   'eng.notFound': '没有找到 {cli}',
   'eng.updating': '正在更新…',
   'eng.installing': '正在安装，通常需要 1–2 分钟…',
+  'eng.installed': '已安装',
   'eng.notInstalled': '尚未安装',
   'eng.viewProgress': '查看进度',
   'eng.installingBadge': '安装中',

@@ -23,7 +23,8 @@ const btnIcon =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-3 transition-colors hover:bg-black/[0.05] hover:text-ink active:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40'
 
 /** One grid for every account row on the page: identity | model | permissions | actions — columns line up across cards. */
-const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_10rem_7.5rem_5.5rem] items-center gap-x-3'
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-2 @[610px]:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto_auto]'
+const NAV_ITEM = 'flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-ink-2 hover:bg-fill aria-pressed:bg-accent/12 aria-pressed:font-medium aria-pressed:text-accent'
 
 /** Small read-only meta pill (click opens the account settings). */
 const CHIP =
@@ -53,18 +54,54 @@ const alertOf = (s: ProfileState['status'] | 'login'): { label: string; cls: str
   })[s as 'login']
 
 export function EnginesPage({ onClose }: { onClose: () => void }) {
-  const { profiles, loaded } = useApp()
+  const { profiles, loaded, kindState, engineFocus } = useApp()
+  const [selected, setSelected] = useState<ProfileKind | null>(null)
+  const scroll = useRef<HTMLDivElement>(null)
+  const target = engineFocus?.target
+  const focusedKind = KINDS.find((kind) => kind === target) ?? profiles.find((profile) => profile.id === target)?.kind
+
+  useEffect(() => {
+    if (focusedKind) setSelected(focusedKind)
+  }, [engineFocus, focusedKind])
+
+  const select = (kind: ProfileKind | null) => {
+    setSelected(kind)
+    if (scroll.current) scroll.current.scrollTop = 0
+  }
+  const groups = KINDS.map((kind) => ({ kind, accounts: profiles.filter((p) => p.kind === kind) }))
+
   return (
     <>
       <DialogHeader title={t('eng.title')} desc={t('eng.desc')} onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-6 pb-10">
-        {loaded && (
-          <div className="space-y-5">
-            {KINDS.map((k) => (
-              <EngineGroup key={k} kind={k} accounts={profiles.filter((p) => p.kind === k)} />
-            ))}
-          </div>
-        )}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <nav aria-label={t('eng.title')} className="w-[min(216px,30%)] shrink-0 space-y-1 overflow-y-auto border-r border-hairline bg-surface-2/60 p-3">
+          <button type="button" className={NAV_ITEM} aria-pressed={selected === null} onClick={() => select(null)}>
+            <span className="min-w-0 flex-1">{t('eng.all')}</span>
+            {loaded && <span className="rounded-full bg-fill px-1.5 text-[11px] tabular-nums">{profiles.length}</span>}
+          </button>
+          {loaded && groups.map(({ kind, accounts }) => {
+            const state = kindState(kind)
+            const status = state?.installing ? 'eng.installingBadge' : state?.binaryPath ? 'eng.installed' : 'eng.notInstalled'
+            return (
+              <button key={kind} type="button" className={NAV_ITEM} aria-pressed={selected === kind} onClick={() => select(kind)}>
+                <KindAvatar kind={kind} size={20} />
+                <span className="min-w-0 flex-1 truncate" title={KIND_META[kind].cli}>{KIND_META[kind].cli}</span>
+                <span role="img" aria-label={t(status)} title={t(status)}
+                  className={`size-1.5 shrink-0 rounded-full ${state?.installing ? 'bg-accent' : state?.binaryPath ? 'bg-green' : 'bg-muted-dot'}`} />
+                <span className="rounded-full bg-fill px-1.5 text-[11px] tabular-nums">{accounts.length}</span>
+              </button>
+            )
+          })}
+        </nav>
+        <div ref={scroll} className="@container min-h-0 min-w-0 flex-1 overflow-y-auto px-7 py-5">
+          {loaded && (
+            <div className="grid gap-5">
+              {groups.map(({ kind, accounts }) => (
+                <EngineGroup key={kind} kind={kind} accounts={accounts} hidden={selected !== null && selected !== kind} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </>
   )
@@ -73,19 +110,24 @@ export function EnginesPage({ onClose }: { onClose: () => void }) {
 /** Briefly highlights an element when another page navigates here with a focus target. */
 function useFlash(match: (target: string) => boolean): boolean {
   const { engineFocus } = useApp()
-  const [on, setOn] = useState(false)
+  const [flashed, setFlashed] = useState<typeof engineFocus>(null)
   useEffect(() => {
     if (!engineFocus || !match(engineFocus.target)) return
-    setOn(true)
-    const t = setTimeout(() => setOn(false), 1600)
-    return () => clearTimeout(t)
+    setFlashed(engineFocus)
+    const timer = setTimeout(() => setFlashed(null), 1600)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engineFocus])
-  return on
+  return flashed !== null && flashed === engineFocus
 }
 
-function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileState[] }) {
-  const { install, refresh, openDrawer, toast, kindState, openCliConfig, openAddAccount } = useApp()
+function scrollToEngineTarget(element: HTMLElement | null) {
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  element?.scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'center' })
+}
+
+function EngineGroup({ kind, accounts, hidden }: { kind: ProfileKind; accounts: ProfileState[]; hidden: boolean }) {
+  const { install, refresh, openDrawer, toast, kindState, openCliConfig, openAddAccount, engineFocus } = useApp()
   const meta = KIND_META[kind]
   const ks = kindState(kind)
   const ref = useRef<HTMLElement>(null)
@@ -96,8 +138,8 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
   const flash = useFlash((t) => t === kind || accounts.some((a) => a.id === t))
 
   useEffect(() => {
-    if (flash) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, [flash])
+    if (flash && !hidden && engineFocus?.target === kind) scrollToEngineTarget(ref.current)
+  }, [flash, hidden, engineFocus, kind])
 
   const binPath = ks?.binaryPath ?? null
   useEffect(() => {
@@ -120,7 +162,7 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
   }
 
   return (
-    <section ref={ref} className={`${CARD} transition-shadow duration-300 ${flash ? 'ring-4 ring-orange/25' : ''}`}>
+    <section ref={ref} hidden={hidden} className={`${CARD} transition-shadow duration-300 ${flash ? 'ring-4 ring-orange/25' : ''}`}>
       {/* CLI title bar */}
       <div className="flex h-[52px] items-center gap-3 rounded-t-xl border-b border-black/[0.06] bg-surface-2/80 pr-3 pl-4">
         <KindAvatar kind={kind} size={26} />
@@ -194,9 +236,13 @@ function EngineGroup({ kind, accounts }: { kind: ProfileKind; accounts: ProfileS
 }
 
 function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady: boolean }) {
-  const { openLogin, openConfig, openDrawer, removeAccount, toast } = useApp()
+  const { openLogin, openConfig, openDrawer, removeAccount, toast, engineFocus } = useApp()
   useModelsVersion() // model labels resolve once the list is cached
   const flash = useFlash((t) => t === a.id)
+  const row = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (flash && engineFocus?.target === a.id) scrollToEngineTarget(row.current)
+  }, [flash, engineFocus, a.id])
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(a.name)
   useEffect(() => setName(a.name), [a.name])
@@ -221,6 +267,7 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
         : t('apikey.badge')
     : (a.imported ? t('eng.whereImported', { dir: tildePath(a.resolvedConfigDir) }) : t('eng.whereOwn', { dir: tildePath(a.resolvedConfigDir) }))
   const perm = PERM[a.autoApprove === 'full' || a.autoApprove === 'edits' ? a.autoApprove : 'cli']
+  const model = modelLabel(a.defaultModel, a.id)
 
   const commitRename = async () => {
     setEditing(false)
@@ -242,9 +289,9 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
   }
 
   return (
-    <div className={`${ROW_GRID} min-h-[60px] px-4 py-2.5 transition-colors duration-300 ${flash ? 'bg-warn-soft' : ''}`}>
+    <div ref={row} className={`${ROW_GRID} min-h-[60px] px-4 py-2.5 transition-colors duration-300 ${flash ? 'bg-warn-soft' : ''}`}>
       {/* identity: dot · name · status, then where its config lives */}
-      <div className="min-w-0">
+      <div className="col-span-full min-w-0 @[610px]:col-span-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: loggingIn ? DOT_COLOR.running : DOT_COLOR[a.status] }} />
           {editing ? (
@@ -275,8 +322,8 @@ function AccountRow({ account: a, cliReady }: { account: ProfileState; cliReady:
       </div>
 
       {/* core config: default model · permissions */}
-      <button className={CHIP} onClick={() => openConfig(a.id)} title={t('eng.defaultModelHint')}>
-        <span className="truncate">{modelLabel(a.defaultModel, a.id)}</span>
+      <button className={CHIP} onClick={() => openConfig(a.id)} title={`${t('eng.defaultModelHint')} · ${model}`}>
+        <span className="truncate">{model}</span>
       </button>
       <button className={`${CHIP} ${perm.cls}`} onClick={() => openConfig(a.id)} title={t('eng.permHint')}>
         <span className="truncate">{t(perm.key)}</span>
@@ -339,7 +386,7 @@ function RowMenu({ items }: { items: { label: string; run: () => void; destructi
         </svg>
       </button>
       {open && (
-        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-black/[0.07] bg-surface/95 p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)] backdrop-blur-xl">
+        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-black/[0.07] bg-surface p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
           {items.map((it, i) => (
             <div key={it.label}>
               {it.destructive && i > 0 && <div className="mx-2 my-1 h-px bg-hairline" />}

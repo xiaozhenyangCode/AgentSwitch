@@ -521,13 +521,14 @@ export function WorkbenchPage() {
 
   // 文件修改 panel: open state remembered across chats
   const [changesOpen, setChangesOpen] = useState(() => localStorage.getItem('agentswitch.changesOpen') === '1')
-  const [historyDir, setHistoryDir] = useState<string | null>(null)
+  const [history, setHistory] = useState<{ dir: string; open: boolean } | null>(null)
   const setChangesVisible = (visible: boolean) => {
     localStorage.setItem('agentswitch.changesOpen', visible ? '1' : '0')
     setChangesOpen(visible)
   }
   const toggleChanges = () => setChangesVisible(!changesOpen)
-  const openHistory = () => setHistoryDir(ctx.projectDir)
+  const openHistory = () => setHistory(ctx.projectDir ? { dir: ctx.projectDir, open: true } : null)
+  const closeHistory = () => setHistory((current) => current && { ...current, open: false })
   const agentRunning = isThreadBusy(thread)
   const fc = useFileChanges(thread, ctx.projectDir, agentRunning, showGitTools && changesOpen)
   const git = useProjectGit(showGitTools ? ctx.projectDir : null, thread?.id ?? null, agentRunning, fc.refresh)
@@ -974,11 +975,12 @@ export function WorkbenchPage() {
           </div>
         </Modal>
       )}
-      {historyDir && historyDir === ctx.projectDir && (
-        <GitGraphView key={historyDir} dir={historyDir} onClose={() => setHistoryDir(null)} gitRevision={git.revision}
+      {history && history.dir === ctx.projectDir && (
+        <GitGraphView key={history.dir} dir={history.dir} open={history.open} onClose={closeHistory}
+          onExited={() => setHistory((current) => current?.open ? current : null)} gitRevision={git.revision}
           remote={showGitTools ? { status: git.status, disabled: git.disabled, pending: git.pending, run: git.run, refresh: git.refresh } : null}
           onViewChanges={() => {
-            setHistoryDir(null)
+            closeHistory()
             setChangesVisible(true)
             if (showGitTools) git.refreshAll()
             else fc.refresh()

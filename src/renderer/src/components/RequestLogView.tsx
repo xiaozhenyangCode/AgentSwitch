@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ProfileKind, RequestLogEntry, RequestLogPage, RequestLogQuery, RequestLogStatusFilter } from '@shared/types'
+import { useLayer } from '../lib/escStack'
 import { KIND_META } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { selectThread, useChat } from '../state/chat'
@@ -185,16 +186,15 @@ function RequestLogDetail({
     [entry.rawUsage]
   )
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
+  const closeButton = useRef<HTMLButtonElement>(null)
+  useLayer({ onEsc: onClose, onClose })
+  useLayoutEffect(() => {
+    const focused = document.activeElement
+    closeButton.current?.focus({ preventScroll: true })
+    return () => {
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true })
     }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose])
+  }, [])
 
   const copyJson = async () => {
     if (!rawJson) return
@@ -214,6 +214,7 @@ function RequestLogDetail({
       <div
         role="dialog"
         aria-modal="true"
+        aria-label={t('reqLog.detailTitle')}
         className="flex h-full w-[440px] max-w-[92vw] flex-col border-l border-black/[0.08] bg-surface shadow-[0_0_32px_rgba(0,0,0,0.18)] dark:border-white/[0.1]"
       >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline px-5 py-3.5">
@@ -225,6 +226,7 @@ function RequestLogDetail({
             </span>
           </div>
           <button
+            ref={closeButton}
             type="button"
             onClick={onClose}
             className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3 hover:bg-black/[0.06] hover:text-ink"
@@ -392,6 +394,7 @@ export function RequestLogView({
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [selected, setSelected] = useState<RequestLogEntry | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
 
@@ -468,12 +471,13 @@ export function RequestLogView({
 
   useEffect(() => {
     const el = sentinelRef.current
-    if (!el || !pageMeta.hasMore || loading) return
+    const root = scrollRef.current
+    if (!el || !root || !pageMeta.hasMore || loading) return
     const io = new IntersectionObserver(
       (items) => {
         if (items.some((i) => i.isIntersecting)) loadMore()
       },
-      { rootMargin: '180px' }
+      { root, rootMargin: '0px 0px 180px' }
     )
     io.observe(el)
     return () => io.disconnect()
@@ -495,9 +499,9 @@ export function RequestLogView({
   }
 
   return (
-    <div>
+    <div className="flex min-h-0 flex-1 flex-col px-8 pt-4 pb-6 [container-type:size]">
       {/* Toolbar: count summary on left, filters + column customizer on right */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
         <div className="text-[12px] text-ink-3 tabular-nums">
           {t('reqLog.showingCount', { shown: entries.length, total: pageMeta.filteredTotal })}
         </div>
@@ -583,7 +587,7 @@ export function RequestLogView({
                     {t('reqLog.columnsReset')}
                   </button>
                 </div>
-                <div className="max-h-72 overflow-y-auto py-0.5">
+                <div className="max-h-[min(18rem,max(2rem,calc(100cqh-7rem)))] overflow-y-auto py-0.5">
                   {REQUEST_LOG_COLUMNS.map((col) => {
                     const checked = columns[col.key]
                     return (
@@ -609,10 +613,10 @@ export function RequestLogView({
       </div>
 
       {/* Paginated dense table */}
-      <div className={`overflow-x-auto ${CARD}`}>
+      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-auto ${CARD}`}>
         <table className="w-full border-collapse text-[12.5px]">
-          <thead>
-            <tr className="border-b border-black/[0.06] bg-surface-2/80 text-[11.5px] text-ink-3">
+          <thead className="text-[11.5px] text-ink-3 [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-surface-2 [&_th]:shadow-[inset_0_-1px_var(--hairline)]">
+            <tr>
               <th className="px-3 py-2 text-left font-medium whitespace-nowrap">{t('reqLog.col.time')}</th>
               {visibleCols.map((col) => (
                 <th
@@ -657,7 +661,7 @@ export function RequestLogView({
                     switch (col.key) {
                       case 'engine':
                         return (
-                          <td key={col.key} className="max-w-[140px] px-2.5 py-2 whitespace-nowrap">
+                          <td key={col.key} className="px-2.5 py-2 whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
                               <KindAvatar kind={entry.engineKind} size={16} />
                               <span className="truncate text-ink" title={`${KIND_META[entry.engineKind]?.name ?? entry.engineKind} · ${entry.accountName}`}>
@@ -668,13 +672,13 @@ export function RequestLogView({
                         )
                       case 'provider':
                         return (
-                          <td key={col.key} className="max-w-[110px] truncate px-2.5 py-2 whitespace-nowrap text-ink-2" title={entry.provider}>
+                          <td key={col.key} className="max-w-[180px] truncate px-2.5 py-2 whitespace-nowrap text-ink-2" title={entry.provider}>
                             {entry.provider}
                           </td>
                         )
                       case 'model':
                         return (
-                          <td key={col.key} className="max-w-[180px] truncate px-2.5 py-2 font-mono text-[11.5px] whitespace-nowrap text-ink" title={entry.model}>
+                          <td key={col.key} className="max-w-[280px] truncate px-2.5 py-2 font-mono text-[11.5px] whitespace-nowrap text-ink" title={entry.model}>
                             {entry.model}
                           </td>
                         )
@@ -769,21 +773,18 @@ export function RequestLogView({
             )}
           </tbody>
         </table>
-      </div>
-
-      {/* Infinite-scroll sentinel + manual Load More fallback */}
-      <div ref={sentinelRef} className="mt-3 flex justify-center">
-        {pageMeta.hasMore && (
-          <button
-            type="button"
-            disabled={loadingMore}
-            onClick={loadMore}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.09] bg-surface px-4 text-[12px] font-medium text-ink-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-black/[0.03] hover:text-ink disabled:opacity-60"
-          >
-            {loadingMore && <Spinner size={12} />}
-            {loadingMore ? t('reqLog.loading') : t('reqLog.loadMore')}
-          </button>
-        )}
+        {/* Infinite-scroll sentinel + manual Load More fallback */}
+        {pageMeta.hasMore && <div ref={sentinelRef} className="sticky left-0 flex justify-center py-3">
+            <button
+              type="button"
+              disabled={loadingMore}
+              onClick={loadMore}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.09] bg-surface px-4 text-[12px] font-medium text-ink-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:bg-black/[0.03] hover:text-ink disabled:opacity-60"
+            >
+              {loadingMore && <Spinner size={12} />}
+              {loadingMore ? t('reqLog.loading') : t('reqLog.loadMore')}
+            </button>
+        </div>}
       </div>
 
       {selected && <RequestLogDetail entry={selected} onClose={() => setSelected(null)} onJumpThread={handleJumpThread} />}

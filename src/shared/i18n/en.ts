@@ -134,11 +134,13 @@ export const en: Dict = {
   'install.viewLog': 'View Log',
 
   'eng.title': 'Model Engines',
+  'eng.all': 'All engines',
   'eng.desc': 'Install the command-line tools and add accounts. Each account keeps its own sign-in, so you can use several at once.',
   'eng.found': 'Found {cli}',
   'eng.notFound': '{cli} not found',
   'eng.updating': 'Updating…',
   'eng.installing': 'Installing, usually takes 1–2 minutes…',
+  'eng.installed': 'Installed',
   'eng.notInstalled': 'Not installed',
   'eng.viewProgress': 'View Progress',
   'eng.installingBadge': 'Installing',

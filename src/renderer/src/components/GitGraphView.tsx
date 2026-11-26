@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { normalizeGitCommitQuery } from '@shared/gitCommitMatch'
 import type { GitBranch, GitCommitDetail, GitGraphCommit, GitGraphData, GitMutation, GitMutationResult, GitStatus } from '@shared/types'
-import { useLayer } from '../lib/escStack'
 import {
   appendGraphPage, getGraphNodes, graphCommits, graphLinePath, layoutGitGraph,
   GRAPH_LANE_GAP, GRAPH_LEFT_PAD, GRAPH_ROW_HEIGHT, WORKTREE_NODE, type GraphRow
@@ -13,6 +12,7 @@ import { Counts, FileRow } from './ChangesPanel'
 import { GitBranchFromCommitForm, GitCommitMenu, type GitMenuSelection } from './GitCommitMenu'
 import { GitConflictBar, gitConflictLabel, gitOperationReason } from './GitConflicts'
 import { GitRepositoryDialog, GitTagForm } from './GitRepositoryDialog'
+import { SheetCloseButton, WorkspaceSheetModal } from './WorkspaceSheetModal'
 import { IconArrowUp, IconBranch, IconCheck, IconChevronDown, IconCopy, IconDownload, IconFocus, IconRefresh, IconSearch, IconTag, IconX, Spinner } from './icons'
 
 type CommitDetail = { hash: string; commit?: GitCommitDetail; error?: string }
@@ -63,9 +63,11 @@ function readColumnWidths() {
   return widths
 }
 
-export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision }: {
+export function GitGraphView({ dir, open, onClose, onExited, onViewChanges, remote, gitRevision }: {
   dir: string
+  open: boolean
   onClose: () => void
+  onExited: () => void
   onViewChanges: () => void
   remote: RemoteControls | null
   gitRevision: number
@@ -104,15 +106,6 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision 
   const remoteRunning = useRef(false)
   const detailRequest = useRef(0)
   const copyRequest = useRef(0)
-
-  useLayer({ onEsc: onClose, onClose })
-  useLayoutEffect(() => {
-    const focused = document.activeElement
-    search.current?.focus()
-    return () => {
-      if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true })
-    }
-  }, [])
 
   const cancelSearch = useCallback(() => {
     if (searchTimer.current !== null) clearTimeout(searchTimer.current)
@@ -345,21 +338,15 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision 
   }
 
   return (
-    <div ref={overlay} className="no-drag fixed inset-0 z-40 grid place-items-center bg-(--scrim)"
-      onMouseDown={(event) => { if (event.target === overlay.current) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="git-workspace-title" inert={!!(form || repository || confirmState)}
-        className="git-workspace flex h-[calc(100vh*2/3)] min-h-[min(460px,calc(100vh-32px))] max-h-[calc(100vh-32px)] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl bg-surface text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]"
-        onKeyDown={(event) => {
-          if (event.key !== 'Tab') return
-          const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, [tabindex="0"]')]
-            .filter((element) => element.tabIndex >= 0 && element.getClientRects().length)
-          const first = focusable[0]
-          const last = focusable.at(-1)
-          if (event.shiftKey ? document.activeElement === first : document.activeElement === last) {
-            event.preventDefault()
-            ;(event.shiftKey ? last : first)?.focus()
-          }
-        }}>
+    <WorkspaceSheetModal
+      open={open}
+      onClose={onClose}
+      onExited={onExited}
+      ariaLabelledBy="git-workspace-title"
+      panelClassName="git-workspace"
+      inert={!!(form || repository || confirmState)}
+      overlayRef={overlay}
+      header={(
         <header className="flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-2 px-3 py-2">
           <h2 id="git-workspace-title" className="mr-2 flex shrink-0 items-center gap-2 text-[13px] font-semibold">
             <IconBranch size={15} className="text-ink-2" aria-hidden="true" />
@@ -378,7 +365,7 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision 
           </label>
           <label className="flex h-8 min-w-28 max-w-[370px] flex-1 items-center gap-2 rounded-lg border border-hairline bg-surface px-2.5 focus-within:border-accent">
             <IconSearch size={14} className="shrink-0 text-ink-3" aria-hidden="true" />
-            <input ref={search} type="search" className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-ink-3"
+            <input ref={search} data-sheet-autofocus type="search" className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-ink-3"
               placeholder={t('git.searchCommits')} aria-label={t('git.searchCommits')} value={query}
               onChange={(event) => updateSearch(event.target.value)}
               onCompositionStart={() => { composing.current = true; cancelSearch() }}
@@ -400,67 +387,70 @@ export function GitGraphView({ dir, onClose, onViewChanges, remote, gitRevision 
               aria-label={t('git.refreshGraph')} title={t('git.refreshGraph')}>
               <IconRefresh size={15} />
             </button>
-            <button type="button" className={iconButton} onClick={onClose} aria-label={t('common.close')} title={t('common.close')}>
-              <IconX size={16} aria-hidden="true" />
-            </button>
+            <SheetCloseButton onClick={onClose} />
           </div>
         </header>
-        {gitTools && <GitConflictBar tools={gitTools} />}
-        {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
-        <GitHistorySplit inspector={(
-          <CommitInspector detail={detail} copiedHash={copiedHash} onCopy={(hash) => void copyHash(hash)} onRetry={(hash) => void openCommit(hash)} />
-        )}>
-          <div ref={list} className="h-full overflow-auto scroll-pt-[32px]" onKeyDown={navigateRows}
-            aria-label={t('git.historyTab')} role="region">
-            <div ref={table} style={tableStyle}>
-              <div className="sticky top-0 z-10 grid h-[32px] items-center border-b border-hairline bg-surface-2 text-[11px] font-medium text-ink-2" style={{ gridTemplateColumns: columns }}>
-                <span className="col-start-2 min-w-0 truncate pl-2">{t('git.graphSubject')}</span>
-                {adjustableColumns.map((column) => (
-                  <ColumnHeader key={column} column={column} width={widths[column]} table={table} onResize={saveWidth} />
-                ))}
-              </div>
-              {data?.dirty && !data.headHash && !filters.current.query && <WorktreeRow count={data.uncommittedCount} onClick={onViewChanges} />}
-              {topology.rows.map((row) => {
-                const isHead = row.hash === data?.headHash
-                const graph = <GraphRail row={row} head={isHead} width={graphWidth} />
-                const commit = byHash.get(row.hash)
-                if (!commit) return <WorktreeRow key={row.hash} rail={graph} count={data?.uncommittedCount ?? 0} onClick={onViewChanges} />
-                return <HistoryRow key={row.hash} commit={commit} rail={graph} head={isHead} columns={columns}
-                  selected={detail?.hash === row.hash} tabIndex={tabStop === row.hash ? 0 : -1} copied={copiedHash === row.hash}
-                  onSelect={() => selectCommit(row.hash)} onCopy={() => void copyHash(row.hash)}
-                  onMenu={(x, y, trigger) => setMenu({ commit, x, y, trigger })} />
-              })}
-              {data && !loading && !commits.length && (
-                <p className="px-4 py-4 text-[12px] text-ink-2">{t(filters.current.query ? 'git.noMatchingCommits' : 'git.noCommits')}</p>
-              )}
-              {loadError && <ReadError text={t('git.historyFailed')} detail={loadError}
-                onRetry={() => { if (data) loadMore(); else void reload() }} />}
-              {!loadError && (loading || data) && (
-                <div className="border-t border-hairline px-3 py-2">
-                  {loading
-                    ? <p role="status" className="flex items-center gap-2 px-2.5 py-1 text-[12px] text-ink-2"><Spinner size={13} />{t('git.loadingHistory')}</p>
-                    : data?.hasMore
-                      ? <button type="button" className={textButton} onClick={loadMore}>{t('git.graphMore')}</button>
-                      : <p role="status" className="px-2.5 py-1 text-[12px] text-ink-3">{t('git.historyAllLoaded')}</p>}
-                </div>
-              )}
-              <div ref={sentinel} className="h-px" aria-hidden="true" />
+      )}
+      overlayChildren={(
+        <>
+          {menu && overlay.current && <GitCommitMenu dir={dir} tools={gitTools} selection={menu} host={overlay.current}
+            onClose={closeMenu} onCopyHash={(hash) => void copyHash(hash)}
+            onBranchForm={() => setForm({ kind: 'branch', commit: menu.commit })}
+            onTagForm={() => setForm({ kind: 'tag', commit: menu.commit })} />}
+          {gitTools && form?.kind === 'branch' && <GitBranchFromCommitForm commit={form.commit}
+            run={gitTools.run} disabled={gitTools.disabled} onClose={() => setForm(null)} />}
+          {gitTools && form?.kind === 'tag' && <GitTagForm target={form.commit.hash} run={gitTools.run}
+            disabled={gitTools.disabled} onClose={() => setForm(null)} />}
+          {gitTools && repository && <GitRepositoryDialog dir={dir} initialTab={repository} tools={gitTools}
+            onClose={() => setRepository(null)} />}
+        </>
+      )}
+    >
+      {gitTools && <GitConflictBar tools={gitTools} />}
+      {remote && remoteError && <RemoteError result={remoteError} onClose={() => setRemoteError(null)} />}
+      <GitHistorySplit inspector={(
+        <CommitInspector detail={detail} copiedHash={copiedHash} onCopy={(hash) => void copyHash(hash)} onRetry={(hash) => void openCommit(hash)} />
+      )}>
+        <div ref={list} className="h-full overflow-auto scroll-pt-[32px]" onKeyDown={navigateRows}
+          aria-label={t('git.historyTab')} role="region">
+          <div ref={table} style={tableStyle}>
+            <div className="sticky top-0 z-10 grid h-[32px] items-center border-b border-hairline bg-surface-2 text-[11px] font-medium text-ink-2" style={{ gridTemplateColumns: columns }}>
+              <span className="col-start-2 min-w-0 truncate pl-2">{t('git.graphSubject')}</span>
+              {adjustableColumns.map((column) => (
+                <ColumnHeader key={column} column={column} width={widths[column]} table={table} onResize={saveWidth} />
+              ))}
             </div>
+            {data?.dirty && !data.headHash && !filters.current.query && <WorktreeRow count={data.uncommittedCount} onClick={onViewChanges} />}
+            {topology.rows.map((row) => {
+              const isHead = row.hash === data?.headHash
+              const graph = <GraphRail row={row} head={isHead} width={graphWidth} />
+              const commit = byHash.get(row.hash)
+              if (!commit) return <WorktreeRow key={row.hash} rail={graph} count={data?.uncommittedCount ?? 0} onClick={onViewChanges} />
+              return <HistoryRow key={row.hash} commit={commit} rail={graph} head={isHead} columns={columns}
+                selected={detail?.hash === row.hash} tabIndex={tabStop === row.hash ? 0 : -1} copied={copiedHash === row.hash}
+                onSelect={() => selectCommit(row.hash)} onCopy={() => void copyHash(row.hash)}
+                onMenu={(x, y, trigger) => setMenu({ commit, x, y, trigger })} />
+            })}
+            {data && !loading && !commits.length && (
+              <p className="px-4 py-4 text-[12px] text-ink-2">{t(filters.current.query ? 'git.noMatchingCommits' : 'git.noCommits')}</p>
+            )}
+            {loadError && <ReadError text={t('git.historyFailed')} detail={loadError}
+              onRetry={() => { if (data) loadMore(); else void reload() }} />}
+            {!loadError && (loading || data) && (
+              <div className="border-t border-hairline px-3 py-2">
+                {loading
+                  ? <p role="status" className="flex items-center gap-2 px-2.5 py-1 text-[12px] text-ink-2"><Spinner size={13} />{t('git.loadingHistory')}</p>
+                  : data?.hasMore
+                    ? <button type="button" className={textButton} onClick={loadMore}>{t('git.graphMore')}</button>
+                    : <p role="status" className="px-2.5 py-1 text-[12px] text-ink-3">{t('git.historyAllLoaded')}</p>}
+              </div>
+            )}
+            <div ref={sentinel} className="h-px" aria-hidden="true" />
           </div>
-        </GitHistorySplit>
-        <span className="sr-only" role="status">{copiedHash && t('common.copied')}</span>
-      </div>
-      {menu && overlay.current && <GitCommitMenu dir={dir} tools={gitTools} selection={menu} host={overlay.current}
-        onClose={closeMenu} onCopyHash={(hash) => void copyHash(hash)}
-        onBranchForm={() => setForm({ kind: 'branch', commit: menu.commit })}
-        onTagForm={() => setForm({ kind: 'tag', commit: menu.commit })} />}
-      {gitTools && form?.kind === 'branch' && <GitBranchFromCommitForm commit={form.commit}
-        run={gitTools.run} disabled={gitTools.disabled} onClose={() => setForm(null)} />}
-      {gitTools && form?.kind === 'tag' && <GitTagForm target={form.commit.hash} run={gitTools.run}
-        disabled={gitTools.disabled} onClose={() => setForm(null)} />}
-      {gitTools && repository && <GitRepositoryDialog dir={dir} initialTab={repository} tools={gitTools}
-        onClose={() => setRepository(null)} />}
-    </div>
+        </div>
+      </GitHistorySplit>
+      <span className="sr-only" role="status">{copiedHash && t('common.copied')}</span>
+    </WorkspaceSheetModal>
   )
 }
 

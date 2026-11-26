@@ -134,11 +134,13 @@ export const ja: Dict = {
   'install.viewLog': 'ログを表示',
 
   'eng.title': 'モデルエンジン',
+  'eng.all': 'すべてのエンジン',
   'eng.desc': 'コマンドラインツールをインストールしてアカウントを追加します。アカウントごとにログイン情報は独立しているため、複数を同時に使えます。',
   'eng.found': '{cli} が見つかりました',
   'eng.notFound': '{cli} が見つかりません',
   'eng.updating': 'アップデート中…',
   'eng.installing': 'インストール中、通常 1〜2 分かかります…',
+  'eng.installed': 'インストール済み',
   'eng.notInstalled': '未インストール',
   'eng.viewProgress': '進行状況を表示',
   'eng.installingBadge': 'インストール中',
