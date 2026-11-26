@@ -12,7 +12,7 @@ import {
 import { KIND_META } from '../lib/ui'
 import { canUseOAuthLogin } from '@shared/providerCapabilities'
 import { t } from './i18n'
-import { forgetAccountModels, loadModels } from './models'
+import { forgetAccountModels, loadModels, reloadAccountModels } from './models'
 
 export type Page = 'workbench' | 'engines' | 'usage'
 export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'developer' | 'shortcuts' | 'about'
@@ -46,6 +46,7 @@ interface AppState {
   loaded: boolean
   profiles: ProfileState[]
   kinds: KindState[]
+  cliVersions: Partial<Record<ProfileKind, string | null>>
   byId: (id: ProfileId) => ProfileState | undefined
   kindState: (k: ProfileKind) => KindState | undefined
   refresh: () => Promise<Snapshot>
@@ -115,6 +116,8 @@ export const useApp = (): AppState => {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [snap, setSnap] = useState<Snapshot | null>(null)
+  const [cliVersions, setCliVersions] = useState<AppState['cliVersions']>({})
+  const versionProbes = useRef(new Map<ProfileKind, { binaryPath: string | null }>())
   const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
   const [sidebarOpen, setSidebarOpenState] = useState<boolean>(() => localStorage.getItem('agentswitch.sidebar.open') !== '0')
@@ -131,6 +134,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const profiles = snap?.profiles ?? []
   const kinds = snap?.kinds ?? []
+  const profilesRef = useRef(profiles)
+  profilesRef.current = profiles
 
   const refresh = useCallback(async () => {
     const s = await window.agentswitch.state.get()
@@ -171,6 +176,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [dismissToast]
   )
+
+  useEffect(() => window.agentswitch.cli.onUpdated((event) => {
+    const { kind, binaryPath, version, source, affectedProfileIds, hasRunningTasks } = event
+    versionProbes.current.set(kind, { binaryPath })
+    setCliVersions((previous) => ({ ...previous, [kind]: version }))
+    const ids = new Set(affectedProfileIds)
+    for (const profile of profilesRef.current) if (profile.kind === kind) ids.add(profile.id)
+    for (const id of ids) void reloadAccountModels(id)
+
+    if (source === 'config') return
+    const verb = t(source === 'update' ? 'install.verbUpdate' : 'install.verbInstall')
+    const title = t('install.done', { name: KIND_META[kind].cli, verb })
+    const desc = version
+      ? t(hasRunningTasks ? 'install.updatedDeferred' : 'install.updatedReady', { v: version.replace(/^v/i, '') })
+      : t(hasRunningTasks ? 'install.updatedDeferredNoVer' : 'install.updatedReadyNoVer')
+    toast({ kind: 'success', title, desc })
+  }), [toast])
+
+  useEffect(() => {
+    for (const { kind, binaryPath } of snap?.kinds ?? []) {
+      if (versionProbes.current.get(kind)?.binaryPath === binaryPath) continue
+      const probe = { binaryPath }
+      versionProbes.current.set(kind, probe)
+      setCliVersions((previous) => ({ ...previous, [kind]: binaryPath ? undefined : null }))
+      if (!binaryPath) continue
+      const setVersion = (version: string | null) => {
+        if (versionProbes.current.get(kind) === probe) {
+          setCliVersions((previous) => ({ ...previous, [kind]: version }))
+        }
+      }
+      void window.agentswitch.cli.version(kind).then(setVersion, () => setVersion(null))
+    }
+  }, [snap?.kinds])
+
   const confirm = useCallback(
     (o: ConfirmOptions) =>
       new Promise<boolean>((resolve) =>
@@ -249,8 +288,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const sid = installSessionId(kind)
       const name = KIND_META[kind].cli
       const verb = update ? t('install.verbUpdate') : t('install.verbInstall')
+      let off = () => {}
       const done = new Promise<number>((resolve) => {
-        const off = window.agentswitch.pty.onExit((e) => {
+        off = window.agentswitch.pty.onExit((e) => {
           if (e.sessionId === sid) {
             off()
             resolve(e.exitCode)
@@ -260,6 +300,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         await window.agentswitch.cli.install(kind, update)
       } catch (e) {
+        off()
         const error = ipcError(e)
         toast({ kind: 'error', title: t('install.startFailed', { name, verb }), desc: error })
         return { ok: false, error }
@@ -267,10 +308,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const code = await done
       const s = await refresh()
       const ok = !!s.kinds.find((k) => k.kind === kind)?.binaryPath
-      if (code === 0 && ok) {
-        toast({ kind: 'success', title: t('install.done', { name, verb }) })
-        return { ok: true }
-      }
+      if (code === 0 && ok) return { ok: true }
       if (code === -1) {
         toast({ kind: 'info', title: t('install.cancelled', { name, verb }) })
         return { ok: false, cancelled: true }
@@ -288,6 +326,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loaded: snap !== null,
       profiles,
       kinds,
+      cliVersions,
       byId,
       kindState,
       refresh,
@@ -324,7 +363,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dismissToast,
       install
     }),
-    [info, snap, profiles, kinds, byId, kindState, refresh, page, navigate, engineFocus, sidebarOpen, setSidebarOpen, toggleSidebar, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
+    [info, snap, profiles, kinds, cliVersions, byId, kindState, refresh, page, navigate, engineFocus, sidebarOpen, setSidebarOpen, toggleSidebar, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

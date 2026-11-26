@@ -146,8 +146,9 @@ describe('agy ACP runs', () => {
   })
 
   async function begin(specPatch: Partial<RunSpec> = {}) {
+    const starts = vi.mocked(startAcpProcess).mock.calls.length
     const run = runAgent({ ...spec, ...specPatch }, emit, log)
-    await vi.waitFor(() => expect(startAcpProcess).toHaveBeenCalled())
+    await vi.waitFor(() => expect(startAcpProcess).toHaveBeenCalledTimes(starts + 1))
     return { run, cli: server }
   }
 
@@ -710,6 +711,9 @@ describe('agy ACP runs', () => {
   it('retires the exact process after cancellation times out', async () => {
     const { run, cli } = await begin()
     await sendPrompt(cli)
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 0, deferred: 1 })
+    const next = await begin()
+    const nextPrompt = await sendPrompt(next.cli)
     vi.useFakeTimers()
     run.kill()
     await vi.advanceTimersByTimeAsync(14_999)
@@ -717,6 +721,9 @@ describe('agy ACP runs', () => {
     await vi.advanceTimersByTimeAsync(1)
     await expect(run.done).resolves.toMatchObject({ stopped: true, error: null })
     expect(cli.process.terminate).toHaveBeenCalledTimes(1)
+    expect(next.cli.process.terminate).not.toHaveBeenCalled()
+    next.cli.send({ id: nextPrompt.id, result })
+    await expect(next.run.done).resolves.toMatchObject({ ok: true })
   })
 
   it('falls back only on startup errors and disables ACP after three failed starts', async () => {
@@ -741,6 +748,17 @@ describe('agy ACP runs', () => {
       expect(args.at(-1)).not.toContain('read_thread')
     }
     expect(emit.mock.calls.filter(([e]) => e.t === 'notice')).toHaveLength(3)
+    expect(agyAcpPool.disabled(id)).toBe(true)
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 0, deferred: 0 })
+    expect(agyAcpPool.disabled(id)).toBe(false)
+    vi.mocked(startAcpProcess).mockImplementationOnce(async (opts) => {
+      server = fakeAgy(opts)
+      return server.process
+    })
+    const { run, cli } = await begin({ cfg: { ...cfg, id } })
+    const prompt = await sendPrompt(cli)
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
   })
 
   it('reports session failures without falling back to print', async () => {
@@ -761,6 +779,86 @@ describe('agy ACP runs', () => {
     expect(cli.process.terminate).toHaveBeenCalledTimes(1)
   })
 
+  it('retires an idle CLI immediately, clears its timer, and starts a new process for the next turn', async () => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    vi.useFakeTimers()
+    cli.send({ id: prompt.id, result })
+    await expect(run.done).resolves.toMatchObject({ ok: true })
+    expect(vi.getTimerCount()).toBe(1)
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 1, deferred: 0 })
+    expect(cli.process.terminate).toHaveBeenCalledExactlyOnceWith(false)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+    const next = await begin()
+    expect(next.cli).not.toBe(cli)
+    const nextPrompt = await sendPrompt(next.cli)
+    next.cli.send({ id: nextPrompt.id, result })
+    await expect(next.run.done).resolves.toMatchObject({ ok: true })
+  })
+
+  it.each(['success', 'error', 'abort'] as const)('retires busy ACP only after %s and starts new requests on a fresh connection', async (outcome) => {
+    const { run, cli } = await begin()
+    const prompt = await sendPrompt(cli)
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 0, deferred: 1 })
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 0, deferred: 1 })
+    expect(agyAcpPool.hasActive(id)).toBe(true)
+    const next = await begin()
+    const nextPrompt = await sendPrompt(next.cli)
+    expect(next.cli).not.toBe(cli)
+    expect(cli.process.terminate).not.toHaveBeenCalled()
+    next.cli.send({ id: nextPrompt.id, result })
+    await expect(next.run.done).resolves.toMatchObject({ ok: true })
+    expect(agyAcpPool.hasActive()).toBe(true)
+    expect(cli.process.terminate).not.toHaveBeenCalled()
+
+    if (outcome === 'abort') {
+      run.kill()
+      await cli.request('session/cancel')
+      expect(cli.process.terminate).not.toHaveBeenCalled()
+      cli.send({ id: prompt.id, result: { stopReason: 'cancelled' } })
+      await expect(run.done).resolves.toMatchObject({ ok: false, stopped: true })
+    } else if (outcome === 'error') {
+      cli.send({ id: prompt.id, error: { code: -32603, message: 'prompt failed' } })
+      await expect(run.done).resolves.toMatchObject({ ok: false, error: expect.stringContaining('prompt failed') })
+    } else {
+      cli.send(cli.update(text('still running')), { id: prompt.id, result })
+      await expect(run.done).resolves.toMatchObject({ ok: true })
+    }
+    expect(agyAcpPool.hasActive(id)).toBe(false)
+    expect(cli.process.terminate).toHaveBeenCalledExactlyOnceWith(false)
+    expect(next.cli.process.terminate).not.toHaveBeenCalled()
+  })
+
+  it('removes a retired startup that fails without counting it against the replacement', async () => {
+    let rejectStart!: (error: Error) => void
+    vi.mocked(startAcpProcess).mockImplementationOnce(() => new Promise((_, reject) => { rejectStart = reject }))
+    const starting = agyAcpPool.acquire(id, log)
+    await vi.waitFor(() => expect(startAcpProcess).toHaveBeenCalled())
+    expect(agyAcpPool.retireOnCliUpdate()).toEqual({ retired: 0, deferred: 1 })
+    const replacement = await agyAcpPool.acquire(id, log)
+    // Two fresh failures and the old failure must never disable the account.
+    agyAcpPool.retire(id, replacement.connection)
+    vi.mocked(startAcpProcess).mockRejectedValueOnce(new Error('new startup failed')).mockRejectedValueOnce(new Error('new startup failed'))
+    for (let i = 0; i < 2; i++) await expect(agyAcpPool.acquire(id, log)).rejects.toThrow('new startup failed')
+    rejectStart(new Error('old startup failed'))
+    await expect(starting).rejects.toThrow('old startup failed')
+    expect(agyAcpPool.disabled(id)).toBe(false)
+    expect(agyAcpPool.hasActive()).toBe(false)
+  })
+
+  it('retires both generations on account removal', async () => {
+    const old = await agyAcpPool.acquire(id, log)
+    agyAcpPool.retireOnCliUpdate()
+    const current = await agyAcpPool.acquire(id, log)
+    agyAcpPool.retire(id, undefined, true)
+    expect(old.connection.process.terminate).toHaveBeenCalledExactlyOnceWith(true)
+    expect(current.connection.process.terminate).toHaveBeenCalledExactlyOnceWith(true)
+    expect(agyAcpPool.hasActive()).toBe(false)
+    old.release()
+    current.release()
+  })
+
   it('defers idle cleanup while a background command is still running', async () => {
     const { run, cli } = await begin()
     const prompt = await sendPrompt(cli)
@@ -772,6 +870,21 @@ describe('agy ACP runs', () => {
     cli.send(cli.update(call('completed')))
     await vi.advanceTimersByTimeAsync(IDLE_MS)
     expect(cli.process.terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it('shuts down both generations and refuses new acquisitions', async () => {
+    vi.resetModules()
+    const { agyAcpPool: pool } = await import('./pool')
+    const old = await pool.acquire(id, log)
+    pool.retireOnCliUpdate()
+    const current = await pool.acquire(id, log)
+    pool.shutdownAll()
+    expect(old.connection.process.terminate).toHaveBeenCalledExactlyOnceWith(false)
+    expect(current.connection.process.terminate).toHaveBeenCalledExactlyOnceWith(false)
+    expect(pool.hasActive()).toBe(false)
+    await expect(pool.acquire(id, log)).rejects.toThrow('shutting down')
+    old.release()
+    current.release()
   })
 })
 

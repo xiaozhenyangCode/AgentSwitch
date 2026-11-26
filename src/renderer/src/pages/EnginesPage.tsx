@@ -127,28 +127,19 @@ function scrollToEngineTarget(element: HTMLElement | null) {
 }
 
 function EngineGroup({ kind, accounts, hidden }: { kind: ProfileKind; accounts: ProfileState[]; hidden: boolean }) {
-  const { install, refresh, openDrawer, toast, kindState, openCliConfig, openAddAccount, engineFocus } = useApp()
+  const { install, refresh, openDrawer, toast, kindState, openCliConfig, openAddAccount, engineFocus, cliVersions } = useApp()
   const meta = KIND_META[kind]
   const ks = kindState(kind)
   const ref = useRef<HTMLElement>(null)
   const installed = !!ks?.binaryPath
   const installing = !!ks?.installing
-  const [version, setVersion] = useState<string | null>(null)
+  const version = cliVersions[kind]
   const [checking, setChecking] = useState(false)
   const flash = useFlash((t) => t === kind || accounts.some((a) => a.id === t))
 
   useEffect(() => {
     if (flash && !hidden && engineFocus?.target === kind) scrollToEngineTarget(ref.current)
   }, [flash, hidden, engineFocus, kind])
-
-  const binPath = ks?.binaryPath ?? null
-  useEffect(() => {
-    if (!binPath) {
-      setVersion(null)
-      return
-    }
-    void window.agentswitch.cli.version(kind).then(setVersion)
-  }, [kind, binPath])
 
   const recheck = async () => {
     setChecking(true)

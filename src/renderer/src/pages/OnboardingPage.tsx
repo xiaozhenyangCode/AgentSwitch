@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { KINDS, type ProfileKind, type ProfileState } from '@shared/types'
 import { canUseOAuthLogin, getProviderCapabilities } from '@shared/providerCapabilities'
 import { useApp } from '../state/AppContext'
@@ -24,21 +24,6 @@ const btnSmall = 'inline-flex h-7 shrink-0 items-center justify-center gap-1.5 r
 const DEFAULT_DIR: Record<Exclude<ProfileKind, 'reasonix'>, string> = { claude: '~/.claude', codex: '~/.codex', gemini: '~' }
 
 type Stage = 'uninstalled' | 'installed' | 'ready'
-
-function useVersions(): Partial<Record<ProfileKind, string | null>> {
-  const { kinds } = useApp()
-  const [v, setV] = useState<Partial<Record<ProfileKind, string | null>>>({})
-  const key = kinds.map((k) => `${k.kind}:${k.binaryPath ?? ''}`).join('|')
-  useEffect(() => {
-    let live = true
-    for (const k of kinds) if (k.binaryPath) void window.agentswitch.cli.version(k.kind).then((ver) => live && setV((x) => ({ ...x, [k.kind]: ver })))
-    return () => {
-      live = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
-  return v
-}
 
 export function OnboardingPage() {
   const { profiles, loaded } = useApp()
@@ -102,7 +87,7 @@ function StageTag({ stage }: { stage: Stage }) {
 /** Step 1: what is on this Mac. Existing users get a summary and a one-click start. */
 function Detect({ ready, onNext }: { ready: ProfileState[]; onNext: () => void }) {
   const { kinds, profiles } = useApp()
-  const versions = useVersions()
+  const { cliVersions: versions } = useApp()
   return (
     <div className="space-y-4">
       <div className={CARD + ' divide-y divide-hairline'}>

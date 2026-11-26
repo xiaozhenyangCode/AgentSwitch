@@ -357,17 +357,23 @@ export function getKindConfig(kind: ProfileKind): KindConfig {
 export const modelArgs = (model: string | null | undefined): string[] => (model?.trim() ? ['--model', model.trim()] : [])
 
 export function updateKindConfig(kind: ProfileKind, patch: Partial<KindConfig>): KindConfig {
+  const before = getKindConfig(kind).binary
   const { kind: _k, ...rest } = patch
   if (rest.models) rest.models = [...new Set(rest.models.map((m) => m.trim()).filter(Boolean))]
   store.kinds[kind] = { ...(store.kinds[kind] ?? {}), ...rest }
+  const config = getKindConfig(kind)
+  if (before !== config.binary) invalidateCliVersionCache(kind)
   persist()
-  return getKindConfig(kind)
+  return config
 }
 
 export function resetKindConfig(kind: ProfileKind): KindConfig {
+  const before = getKindConfig(kind).binary
   delete store.kinds[kind]
+  const config = getKindConfig(kind)
+  if (before !== config.binary) invalidateCliVersionCache(kind)
   persist()
-  return getKindConfig(kind)
+  return config
 }
 
 /** "<Kind> 账号 N" in the UI language. */
@@ -830,20 +836,53 @@ export function loginSignature(id: ProfileId): string {
   }
 }
 
+const VERSION_TTL = 5 * 60_000
+const versionCache = new Map<ProfileKind, { binaryPath: string; version: string | null; at: number }>()
+const versionInflight = new Map<ProfileKind, { binaryPath: string; request: Promise<string | null> }>()
+
+export function invalidateCliVersionCache(kind?: ProfileKind): void {
+  if (kind === undefined) {
+    versionCache.clear()
+    versionInflight.clear()
+  } else {
+    versionCache.delete(kind)
+    versionInflight.delete(kind)
+  }
+}
+
+export function invalidateCliPathCache(): void {
+  refreshRuntimePaths()
+}
+
 /** `<bin> --version` with the base env; null if missing/failed. */
-export function cliVersion(kind: ProfileKind): Promise<string | null> {
+export function cliVersion(kind: ProfileKind, force = false): Promise<string | null> {
+  const bin = kindBinaryPath(kind)
+  if (!bin) {
+    invalidateCliVersionCache(kind)
+    return Promise.resolve(null)
+  }
+  const running = versionInflight.get(kind)
+  if (!force && running?.binaryPath === bin) return running.request
+  const cached = versionCache.get(kind)
+  if (!force && cached?.binaryPath === bin && Date.now() - cached.at < VERSION_TTL) return Promise.resolve(cached.version)
+  versionCache.delete(kind)
   const base = getBaseEnv()
   const env = kind === 'gemini' ? { ...base, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } : base
-  const bin = kindBinaryPath(kind)
-  if (!bin) return Promise.resolve(null)
-  return new Promise((res) => {
+  const request = new Promise<string | null>((res) => {
     const child = execFile(bin, ['--version'], { env, timeout: 8000 }, (err, stdout) => {
       if (err) return res(null)
       const line = stdout.trim().split('\n')[0] ?? ''
       res(line.match(/\d+\.\d+\.\d+[\w.-]*/)?.[0] ?? (line.slice(0, 40) || null))
     })
     child.stdin?.end()
+  }).then((version) => {
+    if (versionInflight.get(kind)?.request === request) versionCache.set(kind, { binaryPath: bin, version, at: Date.now() })
+    return version
+  }).finally(() => {
+    if (versionInflight.get(kind)?.request === request) versionInflight.delete(kind)
   })
+  versionInflight.set(kind, { binaryPath: bin, request })
+  return request
 }
 
 // ---- spawning ------------------------------------------------------------------

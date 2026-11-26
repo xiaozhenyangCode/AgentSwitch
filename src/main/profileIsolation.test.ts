@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,17 +8,19 @@ const root = mkdtempSync(join(tmpdir(), 'agentswitch-profile-isolation-'))
 const home = join(root, 'home')
 const userData = join(root, 'data')
 const retire = vi.fn()
+const execFileMock = vi.fn()
 
 vi.mock('electron', () => ({ app: { getPath: () => userData } }))
 vi.mock('./shellEnv', async (original) => ({
   ...await original<typeof import('./shellEnv')>(),
   realHome: home,
-  getBaseEnv: () => ({ HOME: home, PATH: '/usr/bin' })
+  getBaseEnv: () => ({ HOME: home, PATH: `${join(root, 'bin')}:/usr/bin` })
 }))
 vi.mock('./secrets', () => ({ secrets: () => ({ remove: vi.fn() }) }))
 vi.mock('./acp/pool', () => ({ agyAcpPool: { retire: (...args: unknown[]) => retire(...args) } }))
 vi.mock('node:child_process', async (original) => ({
   ...await original<typeof import('node:child_process')>(),
+  execFile: execFileMock,
   spawnSync: vi.fn(() => ({ status: 44 }))
 }))
 
@@ -48,9 +50,100 @@ beforeEach(() => {
   rmSync(root, { recursive: true, force: true })
   mkdirSync(home, { recursive: true })
   retire.mockClear()
+  execFileMock.mockReset()
+  profiles.invalidateCliVersionCache()
 })
 
 afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+describe('CLI version cache', () => {
+  function configureClaude(name: string) {
+    const binary = put(join(root, 'bin', name))
+    chmodSync(binary, 0o700)
+    profiles.updateKindConfig('claude', { binary })
+    return binary
+  }
+
+  it('deduplicates probes, honors TTL, and supports force refresh', async () => {
+    init()
+    const binary = configureClaude('claude')
+    let version = '1.0.0'
+    execFileMock.mockImplementation((_bin, _args, _opts, cb) => {
+      cb(null, `Claude Code ${version}\n`)
+      return {}
+    })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const first = profiles.cliVersion('claude')
+      expect(profiles.cliVersion('claude')).toBe(first)
+      await expect(first).resolves.toBe('1.0.0')
+      expect(execFileMock).toHaveBeenCalledExactlyOnceWith(binary, ['--version'], expect.anything(), expect.any(Function))
+
+      version = '2.0.0'
+      vi.setSystemTime(Date.now() + 5 * 60_000 - 1)
+      await expect(profiles.cliVersion('claude')).resolves.toBe('1.0.0')
+      vi.setSystemTime(Date.now() + 1)
+      await expect(profiles.cliVersion('claude')).resolves.toBe('2.0.0')
+
+      version = '3.0.0'
+      await expect(profiles.cliVersion('claude', true)).resolves.toBe('3.0.0')
+      await expect(profiles.cliVersion('claude')).resolves.toBe('3.0.0')
+      expect(execFileMock).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('prevents invalidated probes from restoring a stale version at the same path', async () => {
+    init()
+    configureClaude('claude')
+    const replies: ((err: null, stdout: string) => void)[] = []
+    execFileMock.mockImplementation((_bin, _args, _opts, cb) => {
+      replies.push(cb)
+      return {}
+    })
+    const old = profiles.cliVersion('claude')
+    profiles.invalidateCliVersionCache('claude')
+    const current = profiles.cliVersion('claude')
+    replies[1](null, '2.0.0')
+    await expect(current).resolves.toBe('2.0.0')
+    replies[0](null, '1.0.0')
+    await expect(old).resolves.toBe('1.0.0')
+    await expect(profiles.cliVersion('claude')).resolves.toBe('2.0.0')
+
+    // A forced refresh also bypasses an in-flight non-force probe at the same path.
+    profiles.invalidateCliVersionCache('claude')
+    const stale = profiles.cliVersion('claude')
+    const forced = profiles.cliVersion('claude', true)
+    expect(forced).not.toBe(stale)
+    replies[3](null, '3.0.0')
+    await expect(forced).resolves.toBe('3.0.0')
+    replies[2](null, '2.5.0')
+    await expect(stale).resolves.toBe('2.5.0')
+    await expect(profiles.cliVersion('claude')).resolves.toBe('3.0.0')
+    expect(execFileMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('invalidates cached probes when switching or resetting the configured binary', async () => {
+    init()
+    const binary = configureClaude('claude')
+    let version = '1.0.0'
+    execFileMock.mockImplementation((_bin, _args, _opts, cb) => {
+      cb(null, version)
+      return {}
+    })
+    await expect(profiles.cliVersion('claude')).resolves.toBe('1.0.0')
+    profiles.updateKindConfig('claude', { binary: 'claude' })
+    version = '2.0.0'
+    await expect(profiles.cliVersion('claude')).resolves.toBe('2.0.0')
+    profiles.updateKindConfig('claude', { binary })
+    await expect(profiles.cliVersion('claude')).resolves.toBe('2.0.0')
+    profiles.resetKindConfig('claude')
+    version = '3.0.0'
+    await expect(profiles.cliVersion('claude')).resolves.toBe('3.0.0')
+    expect(execFileMock.mock.calls.map(([path]) => path)).toEqual(Array(4).fill(binary))
+  })
+})
 
 describe('OAuth profile directory boundaries', () => {
   it('uses the same normalized directory for login, run, detection and session storage', () => {

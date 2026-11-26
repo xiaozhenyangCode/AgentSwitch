@@ -6,6 +6,7 @@ import {
   installSessionId,
   kindOfInstallSession,
   type AppInfo,
+  type CliUpdateSource,
   type KindConfig,
   type KindState,
   type ProfileConfig,
@@ -36,6 +37,8 @@ import {
   getState,
   hasProfile,
   installCommand,
+  invalidateCliPathCache,
+  invalidateCliVersionCache,
   isApiKeyAccount,
   missingInstallTool,
   isLoggedIn,
@@ -59,6 +62,7 @@ import { permissions } from './acp/permissions'
 import { agyAcpPool } from './acp/pool'
 import { ptyModeAllowed } from './apiKey'
 import { ChatStore } from './chatStore'
+import { createCliUpdateHandler } from './cliUpdate'
 import type { ApiKeyConfig } from '@shared/types'
 
 function assertConnect(kind: ProfileKind, v: unknown): ProfileConnect {
@@ -95,7 +99,7 @@ import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from '
 import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { clearAccountUsageCache, onUsageChange, pauseAccountQuota, refreshAccountQuota, refreshUsage, setCustomPrice, syncPrices, snapshot as usageSnapshot, startUsage } from './usage'
 import { onRequestLogChange, queryRequestLogs } from './requestLog'
-import { forgetModels, listModels } from './models'
+import { forgetModels, forgetModelsByKind, listModels, refreshModelsByKind } from './models'
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
@@ -164,6 +168,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   }
 
   const termDirs = new Map<SessionId, string>()
+  const installSources = new Map<ProfileKind, Extract<CliUpdateSource, 'install' | 'update'>>()
   const sessionLabel = (id: SessionId): string => {
     const k = kindOfInstallSession(id)
     if (k) return t('main.installSession', { name: KIND_LABEL[k] })
@@ -182,7 +187,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   const ptys = new PtyManager({
     onData: (e) => send(IPC.ptyData, e),
     onExit: (e) => {
-      if (kindOfInstallSession(e.sessionId)) refreshRuntimePaths()
+      const installKind = kindOfInstallSession(e.sessionId)
+      if (installKind) {
+        const source = installSources.get(installKind) ?? 'install'
+        installSources.delete(installKind)
+        refreshRuntimePaths()
+        if (e.exitCode === 0 && kindBinaryPath(installKind)) void onCliUpdated(installKind, { source })
+      }
       if (e.mode === 'login') finishLogin(e.sessionId, e.exitCode === 0)
       send(IPC.ptyExit, e)
     },
@@ -201,6 +212,22 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     (pid, text) => ptys.log(`run:${pid}`, text),
     () => broadcast()
   )
+  const onCliUpdated = createCliUpdateHandler({
+    invalidateCliPathCache,
+    invalidateCliVersionCache,
+    kindBinaryPath,
+    probeCliVersion: (kind) => cliVersion(kind, true),
+    retireAgyAcpOnCliUpdate: () => agyAcpPool.retireOnCliUpdate(),
+    listProfiles: listConfigs,
+    isProfileRunning: (id) => {
+      const mode = ptys.sessionMode(id)
+      return orchestrator.isRunning(id) || mode === 'run' || mode === 'test' || agyAcpPool.hasActive(id)
+    },
+    forgetModelsByKind,
+    refreshModelsByKind,
+    broadcastState: () => send(IPC.stateChanged, snapshot()),
+    broadcastCliUpdated: (event) => send(IPC.cliUpdated, event)
+  })
 
   // ---- login success watcher ----------------------------------------------------
   const loginWatchers = new Map<ProfileId, { before: string; timer: NodeJS.Timeout; verified: boolean }>()
@@ -308,22 +335,32 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.profilesEnvPreview, (_e, id: unknown, mode: PtyMode) => envPreview(assertId(id), mode))
 
   // ---- CLIs -----------------------------------------------------------------------
-  ipcMain.handle(IPC.kindsUpdate, (_e, kind: unknown, patch: Partial<KindConfig>) => {
-    updateKindConfig(assertKind(kind), patch)
+  const changeKindConfig = (kind: ProfileKind, change: () => KindConfig): void => {
+    const before = getKindConfig(kind).binary
+    const pathBefore = kindBinaryPath(kind)
+    const after = change().binary
+    if (before !== after || pathBefore !== kindBinaryPath(kind)) void onCliUpdated(kind, { source: 'config' })
     broadcast()
+  }
+  ipcMain.handle(IPC.kindsUpdate, (_e, kind: unknown, patch: Partial<KindConfig>) => {
+    const k = assertKind(kind)
+    changeKindConfig(k, () => updateKindConfig(k, patch))
   })
   ipcMain.handle(IPC.kindsReset, (_e, kind: unknown) => {
-    resetKindConfig(assertKind(kind))
-    broadcast()
+    const k = assertKind(kind)
+    changeKindConfig(k, () => resetKindConfig(k))
   })
-  ipcMain.handle(IPC.cliVersion, (_e, kind: unknown) => cliVersion(assertKind(kind)))
+  ipcMain.handle(IPC.cliVersion, (_e, kind: unknown, force?: boolean) => cliVersion(assertKind(kind), force === true))
   /** Silent install in the `install:<kind>` session (real HOME); never touches account sessions. */
   ipcMain.handle(IPC.cliInstall, (_e, kind: unknown, update = false): SessionId => {
     const k = assertKind(kind)
     const tool = missingInstallTool(k, update === true)
     if (tool) throw new Error(t('main.needNode', { tool, cmd: installCommand(k, update === true) }))
     const sid = installSessionId(k)
-    ptys.start(sid, 'install', buildInstallSpec(k, update === true), 120, 32)
+    const spec = buildInstallSpec(k, update === true)
+    if (ptys.sessionMode(sid)) ptys.kill(sid)
+    installSources.set(k, update === true ? 'update' : 'install')
+    ptys.start(sid, 'install', spec, 120, 32)
     return sid
   })
 

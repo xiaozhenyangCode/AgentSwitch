@@ -5,6 +5,18 @@ import type { ReplyMarks } from './markers'
 export type ProfileId = string
 export type ProfileKind = 'claude' | 'gemini' | 'codex' | 'reasonix'
 
+export type CliUpdateSource = 'update' | 'install' | 'config'
+
+export interface CliUpdatedEvent {
+  kind: ProfileKind
+  version: string | null
+  binaryPath: string | null
+  hasRunningTasks: boolean
+  source: CliUpdateSource
+  updatedAt: number
+  affectedProfileIds: ProfileId[]
+}
+
 /** How an API-key account reaches its model. deepseek/custom are Claude Code only. */
 export type ApiKeyProvider = 'official' | 'deepseek' | 'custom'
 /** Non-secret half of an API-key connection; the key itself lives in the main-process secret store. */
@@ -647,6 +659,7 @@ export const IPC = {
   kindsReset: 'kinds:reset',
   cliInstall: 'cli:install',
   cliVersion: 'cli:version',
+  cliUpdated: 'cli:updated',
   ptyStart: 'pty:start',
   ptyShell: 'pty:shell',
   ptyWrite: 'pty:write',

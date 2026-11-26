@@ -109,14 +109,20 @@ export class AcpConnection {
 }
 
 interface Entry {
+  id: ProfileId
   starting: Promise<AcpConnection>
   connection?: AcpConnection
   abort: AbortController
   active: number
   log: Log
   timer?: NodeJS.Timeout
-  /** Account settings changed while a turn was running: restart once the process is idle. */
-  stale?: boolean
+  retireAfterTurn?: boolean
+  disposed?: boolean
+}
+
+export interface AcpRetireSummary {
+  retired: number
+  deferred: number
 }
 
 export interface AcpLease {
@@ -126,6 +132,7 @@ export interface AcpLease {
 
 class AcpPool {
   private readonly entries = new Map<ProfileId, Entry>()
+  private readonly retiring = new Set<Entry>()
   private readonly failures = new Map<ProfileId, number>()
   private shuttingDown = false
 
@@ -136,8 +143,9 @@ class AcpPool {
   async acquire(id: ProfileId, onLog: Log): Promise<AcpLease> {
     if (this.shuttingDown) throw new Error('ACP pool is shutting down')
     let entry = this.entries.get(id)
-    if (entry?.connection && !entry.connection.process.alive) {
-      this.retire(id)
+    if (entry && (entry.retireAfterTurn || (entry.connection && !entry.connection.process.alive))) {
+      if (entry.retireAfterTurn) this.markOrRetireEntry(entry)
+      else this.disposeEntry(entry)
       entry = undefined
     }
     if (!entry) {
@@ -146,9 +154,16 @@ class AcpPool {
     }
     entry.log = onLog
     clearTimeout(entry.timer)
+    entry.timer = undefined
     entry.active++
-    const connection = await entry.starting
     const acquired = entry
+    let connection: AcpConnection
+    try {
+      connection = await acquired.starting
+    } catch (error) {
+      if (--acquired.active === 0 && acquired.retireAfterTurn) this.disposeEntry(acquired)
+      throw error
+    }
     let released = false
     return {
       connection,
@@ -156,33 +171,67 @@ class AcpPool {
         if (released) return
         released = true
         if (--acquired.active > 0) return
-        if (acquired.stale) this.retire(id, acquired.connection)
-        else this.scheduleIdle(id, acquired, 0)
+        if (acquired.retireAfterTurn) this.disposeEntry(acquired)
+        else if (this.entries.get(id) === acquired) this.scheduleIdle(id, acquired, 0)
       }
     }
   }
 
   retire(id: ProfileId, expected?: AcpConnection, force = false): void {
     const entry = this.entries.get(id)
-    if (!entry || (expected && entry.connection !== expected)) return
-    this.entries.delete(id)
+    if (entry && (!expected || entry.connection === expected)) this.disposeEntry(entry, force)
+    for (const retiring of [...this.retiring]) {
+      if (retiring.id === id && (!expected || retiring.connection === expected)) this.disposeEntry(retiring, force)
+    }
+  }
+
+  private disposeEntry(entry: Entry, force = false): void {
+    if (entry.disposed && !force) return
+    entry.disposed = true
     clearTimeout(entry.timer)
+    entry.timer = undefined
+    if (this.entries.get(entry.id) === entry) this.entries.delete(entry.id)
+    this.retiring.delete(entry)
     if (entry.connection) permissions.cancelAll((request) => request.connection === entry.connection)
     entry.abort.abort(force ? ACP_FORCE_TERMINATION : undefined)
     entry.connection?.process.terminate(force)
   }
 
+  private markOrRetireEntry(entry: Entry): 'retired' | 'deferred' {
+    if (entry.active === 0) {
+      this.disposeEntry(entry)
+      return 'retired'
+    }
+    clearTimeout(entry.timer)
+    entry.timer = undefined
+    entry.retireAfterTurn = true
+    if (this.entries.get(entry.id) === entry) this.entries.delete(entry.id)
+    this.retiring.add(entry)
+    return 'deferred'
+  }
+
   /** Like retire(), but never interrupts a running turn: an active process is restarted after it goes idle. */
   retireWhenIdle(id: ProfileId): void {
     const entry = this.entries.get(id)
-    if (!entry) return
-    if (entry.active > 0) entry.stale = true
-    else this.retire(id)
+    if (entry) this.markOrRetireEntry(entry)
+  }
+
+  retireOnCliUpdate(): AcpRetireSummary {
+    this.failures.clear()
+    const summary: AcpRetireSummary = { retired: 0, deferred: 0 }
+    for (const entry of [...this.retiring, ...this.entries.values()]) {
+      summary[this.markOrRetireEntry(entry)]++
+    }
+    return summary
+  }
+
+  hasActive(id?: ProfileId): boolean {
+    return [...this.entries.values(), ...this.retiring].some((entry) => entry.active > 0 && (id === undefined || entry.id === id))
   }
 
   shutdownAll(): void {
     this.shuttingDown = true
-    for (const id of this.entries.keys()) this.retire(id)
+    for (const entry of [...this.entries.values(), ...this.retiring]) this.disposeEntry(entry)
   }
 
   private start(id: ProfileId, log: Log): Entry {
@@ -212,17 +261,18 @@ class AcpPool {
       abort.signal.throwIfAborted()
       const connection = new AcpConnection(process, env.HOME ?? realHome)
       entry.connection = connection
-      this.failures.delete(id)
-      void process.exited.then(() => this.retire(id, connection))
+      if (this.entries.get(id) === entry) this.failures.delete(id)
+      void process.exited.then(() => this.disposeEntry(entry))
       return connection
     }).catch((error: unknown) => {
+      this.retiring.delete(entry)
       if (this.entries.get(id) === entry) {
         this.entries.delete(id)
         if (!abort.signal.aborted) this.failures.set(id, (this.failures.get(id) ?? 0) + 1)
       }
       throw error
     })
-    const entry: Entry = { starting, abort, active: 0, log }
+    const entry: Entry = { id, starting, abort, active: 0, log }
     this.entries.set(id, entry)
     return entry
   }
@@ -234,7 +284,7 @@ class AcpPool {
       if (deferred < MAX_IDLE_DEFERRAL && entry.connection?.hasRunningCommands()) {
         this.scheduleIdle(id, entry, deferred + IDLE_MS)
       } else {
-        this.retire(id)
+        this.disposeEntry(entry)
       }
     }, IDLE_MS).unref()
   }

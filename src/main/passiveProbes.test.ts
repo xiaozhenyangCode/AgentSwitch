@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,7 +12,7 @@ const execFileMock = vi.fn()
 const spawnMock = vi.fn()
 const buildSpawnSpecMock = vi.fn(() => ({ shell: '/bin/zsh', args: [], env: { PATH: '/usr/bin' }, cwd: tmpdir(), injected: {} }))
 const isLoggedInMock = vi.fn(() => true)
-const getConfigMock = vi.fn<() => ProfileConfig>()
+const getConfigMock = vi.fn<(id: string) => ProfileConfig>()
 const listConfigsMock = vi.fn<() => ProfileConfig[]>(() => [])
 
 vi.mock('electron', () => ({
@@ -48,7 +48,7 @@ vi.mock('./profiles', async (importOriginal) => {
   }
 })
 
-const { codexModelArgs, forgetModels, listModels } = await import('./models')
+const { codexModelArgs, forgetModels, forgetModelsByKind, getEffectiveDefaultModel, listModels, refreshModelsByKind } = await import('./models')
 const { claudeAdapter } = await import('./agentRunner')
 const { AGY_AUTH_PROMPT_RE, CODEX_APP_SERVER_PROBE_ARGS, refreshAgyQuota, startUsage } = await import('./usage')
 
@@ -147,6 +147,82 @@ describe('P1-3 passive health & model probes', () => {
     const cached = await listModels('gemini-test', false)
     expect(cached.source).toBe('command')
     expect(execFileMock).not.toHaveBeenCalled()
+  })
+
+  it('forgets only the updated engine and shares its live Gemini refresh with passive callers', async () => {
+    const signedIn = makeProfile('gemini')
+    const signedOut = makeProfile('gemini', 'gemini-signed-out')
+    const codex = makeProfile('codex')
+    const configs = [signedIn, signedOut, codex]
+    listConfigsMock.mockReturnValue(configs)
+    getConfigMock.mockImplementation((id) => configs.find((cfg) => cfg.id === id)!)
+    isLoggedInMock.mockImplementation((id?: string) => id === signedIn.id)
+    mkdirSync(codex.configDir, { recursive: true })
+    writeFileSync(join(codex.configDir, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'codex-local', visibility: 'list' }] }))
+    execFileMock.mockImplementationOnce((_bin, _args, _opts, cb) => {
+      cb(null, 'gemini-old\tOld\n', '')
+      return {}
+    })
+    expect((await listModels(signedIn.id, true)).defaultModel).toBe('gemini-old')
+    expect((await listModels(codex.id)).defaultModel).toBe('codex-local')
+
+    expect(forgetModelsByKind('gemini')).toEqual([signedIn.id, signedOut.id])
+    const cached = JSON.parse(readFileSync(join(userData, 'models-cache.v2.json'), 'utf8'))
+    expect(cached[signedIn.id]).toBeUndefined()
+    expect(cached[codex.id]).toMatchObject({ defaultModel: 'codex-local' })
+    expect(getEffectiveDefaultModel(signedIn.id)).not.toBe('gemini-old')
+    expect(getEffectiveDefaultModel(codex.id)).toBe('codex-local')
+
+    let complete!: () => void
+    execFileMock.mockImplementationOnce((_bin, _args, _opts, cb) => {
+      complete = () => cb(null, 'gemini-new-medium\tNew (Medium)\n', '')
+      return {}
+    })
+    const refreshed = refreshModelsByKind('gemini')
+    const passive = listModels(signedIn.id, false)
+    await Promise.resolve()
+    expect(execFileMock).toHaveBeenCalledTimes(2)
+    complete()
+    const [live, offline] = await refreshed
+    expect(await passive).toBe(live)
+    expect(live).toMatchObject({ profileId: signedIn.id, source: 'command', defaultModel: 'gemini-new-medium' })
+    expect(offline).toMatchObject({ profileId: signedOut.id, source: 'static' })
+    expect(getEffectiveDefaultModel(signedIn.id)).toBe('gemini-new-medium')
+  })
+
+  it('uses the refreshed Codex catalog for the default model even if its disk catalog is older', async () => {
+    const codex = makeProfile('codex')
+    listConfigsMock.mockReturnValue([codex])
+    getConfigMock.mockReturnValue(codex)
+    mkdirSync(codex.configDir, { recursive: true })
+    writeFileSync(join(codex.configDir, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'codex-old', visibility: 'list' }] }))
+    expect((await listModels(codex.id)).defaultModel).toBe('codex-old')
+    expect(forgetModelsByKind('codex')).toEqual([codex.id])
+
+    execFileMock.mockImplementationOnce((_bin, _args, _opts, cb) => {
+      cb(null, JSON.stringify({ models: [{ slug: 'codex-new', visibility: 'list' }] }), '')
+      return {}
+    })
+    const refreshing = refreshModelsByKind('codex')
+    const passive = listModels(codex.id, false)
+    const [fresh] = await refreshing
+    expect(await passive).toBe(fresh)
+    expect(fresh).toMatchObject({ source: 'command', defaultModel: 'codex-new' })
+    expect(getEffectiveDefaultModel(codex.id)).toBe('codex-new')
+    expect(execFileMock).toHaveBeenCalledExactlyOnceWith('/fake/cli', codexModelArgs(true), expect.anything(), expect.any(Function))
+  })
+
+  it('returns successful catalog refreshes when another account fails', async () => {
+    const good = makeProfile('claude')
+    const bad = makeProfile('claude', 'claude-failed')
+    listConfigsMock.mockReturnValue([good, bad])
+    getConfigMock.mockImplementation((id) => {
+      if (id === bad.id) throw new Error('account removed')
+      return good
+    })
+    await expect(refreshModelsByKind('claude')).resolves.toEqual([
+      expect.objectContaining({ profileId: good.id })
+    ])
   })
 
   it('builds passive codex debug models flags (offline --bundled when passive, MCP/hooks/plugins/apps disabled)', () => {

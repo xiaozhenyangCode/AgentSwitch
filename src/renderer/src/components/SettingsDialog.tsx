@@ -774,16 +774,8 @@ function AboutRow({ title }: { title: ReactNode }) {
 }
 
 function About() {
-  const { info, kindState, toast } = useApp()
-  const [versions, setVersions] = useState<Partial<Record<ProfileKind, string | null>>>({})
+  const { info, cliVersions: versions, toast } = useApp()
   const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    for (const k of KINDS) {
-      if (!kindState(k)?.binaryPath) setVersions((v) => ({ ...v, [k]: null }))
-      else void window.agentswitch.cli.version(k).then((ver) => setVersions((v) => ({ ...v, [k]: ver })))
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
   const cliText = (k: ProfileKind) => (versions[k] === undefined ? t('about.checking') : versions[k] ? `v${versions[k]!.replace(/^v/, '')}` : t('about.notInstalled'))
   const nodeRuntimeText = info
     ? info.nodeRuntime.source === 'bundled'

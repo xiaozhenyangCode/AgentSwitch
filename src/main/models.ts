@@ -4,9 +4,9 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { parse as parseToml } from 'smol-toml'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ModelList, ModelOption, ProfileConfig, ProfileId } from '@shared/types'
+import type { ModelList, ModelOption, ProfileConfig, ProfileId, ProfileKind } from '@shared/types'
 import { cleanModelName, EFFORT_SUFFIX_RE, effortRank, joinSpec, splitSpec } from '@shared/modelSpec'
-import { buildSpawnSpec, expandHome, getConfig, getKindConfig, hasProfile, isLoggedIn, KIND_DEFAULTS, kindBinaryPath, resolveProfileDir } from './profiles'
+import { buildSpawnSpec, expandHome, getConfig, getKindConfig, hasProfile, isLoggedIn, KIND_DEFAULTS, kindBinaryPath, listConfigs, resolveProfileDir } from './profiles'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
 import { t } from './i18n'
 import { displayModel } from './apiKey'
@@ -316,7 +316,7 @@ export function resolveEffectiveDefaultModel(cfg: ProfileConfig, catalogModels?:
       const config = readCodexConfig(codexConfigDir(cfg))
       const spec = splitSpec(config.model, 'codex')
       if (spec.model) return joinSpec(spec.model, spec.effort ?? config.effort)
-      const first = codexCacheFile(cfg)?.[0] ?? catalogModels?.[0]
+      const first = catalogModels?.[0] ?? codexCacheFile(cfg)?.[0]
       return joinSpec(first?.id ?? codexDefaultModel(), config.effort ?? first?.defaultEffort ?? null)
     }
     case 'gemini': {
@@ -402,6 +402,8 @@ export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
     return { ...list, profileId: id, defaultModel: model ?? undefined }
   }
   if (caps.modelListMode === 'direct-local') return fetchLive(cfg, refresh).then(complete)
+  const running = inflight.get(id)
+  if (running && (!refresh || running.refresh)) return running.request
   const fallback = (error?: string): Omit<ModelList, 'profileId'> =>
     cached && cached.source !== 'static'
       ? { ...cached, source: 'cache', error }
@@ -413,8 +415,6 @@ export function listModels(id: ProfileId, refresh = false): Promise<ModelList> {
   if (!refresh && cached && caps.modelListMode === 'cached-ttl' && Date.now() - cached.fetchedAt < TTL && cached.source !== 'static') {
     return Promise.resolve(complete(cached))
   }
-  const running = inflight.get(id)
-  if (running && (!refresh || running.refresh)) return running.request
   const invalidated = (): ModelList => ({ profileId: id, models: staticList(cfg), source: 'static', fetchedAt: Date.now() })
   const p = Promise.resolve().then(async (): Promise<ModelList> => {
     const active = inflight.get(id)?.request
@@ -450,4 +450,17 @@ export function forgetModels(id: ProfileId): void {
     delete c[id]
     saveCache()
   }
+}
+
+export function forgetModelsByKind(kind: ProfileKind): ProfileId[] {
+  const ids = listConfigs().filter((cfg) => cfg.kind === kind).map((cfg) => cfg.id)
+  for (const id of ids) forgetModels(id)
+  return ids
+}
+
+export async function refreshModelsByKind(kind: ProfileKind): Promise<ModelList[]> {
+  const results = await Promise.allSettled(listConfigs().filter((cfg) => cfg.kind === kind).map(async ({ id }) =>
+    listModels(id, kind !== 'gemini' || isLoggedIn(id))
+  ))
+  return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
 }

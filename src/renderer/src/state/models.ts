@@ -16,10 +16,21 @@ const notify = () => {
 export function loadModels(id: ProfileId, refresh = false): Promise<ModelList | null> {
   const pending = loading.get(id)
   if (pending && !refresh) return pending
+  return requestModels(id, refresh)
+}
+
+export function reloadAccountModels(id: ProfileId): Promise<ModelList | null> {
+  return requestModels(id, false, true)
+}
+
+function requestModels(id: ProfileId, refresh: boolean, clearOnError = false): Promise<ModelList | null> {
   const request = window.agentswitch.models.list(id, refresh).then((list) => {
     if (loading.get(id) === request) lists.set(id, list)
     return list
-  }).catch(() => null).finally(() => {
+  }).catch(() => {
+    if (clearOnError && loading.get(id) === request) lists.delete(id)
+    return null
+  }).finally(() => {
     if (loading.get(id) !== request) return
     loading.delete(id)
     notify()

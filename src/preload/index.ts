@@ -5,6 +5,7 @@ import type { CommitImportRequest, CommitImportResult, ImportPreviewResult, Thre
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
+  type CliUpdatedEvent,
   type ProfileConnect,
   type AppInfo,
   type FileChanges,
@@ -92,7 +93,8 @@ const api = {
   cli: {
     update: (kind: ProfileKind, patch: Partial<KindConfig>): Promise<void> => ipcRenderer.invoke(IPC.kindsUpdate, kind, patch),
     reset: (kind: ProfileKind): Promise<void> => ipcRenderer.invoke(IPC.kindsReset, kind),
-    version: (kind: ProfileKind): Promise<string | null> => ipcRenderer.invoke(IPC.cliVersion, kind),
+    version: (kind: ProfileKind, force = false): Promise<string | null> => ipcRenderer.invoke(IPC.cliVersion, kind, force),
+    onUpdated: (cb: (e: CliUpdatedEvent) => void) => subscribe(IPC.cliUpdated, cb),
     /** update=true runs the CLI's update command instead of the installer. */
     install: (kind: ProfileKind, update = false): Promise<SessionId> => ipcRenderer.invoke(IPC.cliInstall, kind, update)
   },
