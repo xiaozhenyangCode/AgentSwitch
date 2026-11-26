@@ -237,6 +237,8 @@ export const ja: Dict = {
   'usage.noQuotaNote': 'このアカウントは使用枠を提供しないため、AgentSwitch のローカル統計を表示しています',
   'usage.localToday': '今日',
   'usage.localWeek': '今週',
+  'usage.refreshLimited': '更新制限中',
+  'usage.retryAfter': '{time} 頃に回復',
   'usage.noReady': '利用可能なアカウントがまだありません。「モデルエンジン」で追加してログインしてください。',
   'usage.limited': 'レート制限に達しました',
   'usage.used': '{which} の使用枠を {pct}% 使用',

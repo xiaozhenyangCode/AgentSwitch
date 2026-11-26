@@ -248,6 +248,8 @@ export const zhCN = {
   'usage.noQuotaNote': '此账号不提供额度窗口，以下为 AgentSwitch 本地统计',
   'usage.localToday': '今日',
   'usage.localWeek': '本周',
+  'usage.refreshLimited': '刷新受限',
+  'usage.retryAfter': '预计 {time} 恢复',
   'usage.noReady': '还没有就绪的账号，去「模型引擎」添加并登录。',
   'usage.limited': '已触发限流',
   'usage.used': '{which} 额度已用 {pct}%',

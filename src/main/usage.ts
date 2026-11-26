@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execFile, spawn } from 'node:child_process'
-import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
+import type { AccountQuota, AccountUsage, DailyUsage, ModelPrice, PriceRate, ProfileConfig, ProfileId, ProfileKind, QuotaErrorKind, QuotaGroup, QuotaReport, QuotaWindow, Usage, UsageSnapshot, UsageTotals } from '@shared/types'
 import { codexDefaultModel, isUnknownModelName, readCodexConfig, resolveCodexFallbackModel, runAgent } from './agentRunner'
 import { agyConversationDb, claudePath, codexRollout, importedCutoffs, listHistory, pbAll, rolloutPaths, toMs, withDb } from './history'
 import builtinPrices from './prices.builtin.json'
@@ -292,19 +292,165 @@ export function onUsageChange(cb: (s: UsageSnapshot) => void): void {
 
 // ---- snapshot ---------------------------------------------------------------------------------
 
-const quotaErrors: Record<ProfileId, string> = {}
+export interface QuotaErrorInfo {
+  kind: QuotaErrorKind
+  message: string
+  resetAt: number | null
+}
 
-function setQuotaError(profileId: ProfileId, msg: string | null): void {
-  const clean = msg ? msg.replace(/^error:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 260) : null
-  if (!clean) {
+const RATE_LIMIT_RE =
+  /\b429\b|rate[_\s-]*limit|too many requests|quota\s*(exceeded|exhausted|reached|limit)|resource_exhausted|usage\s*limit|hit\s+your\s+limit|limit\s+reached|credit\s+balance/i
+
+function cleanErrorMessage(msg: string): string {
+  return msg.replace(/^error:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 260)
+}
+
+function parseDurationMs(raw: string): number | null {
+  let total = 0
+  let matched = false
+  const re = /(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec(?:ond)?s?|m|min(?:ute)?s?|h|hours?|d|days?)/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(raw))) {
+    const v = Number(m[1])
+    if (!Number.isFinite(v) || v < 0) continue
+    const u = m[2].toLowerCase()
+    if (u === 'ms' || u.startsWith('milli')) total += v
+    else if (u.startsWith('s')) total += v * 1000
+    else if (u.startsWith('m')) total += v * 60_000
+    else if (u.startsWith('h')) total += v * 3600_000
+    else if (u.startsWith('d')) total += v * DAY
+    matched = true
+  }
+  return matched && total > 0 ? Math.round(total) : null
+}
+
+function parseResetValue(raw: unknown, now: number, treatNumericAsDelta: boolean): number | null {
+  if (raw === null || raw === undefined || raw === '') return null
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    if (treatNumericAsDelta) return now + Math.round(raw * 1000)
+    return raw < 1e12 ? Math.round(raw * 1000) : Math.round(raw)
+  }
+  const s = String(raw).trim()
+  if (!s) return null
+  if (/^\d+(?:\.\d+)?$/.test(s)) {
+    const num = Number(s)
+    if (!Number.isFinite(num) || num <= 0) return null
+    if (treatNumericAsDelta) return now + Math.round(num * 1000)
+    return num < 1e12 ? Math.round(num * 1000) : Math.round(num)
+  }
+  const dur = parseDurationMs(s)
+  if (dur !== null && !/[TZ]|\d{4}-\d{2}-\d{2}|GMT/i.test(s)) return now + dur
+  const parsed = Date.parse(s)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+export function classifyQuotaError(input: {
+  status?: number | null
+  message?: string | null
+  body?: unknown
+  headers?: Record<string, string | null | undefined>
+  now?: number
+}): QuotaErrorInfo | null {
+  const now = input.now ?? Date.now()
+  const rawMsg = input.message ?? (input.status ? `HTTP ${input.status}` : '')
+  const message = cleanErrorMessage(rawMsg)
+  if (!message) return null
+
+  const bodyObj = input.body && typeof input.body === 'object' ? (input.body as Record<string, any>) : null
+  const bodyErr = bodyObj?.error && typeof bodyObj.error === 'object' ? (bodyObj.error as Record<string, any>) : null
+  const bodyData = bodyObj?.data && typeof bodyObj.data === 'object' ? (bodyObj.data as Record<string, any>) : null
+  const codeHints = [bodyObj?.code, bodyObj?.type, bodyObj?.status, bodyErr?.code, bodyErr?.type, bodyErr?.status, bodyData?.code]
+    .filter((v) => v !== undefined && v !== null)
+    .map((v) => String(v))
+    .join(' ')
+  const isRateLimited = input.status === 429 || RATE_LIMIT_RE.test(message) || RATE_LIMIT_RE.test(codeHints)
+
+  let resetAt: number | null = null
+  const hdrs: Record<string, string> = {}
+  for (const [k, v] of Object.entries(input.headers ?? {})) {
+    if (typeof v === 'string' && v.trim()) hdrs[k.toLowerCase()] = v.trim()
+  }
+  const headerChecks: [string, boolean][] = [
+    ['retry-after', true],
+    ['anthropic-ratelimit-unified-reset', false],
+    ['anthropic-ratelimit-unified-5h-reset', false],
+    ['anthropic-ratelimit-unified-7d-reset', false],
+    ['x-ratelimit-reset', false],
+    ['x-ratelimit-reset-requests', true],
+    ['x-ratelimit-reset-tokens', true]
+  ]
+  for (const [h, isDelta] of headerChecks) {
+    if (!hdrs[h]) continue
+    const ts = parseResetValue(hdrs[h], now, isDelta)
+    if (ts && ts > now) {
+      resetAt = ts
+      break
+    }
+  }
+  if (!resetAt) {
+    const sources = [bodyObj, bodyErr, bodyData].filter((o): o is Record<string, any> => !!o)
+    const fieldChecks: [string, boolean, boolean][] = [
+      ['resets_at', false, false],
+      ['resetsAt', false, false],
+      ['reset_at', false, false],
+      ['resetAt', false, false],
+      ['reset_time', false, false],
+      ['resetTime', false, false],
+      ['retry_after', true, false],
+      ['retryAfter', true, false],
+      ['retry_after_ms', true, true],
+      ['retryAfterMs', true, true]
+    ]
+    for (const src of sources) {
+      for (const [field, isDelta, isMs] of fieldChecks) {
+        const val = src[field]
+        if (val === undefined || val === null) continue
+        const ts = isMs && typeof val === 'number' && val > 0 ? now + Math.round(val) : parseResetValue(val, now, isDelta)
+        if (ts && ts > now) {
+          resetAt = ts
+          break
+        }
+      }
+      if (resetAt) break
+    }
+  }
+  if (!resetAt && isRateLimited) {
+    const iso = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b/.exec(message)?.[1]
+    if (iso) {
+      const ts = Date.parse(iso)
+      if (Number.isFinite(ts) && ts > now) resetAt = ts
+    }
+  }
+  if (!resetAt && isRateLimited) {
+    const rel = /(?:retry|try\s+again|reset(?:s)?)\s+(?:after|in)\s+([^.,;\n]+)/i.exec(message)?.[1]
+    if (rel) {
+      const dur = parseDurationMs(rel)
+      if (dur) resetAt = now + dur
+    }
+  }
+
+  return { kind: isRateLimited ? 'rate_limited' : 'error', message, resetAt }
+}
+
+const quotaErrors: Record<ProfileId, QuotaErrorInfo> = {}
+
+function setQuotaError(profileId: ProfileId, err: string | QuotaErrorInfo | null): void {
+  const info: QuotaErrorInfo | null = !err
+    ? null
+    : typeof err === 'string'
+      ? classifyQuotaError({ message: err })
+      : { ...err, message: cleanErrorMessage(err.message) }
+  if (!info || !info.message) {
     if (profileId in quotaErrors) {
       delete quotaErrors[profileId]
       changed()
     }
     return
   }
-  if (quotaErrors[profileId] !== clean) {
-    quotaErrors[profileId] = clean
+  if (info.kind === 'rate_limited') stats.limitedAt[profileId] = Date.now()
+  const prev = quotaErrors[profileId]
+  if (!prev || prev.kind !== info.kind || prev.message !== info.message || prev.resetAt !== info.resetAt) {
+    quotaErrors[profileId] = info
     changed()
   }
 }
@@ -403,12 +549,15 @@ export function snapshot(): UsageSnapshot {
   }
   const daily = new Map<string, DailyUsage>()
   for (const c of configs) {
+    const err = quotaErrors[c.id]
     const a: AccountUsage = {
       today: zero(),
       week: zero(),
       total: zero(),
       quota: quotas[c.id] ?? null,
-      quotaError: quotaErrors[c.id] ?? null,
+      quotaError: err?.message ?? null,
+      quotaErrorKind: err?.kind ?? null,
+      quotaErrorResetAt: err?.resetAt ?? null,
       limitedAt: stats.limitedAt[c.id] ?? null
     }
     for (const days of per.get(c.id) ?? [])
@@ -457,11 +606,17 @@ export function recordRun(profileId: ProfileId, model: string | null, u: Usage |
   changed()
 }
 
-export function recordQuota(profileId: ProfileId, q: QuotaReport & { groups?: QuotaGroup[] }, source: AccountQuota['source'], at = Date.now()): void {
+export function recordQuota(
+  profileId: ProfileId,
+  q: QuotaReport & { groups?: QuotaGroup[] },
+  source: AccountQuota['source'],
+  at = Date.now(),
+  opts?: { preserveError?: boolean }
+): void {
   const prev = quotas[profileId]
-  if (prev && prev.fetchedAt > at) return
+  if (prev && prev.fetchedAt >= at) return
   quotas[profileId] = { ...q, fetchedAt: at, source }
-  delete quotaErrors[profileId]
+  if (!opts?.preserveError) delete quotaErrors[profileId]
   if (q.limited) stats.limitedAt[profileId] = at
   changed()
 }
@@ -514,7 +669,7 @@ function codexWindow(w: any): QuotaWindow | null {
 }
 
 /** Latest rate_limits any rollout of this CODEX_HOME recorded (zero API calls). */
-export function refreshCodexQuota(profileId: ProfileId): boolean {
+export function refreshCodexQuota(profileId: ProfileId, preserveError = false): boolean {
   if (!hasProfile(profileId) || !hasSubscriptionQuota(getConfig(profileId))) return false
   const home = expandHome(getConfig(profileId).configDir)
   let best: { at: number; rl: any } | null = null
@@ -546,7 +701,13 @@ export function refreshCodexQuota(profileId: ProfileId): boolean {
   const five = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
   const seven = wins.find((w) => w.minutes >= 1440) ?? null
   const limited = !!best.rl.rate_limit_reached_type || wins.some((w) => w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-  recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: typeof best.rl.plan_type === 'string' ? best.rl.plan_type : null }, 'codex-rollout', best.at || Date.now())
+  recordQuota(
+    profileId,
+    { fiveHour: five, sevenDay: seven, limited, plan: typeof best.rl.plan_type === 'string' ? best.rl.plan_type : null },
+    'codex-rollout',
+    best.at || Date.now(),
+    { preserveError }
+  )
   return true
 }
 
@@ -659,8 +820,10 @@ export function refreshCodexLive(profileId: ProfileId): Promise<boolean> {
         return
       }
       if (msg.id !== 2) return
-      if (msg.error?.message) {
-        setQuotaError(profileId, String(msg.error.message))
+      if (msg.error) {
+        const status = typeof msg.error.code === 'number' && msg.error.code === 429 ? 429 : undefined
+        const message = String(msg.error.message ?? msg.error)
+        setQuotaError(profileId, classifyQuotaError({ status, message, body: msg.error }))
         return finish(false)
       }
       const r = msg.result?.rateLimits
@@ -737,10 +900,24 @@ function readClaudeOauthToken(configDir: string): Promise<string | null> {
   })
 }
 
+function parseCurlHeaderBlock(raw: string): Record<string, string> {
+  const blocks = raw.trim().split(/\r?\n\r?\n/).filter((b) => b.trim())
+  const last = blocks[blocks.length - 1] ?? ''
+  const out: Record<string, string> = {}
+  for (const line of last.split(/\r?\n/)) {
+    const idx = line.indexOf(':')
+    if (idx <= 0) continue
+    const k = line.slice(0, idx).trim().toLowerCase()
+    const v = line.slice(idx + 1).trim()
+    if (k && v) out[k] = v
+  }
+  return out
+}
+
 function fetchClaudeUsageJson(
   token: string,
   env: NodeJS.ProcessEnv
-): Promise<{ status: number; text: string }> {
+): Promise<{ status: number; text: string; headers: Record<string, string> }> {
   const url = 'https://api.anthropic.com/api/oauth/usage'
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -751,30 +928,48 @@ function fetchClaudeUsageJson(
   const hasEnvProxy = !!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy)
   if (hasEnvProxy && process.platform !== 'win32') {
     return new Promise((resolve, reject) => {
+      const hdrFile = join(tmpdir(), `agentswitch-claude-hdr-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
       const args = [
         '-sS',
         '--max-time',
         '12',
+        '-D',
+        hdrFile,
         '-w',
         '\n%{http_code}',
         ...Object.entries(headers).flatMap(([k, v]) => ['-H', `${k}: ${v}`]),
         url
       ]
       execFile('/usr/bin/curl', args, { env, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+        let respHeaders: Record<string, string> = {}
+        try {
+          if (existsSync(hdrFile)) respHeaders = parseCurlHeaderBlock(readFileSync(hdrFile, 'utf8'))
+        } catch {
+          /* best effort */
+        } finally {
+          try {
+            rmSync(hdrFile, { force: true })
+          } catch {
+            /* best effort */
+          }
+        }
         if (err) return reject(new Error(String(stderr || err.message).trim()))
         const s = String(stdout)
         const idx = s.lastIndexOf('\n')
         const status = Number(idx >= 0 ? s.slice(idx + 1).trim() : '') || 0
         const text = idx >= 0 ? s.slice(0, idx) : s
-        resolve({ status, text })
+        resolve({ status, text, headers: respHeaders })
       })
     })
   }
   // No explicit proxy env: use Electron's net.fetch so macOS system proxy settings are honoured.
-  return net.fetch(url, { headers, signal: AbortSignal.timeout(12_000) }).then(async (res) => ({
-    status: res.status,
-    text: await res.text()
-  }))
+  return net.fetch(url, { headers, signal: AbortSignal.timeout(12_000) }).then(async (res) => {
+    const respHeaders: Record<string, string> = {}
+    res.headers?.forEach((v, k) => {
+      respHeaders[k.toLowerCase()] = v
+    })
+    return { status: res.status, text: await res.text(), headers: respHeaders }
+  })
 }
 
 export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
@@ -796,14 +991,15 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
       const res = await fetchClaudeUsageJson(token, env)
       if (res.status < 200 || res.status >= 300) {
         let detail = `HTTP ${res.status}`
+        let body: any = null
         try {
-          const body: any = JSON.parse(res.text)
+          body = JSON.parse(res.text)
           const m = body?.error?.message || body?.message
           if (typeof m === 'string' && m.trim()) detail = `${detail}: ${m.trim()}`
         } catch {
           /* keep HTTP status */
         }
-        setQuotaError(profileId, detail)
+        setQuotaError(profileId, classifyQuotaError({ status: res.status, message: detail, body, headers: res.headers }))
         return false
       }
       const d: any = JSON.parse(res.text)
@@ -819,7 +1015,7 @@ export function refreshClaudeOauth(profileId: ProfileId): Promise<boolean> {
       recordQuota(profileId, { fiveHour: five, sevenDay: seven, limited, plan: null }, 'claude-oauth')
       return true
     } catch (e) {
-      setQuotaError(profileId, e instanceof Error ? e.message : String(e))
+      setQuotaError(profileId, classifyQuotaError({ message: e instanceof Error ? e.message : String(e) }))
       return false
     }
   })().finally(() => claudePending.delete(profileId))
@@ -904,7 +1100,8 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
         const jsonLine = stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop()
         const d = jsonLine ? JSON.parse(jsonLine) : null
         if (d?.error) {
-          setQuotaError(profileId, String(d.error))
+          const errMsg = typeof d.error === 'string' ? d.error : String(d.error.message ?? JSON.stringify(d.error))
+          setQuotaError(profileId, classifyQuotaError({ message: errMsg, body: d }))
           return finish(false)
         }
         const groups: QuotaGroup[] = (d?.command?.data?.groups ?? []).map((g: any): QuotaGroup => {
@@ -927,7 +1124,7 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
         })
         if (!groups.length) {
           const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (code ? `exit code ${code}` : null)
-          if (fallback) setQuotaError(profileId, fallback)
+          if (fallback) setQuotaError(profileId, classifyQuotaError({ message: fallback, body: d }))
           return finish(false)
         }
         const main = groups.find((g) => g.key === 'gemini') ?? groups[0]
@@ -936,7 +1133,7 @@ export function refreshAgyQuota(profileId: ProfileId): Promise<boolean> {
         finish(true)
       } catch (e) {
         const fallback = stderr.trim().split('\n').find((l) => l.trim()) || (e instanceof Error ? e.message : String(e))
-        if (fallback) setQuotaError(profileId, fallback)
+        if (fallback) setQuotaError(profileId, classifyQuotaError({ message: fallback }))
         finish(false)
       }
     })
@@ -1224,7 +1421,7 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
       .filter((c) => c.kind === 'codex')
       .map(async (c) => {
         const ok = isLoggedIn(c.id) ? await refreshCodexLive(c.id) : false
-        if (!ok) refreshCodexQuota(c.id)
+        if (!ok) refreshCodexQuota(c.id, !!quotaErrors[c.id])
       })
   )
   const agyTask = Promise.all(configs.filter((c) => c.kind === 'gemini' && isLoggedIn(c.id)).map((c) => refreshAgyQuota(c.id)))
@@ -1233,7 +1430,7 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
       .filter((c) => c.kind === 'claude' && isLoggedIn(c.id))
       .map(async (c) => {
         const ok = await refreshClaudeOauth(c.id)
-        if (ok || !probe) return
+        if (ok || !probe || quotaErrors[c.id]?.kind === 'rate_limited') return
         const dir = tmpdir()
         let usage: Usage | null = null
         const h = runAgent(
@@ -1241,7 +1438,10 @@ export async function refreshUsage(probe: boolean): Promise<UsageSnapshot> {
           (e) => {
             if (e.t === 'quota') recordQuota(c.id, e.quota, 'claude-stream')
             if (e.t === 'usage') usage = { ...(usage ?? {}), ...e.usage }
-            if (e.t === 'rate_limited') recordLimited(c.id)
+            if (e.t === 'rate_limited') {
+              recordLimited(c.id)
+              setQuotaError(c.id, { kind: 'rate_limited', message: 'Rate limited', resetAt: null })
+            }
           },
           () => {}
         )

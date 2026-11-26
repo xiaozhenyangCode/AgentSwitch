@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, UsageTotals } from '@shared/types'
 import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
-import { KIND_META, btnPrimary, btnSecondary, inputCls, isReady } from '../lib/ui'
+import { KIND_META, accountBadge, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import { getSettings, useSettings } from '../state/settings'
@@ -13,6 +13,7 @@ import {
   fmtTokens,
   idlestAccounts,
   liveWindow,
+  quotaCardProfiles,
   quotaLevel,
   recommendSwitch,
   refreshUsage,
@@ -223,7 +224,21 @@ const SectionTitle = ({ children }: { children: string }) => <h2 className="mt-8
 function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   const snap = useUsage()
   const u = snap?.accounts[p.id]
-  const limited = p.status === 'rate_limited' || quotaLevel(p, u).level === 'danger'
+  const level = quotaLevel(p, u)
+  const isErrorRateLimited = u?.quotaErrorKind === 'rate_limited'
+  const isRateLimited = p.status === 'rate_limited' || isErrorRateLimited
+  const limited = isRateLimited || level.level === 'danger'
+  const notReadyBadge = p.status === 'uninstalled' || p.status === 'not_logged_in' ? accountBadge(p) : null
+  const resetAt = u?.quotaErrorResetAt && u.quotaErrorResetAt > Date.now() ? u.quotaErrorResetAt : null
+  const resetHint = resetAt ? t('usage.retryAfter', { time: fmtReset(resetAt) }) : null
+  const errText = [resetHint, u?.quotaError].filter(Boolean).join(' · ') || (p.status === 'rate_limited' ? t('usage.limited') : null)
+  const errTone = isRateLimited ? 'bg-danger-soft/80 text-danger' : 'bg-warn-soft/70 text-warn'
+  const limitedLabel =
+    p.status === 'rate_limited'
+      ? t('status.rateLimited')
+      : isErrorRateLimited
+        ? t('usage.refreshLimited')
+        : (level.reason ?? t('status.rateLimited'))
   return (
     <div className={`${CARD} px-4 py-3.5`}>
       <div className="flex min-w-0 items-center gap-2">
@@ -234,7 +249,11 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
             {t('usage.idlest')}
           </span>
         )}
-        {limited && <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{quotaLevel(p, u).reason ?? t('status.rateLimited')}</span>}
+        {notReadyBadge ? (
+          <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
+        ) : limited ? (
+          <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
+        ) : null}
         <span className="flex-1" />
         <QuotaGroupChip u={u} model={p.defaultModel} />
       </div>
@@ -246,9 +265,9 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
           <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
             {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}
           </div>
-          {u.quotaError && (
-            <div className="mt-1.5 truncate rounded-md bg-warn-soft/70 px-2 py-1 text-[11px] text-warn select-text" title={u.quotaError}>
-              {u.quotaError}
+          {errText && (
+            <div className={`mt-1.5 truncate rounded-md px-2 py-1 text-[11px] select-text ${errTone}`} title={errText}>
+              {errText}
             </div>
           )}
         </>
@@ -257,16 +276,22 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
           <div className="mt-3 grid grid-cols-2 gap-5 text-[12px] tabular-nums">
             <div>
               <div className="text-ink-3">{t('usage.localToday')}</div>
-              <div className="mt-0.5 text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.today) : 0)}</div>
+              <div className="mt-0.5 flex items-baseline gap-1.5">
+                <span className="text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.today) : 0)}</span>
+                {u && u.today.costUsd > 0 && <span className="text-[11.5px] text-ink-3">{fmtCost(u.today.costUsd)}</span>}
+              </div>
             </div>
             <div>
               <div className="text-ink-3">{t('usage.localWeek')}</div>
-              <div className="mt-0.5 text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.week) : 0)}</div>
+              <div className="mt-0.5 flex items-baseline gap-1.5">
+                <span className="text-[15px] font-semibold text-ink">{fmtTokens(u ? tokenSum(u.week) : 0)}</span>
+                {u && u.week.costUsd > 0 && <span className="text-[11.5px] text-ink-3">{fmtCost(u.week.costUsd)}</span>}
+              </div>
             </div>
           </div>
-          {u?.quotaError ? (
-            <div className="mt-2 rounded-lg bg-warn-soft/70 px-2.5 py-1.5 text-[11.5px] leading-[17px] break-words text-warn select-text">
-              {u.quotaError}
+          {errText ? (
+            <div className={`mt-2 rounded-lg px-2.5 py-1.5 text-[11.5px] leading-[17px] break-words select-text ${errTone}`}>
+              {errText}
             </div>
           ) : (
             <div className="mt-2 text-[11px] text-ink-3">{t(canUseSubscriptionQuota(p.kind, !!p.apiKey) ? 'usage.noQuotaNote' : 'apikey.noQuota')}</div>
@@ -679,7 +704,7 @@ export function UsageView() {
     byModel.set(d.model, addTotals(byModel.get(d.model) ?? emptyTotals(), d))
   }
   const modelRows = [...byModel.entries()].filter(([m, u]) => m !== '<synthetic>' && tokenSum(u) > 0).sort((a, b) => b[1].costUsd - a[1].costUsd || tokenSum(b[1]) - tokenSum(a[1]))
-  const ready = profiles.filter(isReady)
+  const cards = quotaCardProfiles(profiles)
   const idlest = idlestAccounts(profiles, snap)
   const num = 'px-4 py-3 text-right tabular-nums'
   const unpriced = total.unpriced ?? 0
@@ -708,9 +733,9 @@ export function UsageView() {
       </div>
 
       <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
-      {ready.length ? (
+      {cards.length ? (
         <div className="grid grid-cols-2 gap-3">
-          {ready.map((p) => (
+          {cards.map((p) => (
             <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
           ))}
         </div>

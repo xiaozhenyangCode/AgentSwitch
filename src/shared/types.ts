@@ -291,6 +291,8 @@ export interface DailyUsage extends UsageTotals {
   model: string
 }
 
+export type QuotaErrorKind = 'rate_limited' | 'error'
+
 export interface AccountUsage {
   today: UsageTotals
   week: UsageTotals
@@ -298,6 +300,10 @@ export interface AccountUsage {
   quota: AccountQuota | null
   /** Last quota probe error message, if any (cleared on next successful fetch). */
   quotaError?: string | null
+  /** Classification of the last quota probe error ('rate_limited' on 429 / quota-exhausted). */
+  quotaErrorKind?: QuotaErrorKind | null
+  /** Parsed reset/retry timestamp (ms epoch) from Retry-After or rate-limit headers/payload, if any. */
+  quotaErrorResetAt?: number | null
   /** Last time a run hit a rate limit (ms). */
   limitedAt: number | null
 }

@@ -108,7 +108,10 @@ export function quotaLevel(p: ProfileState | undefined, u: AccountUsage | undefi
   if (!getProviderCapabilities(p.kind).supportsUsageQuota) return p.status === 'rate_limited' ? { level: 'danger', reason: t('usage.limited') } : { level: 'ok', reason: null }
   const q = u?.quota
   const eff = effectiveQuota(u, model ?? p.defaultModel)
-  const limited = p.status === 'rate_limited' || (!!q?.limited && !eff.group && Date.now() - q.fetchedAt < 6 * 3600_000)
+  const limited =
+    p.status === 'rate_limited' ||
+    u?.quotaErrorKind === 'rate_limited' ||
+    (!!q?.limited && !eff.group && Date.now() - q.fetchedAt < 6 * 3600_000)
   if (limited) return { level: 'danger', reason: t('usage.limited') }
   const five = liveWindow(eff.fiveHour)
   const seven = liveWindow(eff.sevenDay)
@@ -186,7 +189,7 @@ export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | n
   const out = new Set<ProfileId>()
   for (const kind of new Set(profiles.map((p) => p.kind))) {
     const cands = profiles
-      .filter((p) => p.kind === kind && isReady(p) && p.status !== 'rate_limited')
+      .filter((p) => p.kind === kind && isReady(p) && p.status !== 'rate_limited' && snap?.accounts[p.id]?.quotaErrorKind !== 'rate_limited')
       .map((p) => ({ p, use: quotaUse(snap?.accounts[p.id], p.defaultModel) }))
       .filter((x): x is { p: ProfileState; use: number } => x.use !== null)
     if (cands.length < 2) continue
@@ -194,6 +197,15 @@ export function idlestAccounts(profiles: ProfileState[], snap: UsageSnapshot | n
     out.add(cands[0].p.id)
   }
   return out
+}
+
+/**
+ * Accounts rendered in the top Account Quotas card grid.
+ * Always mirrors the full configured account list so rate-limited, uncached, or errored accounts
+ * never disappear from the grid.
+ */
+export function quotaCardProfiles(profiles: ProfileState[]): ProfileState[] {
+  return profiles
 }
 
 /** Share of uncached input, cache reads and cache writes served from cache, as in the usage panel. */

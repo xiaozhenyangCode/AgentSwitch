@@ -237,6 +237,8 @@ export const en: Dict = {
   'usage.noQuotaNote': 'This account reports no quota windows; showing AgentSwitch’s local statistics',
   'usage.localToday': 'Today',
   'usage.localWeek': 'This week',
+  'usage.refreshLimited': 'Refresh limited',
+  'usage.retryAfter': 'Resets {time}',
   'usage.noReady': 'No accounts are ready yet. Add and sign in to one in Model Engines.',
   'usage.limited': 'Rate limit reached',
   'usage.used': '{which} quota {pct}% used',

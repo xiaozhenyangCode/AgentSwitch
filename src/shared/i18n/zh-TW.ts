@@ -246,6 +246,8 @@ export const zhTW: Dict = {
   'usage.noQuotaNote': '此帳號不提供額度視窗，以下為 AgentSwitch 本地統計',
   'usage.localToday': '今日',
   'usage.localWeek': '本週',
+  'usage.refreshLimited': '重新整理受限',
+  'usage.retryAfter': '預計 {time} 恢復',
   'usage.noReady': '還沒有就緒的帳號，去「模型引擎」新增並登入。',
   'usage.limited': '已觸發限流',
   'usage.used': '{which} 額度已用 {pct}%',
