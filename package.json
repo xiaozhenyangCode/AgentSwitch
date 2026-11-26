@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:icons": "node scripts/build-icons.mjs",
     "preview": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
@@ -75,6 +76,10 @@
       {
         "from": "build/runtime/${os}-${arch}",
         "to": "runtime"
+      },
+      {
+        "from": "build/Assets.car",
+        "to": "Assets.car"
       }
     ],
     "asarUnpack": [
@@ -83,6 +88,9 @@
     "npmRebuild": true,
     "mac": {
       "icon": "build/icon.icns",
+      "extendInfo": {
+        "CFBundleIconName": "AppIcon"
+      },
       "category": "public.app-category.developer-tools",
       "target": [
         "dmg",

@@ -1,11 +1,17 @@
 // node-pty's spawn-helper must stay executable inside app.asar.unpacked, or every pty spawn
 // fails with "posix_spawnp failed". Also verify the bundled Node/npm runtime permissions.
-const { chmodSync, existsSync, readdirSync } = require('node:fs')
+const { chmodSync, existsSync, readdirSync, statSync } = require('node:fs')
 const { join } = require('node:path')
 
 exports.default = async function afterPack(ctx) {
   const app = join(ctx.appOutDir, `${ctx.packager.appInfo.productFilename}.app`)
   const resources = join(app, 'Contents', 'Resources')
+  for (const name of ['Assets.car', 'icon.icns']) {
+    const icon = statSync(join(resources, name), { throwIfNoEntry: false })
+    if (!icon?.isFile() || !icon.size) {
+      throw new Error(`[afterPack] Missing packaged icon ${name}. Run "npm run build:icons" first.`)
+    }
+  }
   const pty = join(resources, 'app.asar.unpacked', 'node_modules', 'node-pty')
   const helpers = [join(pty, 'build', 'Release', 'spawn-helper')]
   const prebuilds = join(pty, 'prebuilds')

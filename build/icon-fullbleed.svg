@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="tileGrad" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F7F8FA" />
+      <stop offset="52%" stop-color="#E6E8EC" />
+      <stop offset="100%" stop-color="#C0C3C8" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#tileGrad)" />
+  <g transform="scale(10.24)">
+    <circle cx="50" cy="50" r="36.5" fill="#272A36" />
+
+    <!-- Under-pass: outer petal loops -->
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(-12 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(108 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    <path d="M 55.2 72.4 A 13 25 0 0 1 38.6 39.2" transform="rotate(228 50 50)" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+
+    <!-- Over-pass: main orbital arms with dark halo for crisp weave -->
+    <g transform="rotate(-12 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+    <g transform="rotate(108 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+    <g transform="rotate(228 50 50)">
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#272A36" stroke-width="7.4" stroke-linecap="round" />
+      <path d="M 50 25 A 13 25 0 0 1 58.6 68.5" stroke="#D4F6FF" stroke-width="3.5" stroke-linecap="round" />
+    </g>
+
+    <!-- Three orbital nodes -->
+    <circle cx="50" cy="25" r="4.1" transform="rotate(-12 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+    <circle cx="50" cy="25" r="4.1" transform="rotate(108 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+    <circle cx="50" cy="25" r="4.1" transform="rotate(228 50 50)" fill="#272A36" stroke="#D4F6FF" stroke-width="3.3" />
+
+    <!-- Center core -->
+    <circle cx="50" cy="50" r="3.6" fill="#D4F6FF" />
+  </g>
+</svg>
