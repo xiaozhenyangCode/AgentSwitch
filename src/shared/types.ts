@@ -577,6 +577,8 @@ export const IPC = {
   showDataDir: 'shell:showDataDir',
   exportThreadsFile: 'threads:export-file',
   importThreadsFile: 'threads:import-file',
+  commitThreadsImport: 'threads:commit-import',
+  pathsExist: 'sys:paths-exist',
   extSkills: 'ext:skills',
   extMcp: 'ext:mcp',
   extOverview: 'ext:overview',

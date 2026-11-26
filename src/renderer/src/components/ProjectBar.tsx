@@ -27,12 +27,13 @@ const item = 'flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-le
 
 /**
  * Context line under the composer: the chat's project folder. Before the first message it can
- * be switched or cleared (recent projects / pick a folder / no project); afterwards the folder is
- * locked (the CLI sessions are bound to it) and the menu only offers Finder / copy / new chat.
+ * be switched or cleared. Started chats rebind the project through a separate action.
  */
 export function ProjectBar({
   dir,
   locked,
+  projectMissing = false,
+  onRebind,
   onChange,
   onPick,
   onNewHere,
@@ -40,6 +41,8 @@ export function ProjectBar({
 }: {
   dir: string | null
   locked: boolean
+  projectMissing?: boolean
+  onRebind?: () => void
   onChange: (dir: string | null) => void
   onPick: () => void
   onNewHere: (dir: string | null) => void
@@ -67,16 +70,16 @@ export function ProjectBar({
         <button
           onClick={() => setOpen((o) => !o)}
           className={`flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${open ? 'bg-black/[0.05] dark:bg-white/[0.07]' : ''}`}
-          title={dir ? `${dir}${locked ? '\n' + t('proj.lockedHint') : ''}` : t('wb.projectHint')}
+          title={[dir ?? t('wb.projectHint'), projectMissing ? t(dir ? 'proj.missing' : 'proj.unlinked') : null, locked ? t('proj.lockedHint') : null].filter(Boolean).join('\n')}
         >
-          <IconFolder size={14} className={`shrink-0 ${dir ? 'text-accent' : 'text-ink-3'}`} />
+          <IconFolder size={14} className={`shrink-0 ${projectMissing ? 'text-warn' : dir ? 'text-accent' : 'text-ink-3'}`} />
           {dir ? (
             <>
-              <span className="max-w-[12rem] shrink-0 truncate font-medium text-ink">{baseName(dir)}</span>
+              <span className={`max-w-[12rem] shrink-0 truncate font-medium ${projectMissing ? 'text-warn' : 'text-ink'}`}>{baseName(dir)}</span>
               <span className="min-w-0 truncate text-ink-3">{tildePath(dir)}</span>
             </>
           ) : (
-            <span className="text-ink-3">{t('nav.noProject')}</span>
+            <span className={projectMissing ? 'text-warn' : 'text-ink-3'}>{t('nav.noProject')}</span>
           )}
           {locked ? <IconLock size={11} className="shrink-0 text-ink-3" /> : <IconChevronDown size={12} className="shrink-0 text-ink-3" />}
         </button>
@@ -88,7 +91,7 @@ export function ProjectBar({
                 <div className="px-2.5 pt-1 pb-1.5 text-[11.5px] leading-relaxed text-ink-3">{dir ? t('proj.lockedHint') : t('proj.lockedNone')}</div>
                 {dir && (
                   <>
-                    <button className={item} onClick={close(() => void window.agentswitch.sys.showInFolder(dir))}>
+                    <button className={item + ' disabled:opacity-50'} disabled={projectMissing} onClick={close(() => void window.agentswitch.sys.showInFolder(dir))}>
                       <IconFolder size={15} className="shrink-0 text-ink-2" />
                       {t('common.showInFinder')}
                     </button>
@@ -107,6 +110,12 @@ export function ProjectBar({
                       {copied ? t('common.copied') : t('proj.copyPath')}
                     </button>
                   </>
+                )}
+                {onRebind && (
+                  <button className={item} onClick={close(onRebind)}>
+                    <IconFolder size={15} className="shrink-0 text-accent" />
+                    {t('proj.rebindMenu')}
+                  </button>
                 )}
                 <button className={item} onClick={close(() => onNewHere(dir))}>
                   <IconPlus size={15} className="shrink-0 text-accent" />

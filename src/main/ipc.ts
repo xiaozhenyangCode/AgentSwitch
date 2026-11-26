@@ -94,14 +94,16 @@ import { forgetModels, listModels } from './models'
 import { gitChanges, gitCommitDetail } from './gitChanges'
 import { gitGraph, gitLog, gitMutate, gitStatus } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
-import { allowFile, allowRoot, isAllowedPath } from './fileProtocol'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'node:path'
+import { allowFile, allowRoot, attachmentsDir, isAllowedPath } from './fileProtocol'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, isAbsolute, join, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { AttachmentText, FileSearchRequest, OnboardingState, RunRequest } from '@shared/types'
 import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, shellEnvStatus } from './shellEnv'
 import { cliNodeRuntime } from './runtime'
 import { isTranscriptEntry } from '@shared/transcript'
+import type { CommitImportRequest, ThreadBundle } from '@shared/transfer'
+import { commitThreadsImport, exportThreadsArchive, inspectThreadsImport } from './threadTransfer'
 
 const assertId = (x: unknown): ProfileId => {
   if (!hasProfile(x)) throw new Error(`unknown account: ${String(x)}`)
@@ -622,31 +624,67 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.onboardingSet, (_e, done: unknown) => writeSettings({ onboardingCompleted: done === true }))
 
   ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
-  ipcMain.handle(IPC.exportThreadsFile, async (_e, defaultName: unknown, content: unknown) => {
-    if (typeof content !== 'string') throw new Error('bad content')
+  ipcMain.handle(IPC.exportThreadsFile, async (_e, defaultName: unknown, bundle: ThreadBundle) => {
     const w = getWindow()
-    const name = typeof defaultName === 'string' && defaultName.trim() ? defaultName.trim() : 'AgentSwitch-chats.json'
+    const name = typeof defaultName === 'string' && defaultName.trim()
+      ? basename(defaultName.trim()).replace(/\.(?:json|zip)$/i, '') + '.zip'
+      : 'AgentSwitch-chats.zip'
     const opts: Electron.SaveDialogOptions = {
       defaultPath: join(app.getPath('downloads'), name),
-      filters: [{ name: 'AgentSwitch Chats', extensions: ['json'] }]
+      filters: [{ name: 'AgentSwitch Chats', extensions: ['zip'] }]
     }
     const r = w ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts)
     if (r.canceled || !r.filePath) return null
-    writeFileSync(r.filePath, content, 'utf8')
-    return { path: r.filePath }
+    const userData = app.getPath('userData')
+    const exportRoots: string[] = []
+    for (const candidate of [
+      attachmentsDir(userData),
+      stageDir,
+      join(userData, 'workspaces'),
+      ...chatStore.load().threads.flatMap((th) => [th.projectDir, th.workdir])
+    ]) {
+      if (typeof candidate !== 'string' || !isAbsolute(candidate)) continue
+      try {
+        exportRoots.push(realpathSync(candidate))
+      } catch { /* folder may not exist */ }
+    }
+    const canExportFile = (real: string): boolean =>
+      isAllowedPath(real) || exportRoots.some((root) => real === root || real.startsWith(root.endsWith(sep) ? root : root + sep))
+    const manifest = exportThreadsArchive(bundle, r.filePath, {
+      userData, appVersion: app.getVersion(), canReadFile: canExportFile
+    })
+    return { path: r.filePath, manifest }
   })
+  let previewedImportPath: string | null = null
   ipcMain.handle(IPC.importThreadsFile, async () => {
     const w = getWindow()
     const opts: Electron.OpenDialogOptions = {
       properties: ['openFile'],
-      filters: [{ name: 'AgentSwitch Chats', extensions: ['json'] }]
+      filters: [{ name: 'AgentSwitch Chats', extensions: ['zip', 'json'] }]
     }
     const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
     if (r.canceled || !r.filePaths[0]) return null
-    const p = r.filePaths[0]
-    const st = statSync(p)
-    if (!st.isFile() || st.size > 64 * 1024 * 1024) throw new Error('file too large')
-    return { path: p, text: readFileSync(p, 'utf8') }
+    const preview = inspectThreadsImport(r.filePaths[0])
+    previewedImportPath = preview.filePath
+    return preview
+  })
+  ipcMain.handle(IPC.commitThreadsImport, (_e, request: CommitImportRequest) => {
+    if (!request || typeof request.filePath !== 'string' || request.filePath !== previewedImportPath ||
+        !Array.isArray(request.selectedThreadIds) || !request.selectedThreadIds.every((id) => typeof id === 'string') ||
+        !request.projectMap || typeof request.projectMap !== 'object' || Array.isArray(request.projectMap)) {
+      throw new Error('Invalid thread import request')
+    }
+    const knownProjects = new Set(chatStore.load().threads.map((thread) => thread.projectDir))
+    const projectMap = Object.fromEntries(Object.entries(request.projectMap).filter(([, path]) =>
+      typeof path === 'string' && (knownProjects.has(path) || isAllowedPath(path))))
+    const result = commitThreadsImport({ ...request, projectMap }, { userData: app.getPath('userData') })
+    previewedImportPath = null
+    return result
+  })
+  ipcMain.handle(IPC.pathsExist, (_e, paths: unknown): Record<string, boolean> => {
+    if (!Array.isArray(paths)) return {}
+    return Object.fromEntries([...new Set(paths.slice(0, 200))].flatMap((path) =>
+      typeof path === 'string' ? [[path, isAbsolute(path) && existsSync(path)]] : []))
   })
   ipcMain.handle(IPC.showInFolder, (_e, p: unknown) => {
     if (typeof p !== 'string' || !p.trim()) return

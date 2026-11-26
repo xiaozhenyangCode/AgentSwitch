@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Thread } from '@shared/chat'
+import type { OutputFileRef, Thread } from '@shared/chat'
 import { ChatStore } from './chatStore'
 
 let userData: string
@@ -76,6 +76,33 @@ describe('ChatStore', () => {
     expect(loaded.threads).toEqual([queued])
     expect(reopened.save(loaded.session, 1, { upserts: [], deletes: [queued.id] })).toBe(true)
     expect(reopened.load().threads).toEqual([])
+  })
+
+  it('restores valid portable metadata while ignoring malformed optional fields', () => {
+    const image: OutputFileRef = {
+      path: '/original/project/figure.svg', name: 'figure.svg', source: 'workspace-file', relativePath: 'figure.svg',
+      size: 100, mimeType: 'image/svg+xml', bundlePath: 'attachments/figure.svg',
+      fallbackPath: '/app/attachments/figure.svg', skippedReason: 'missing', inlineOnly: true
+    }
+    const path = '/original/project/notes.txt'
+    const notes = { path, name: 'notes.txt', source: 'workspace-file' }
+    mkdirSync(chats, { recursive: true })
+    writeFileSync(join(chats, 'portable.json'), JSON.stringify({
+      ...thread('portable'),
+      sourceProjectDir: '/original/project',
+      sourceProjectName: 42,
+      messages: [
+        { role: 'assistant', content: 'Updated', agent: {}, outputs: [path], outputFiles: [image, null, {},
+          { ...notes, bundlePath: ['invalid'], size: -1, skippedReason: 'other', inlineOnly: 'false' }] },
+        { role: 'assistant', content: 'Legacy', agent: {}, outputs: [path], outputFiles: false }
+      ]
+    }))
+    const [loaded] = store.load().threads
+    expect(loaded.sourceProjectDir).toBe('/original/project')
+    expect(loaded).not.toHaveProperty('sourceProjectName')
+    expect(loaded.messages[0]).toHaveProperty('outputs', [path])
+    expect(loaded.messages[0]).toHaveProperty('outputFiles', [image, notes])
+    expect(loaded.messages[1]).not.toHaveProperty('outputFiles')
   })
 
   it('skips damaged chats and stale index entries while recovering unindexed files', () => {

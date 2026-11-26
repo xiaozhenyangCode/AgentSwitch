@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
+import type { OutputFileRef } from '@shared/chat'
+import { extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
 import type { FileSearchItem, ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
@@ -12,6 +14,7 @@ import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, popover } f
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
+import { attachmentImages, attachmentPaths, MissingFile, useImageCandidate, usePathsExist, type PathExistence } from '../components/FilePreview'
 import { stripMarks } from '@shared/markers'
 import { maskCode } from '@shared/mentions'
 import { EffortBar } from '../components/EffortBar'
@@ -41,9 +44,9 @@ import {
   type ContextNoticeDismissal
 } from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
-import { Markdown, MarkdownBase, ZoomImage } from '../components/Markdown'
+import { Markdown, MarkdownBase, OutputImage } from '../components/Markdown'
 import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconMaximize, IconMinimize, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
-import { IMAGE_RE, baseName as fileBase, fileUrl } from '../lib/fileUrl'
+import { fileUrl } from '../lib/fileUrl'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
@@ -58,6 +61,7 @@ import {
   lastSpeaker,
   loadHistory,
   newThread,
+  rebindThreadProject,
   removeQueuedMessage,
   rewindThread,
   skipHandoff,
@@ -215,8 +219,29 @@ export function WorkbenchPage() {
   const setDriver = (id: ProfileId, model: string | null) =>
     update({ driver: { profileId: id, model }, participants: participants.includes(id) ? participants : [...participants, id] })
 
-  // the folder is fixed once the first message went out (the CLI sessions are bound to it)
+  // Started chats change their folder through rebind so old CLI sessions cannot resume there.
   const projectLocked = !!thread && (!!thread.imported || thread.messages.some((m) => m.role === 'user'))
+  const [previewRevision, refreshPreviews] = useReducer((n: number) => n + 1, 0)
+  const projectDir = ctx.projectDir
+  const sourceProjectDir = thread?.sourceProjectDir
+  const projectExists = usePathsExist(projectDir ? [projectDir] : [], previewRevision)
+  const projectMissing = !!thread && (projectDir ? projectExists[projectDir] === false : !!sourceProjectDir)
+  const rebinding = useRef(false)
+  const threadId = thread?.id
+  const canRebindProject = !!thread && !thread.preview && !thread.pause && !isThreadBusy(thread)
+  const rebindProject = useCallback(async () => {
+    if (!threadId || !canRebindProject || rebinding.current) return
+    rebinding.current = true
+    try {
+      const dir = await window.agentswitch.sys.pickProject(projectMissing ? undefined : projectDir ?? undefined)
+      if (dir && rebindThreadProject(threadId, dir)) refreshPreviews()
+    } catch (error) {
+      toast({ kind: 'error', title: t('proj.rebindFailed'), desc: error instanceof Error ? error.message : String(error) })
+    } finally {
+      rebinding.current = false
+    }
+  }, [threadId, canRebindProject, projectMissing, projectDir, toast])
+  const onRebindProject = useMemo(() => canRebindProject ? () => void rebindProject() : undefined, [canRebindProject, rebindProject])
   const startThread = useStartThread()
   const pickProject = async () => {
     if (projectLocked) return
@@ -247,6 +272,17 @@ export function WorkbenchPage() {
     if (scrollTimer.current) window.clearTimeout(scrollTimer.current)
   }, [])
   const messages = useMemo(() => threadMessages(thread), [thread])
+  const filePaths = useMemo(() => messages.flatMap((msg) => {
+    if (msg.role === 'user') return msg.attachments.flatMap((a) => a.isImage ? [] : attachmentPaths(a, projectDir))
+    if (msg.role !== 'assistant') return []
+    return outputRefsForMessage(msg, projectDir, sourceProjectDir)
+      .filter((file) => !file.inlineOnly && !isOutputImage(file)).slice(0, 12)
+      .flatMap((file) => resolveOutputFileCandidates(file, projectDir))
+  }), [messages, projectDir, sourceProjectDir])
+  const fileExists = usePathsExist(filePaths, previewRevision)
+  const markdownBase = useMemo(() => ({
+    baseDir: thread?.workdir ?? projectDir, home: info?.realHome ?? null, projectDir, sourceProjectDir, onRebindProject, revision: previewRevision
+  }), [thread?.workdir, projectDir, info?.realHome, sourceProjectDir, onRebindProject, previewRevision])
   const checkpoints = useCheckpoints(thread?.id)
   const checkpointReplies = useMemo(() => {
     const turns = new Map(checkpoints.turns?.map(({ turnId, status }) => [turnId, status]))
@@ -465,7 +501,6 @@ export function WorkbenchPage() {
 
   // turns continued elsewhere (terminal, another app) merged into the open chat: a short notice
   const [synced, setSynced] = useState<{ n: number; seq: number } | null>(null)
-  const threadId = thread?.id
   useEffect(
     () =>
       onExternalSync((e) => {
@@ -641,6 +676,16 @@ export function WorkbenchPage() {
           }}
         >
           <div className="mx-auto flex min-h-full max-w-[820px] flex-col px-8 pt-2" style={{ paddingBottom: composerH + 28 }}>
+            {projectMissing && (
+              <div className="project-missing-banner" role="status">
+                <IconFolder size={16} className="shrink-0" />
+                <span className="min-w-0 flex-1" title={projectDir ?? sourceProjectDir ?? undefined}>
+                  <span className="block">{t(projectDir ? 'proj.missing' : 'proj.unlinked')}</span>
+                  <span className="block truncate text-[11.5px] text-ink-2">{projectDir ?? sourceProjectDir}</span>
+                </span>
+                {onRebindProject && <button type="button" className="file-preview-rebind shrink-0" onClick={onRebindProject}>{t('proj.rebind')}</button>}
+              </div>
+            )}
             {thread?.imported && (
               <div className="mb-5 flex items-start gap-2 rounded-xl bg-black/[0.035] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
                 <KindAvatar kind={thread.imported.kind} size={16} />
@@ -670,7 +715,7 @@ export function WorkbenchPage() {
               <EmptyState projectDir={ctx.projectDir} onPickProject={() => void pickProject()} participants={participants} />
             ) : (
               <div className="space-y-6">
-                <MarkdownBase.Provider value={{ baseDir: thread?.workdir ?? ctx.projectDir, home: info?.realHome ?? null }}>
+                <MarkdownBase.Provider value={markdownBase}>
                   {(() => {
                     const editableIds = new Set(thread?.messages.map((x) => x.id) ?? [])
                     const rewindBlocked = !thread || isThreadBusy(thread) || !!thread.pause || (thread.queuedMessages?.length ?? 0) > 0
@@ -682,6 +727,7 @@ export function WorkbenchPage() {
                           <UserBubble
                             key={m.id}
                             msg={m}
+                            fileExists={fileExists}
                             onQuote={m.kind !== 'handoff' && m.text.trim() ? () => onQuote(m) : undefined}
                             onRewind={canRewind ? () => void openRewind(m) : undefined}
                             rewindDisabled={rewindBlocked}
@@ -690,7 +736,7 @@ export function WorkbenchPage() {
                       }
                       const checkpoint = checkpointReplies.get(m.id)
                       return (
-                        <AssistantBlock key={m.id} msg={m} latest={m.id === lastReplyId} onQuote={m.content.trim() ? () => onQuote(m) : undefined}>
+                        <AssistantBlock key={m.id} msg={m} fileExists={fileExists} latest={m.id === lastReplyId} onQuote={m.content.trim() ? () => onQuote(m) : undefined}>
                           {checkpoint && thread && (
                             <CheckpointUndo threadId={thread.id} turnId={m.turnId} status={checkpoint} busy={isThreadBusy(thread)}
                               onChange={() => {
@@ -755,6 +801,8 @@ export function WorkbenchPage() {
             <ProjectBar
               dir={ctx.projectDir}
               locked={projectLocked}
+              projectMissing={projectMissing}
+              onRebind={onRebindProject}
               onChange={(dir) => !projectLocked && update({ projectDir: dir })}
               onPick={() => void pickProject()}
               onNewHere={startThread}
@@ -1192,34 +1240,37 @@ function SystemDivider({ msg }: { msg: SystemMessage }) {
 
 function UserBubble({
   msg,
+  fileExists,
   onQuote,
   onRewind,
   rewindDisabled
 }: {
   msg: UserMessage
+  fileExists: PathExistence
   onQuote?: () => void
   onRewind?: () => void
   rewindDisabled?: boolean
 }) {
-  const images = msg.attachments.filter((a) => a.isImage && (a.thumb || a.path))
-  const files = msg.attachments.filter((a) => !(a.isImage && (a.thumb || a.path)))
-  const [viewing, setViewing] = useState<Attachment | null>(null)
+  const images = msg.attachments.filter((a) => a.isImage)
+  const files = msg.attachments.filter((a) => !a.isImage)
+  const [viewingId, setViewing] = useState<string | null>(null)
+  const viewing = msg.attachments.find((a) => a.id === viewingId)
+  const { projectDir, onRebindProject, revision } = useContext(MarkdownBase)
+  const rebindFor = (a: Attachment) => (a.source === 'workspace-file' || !!a.relativePath) ? onRebindProject : undefined
   return (
     <div className="flex flex-col items-end gap-1.5 pl-24">
-      {viewing && <AttachmentViewer a={viewing} onClose={() => setViewing(null)} />}
+      {viewing && <AttachmentViewer a={viewing} projectDir={projectDir} onRebindProject={rebindFor(viewing)} revision={revision} onClose={() => setViewing(null)} />}
       {images.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {images.map((a) => (
-            <button key={a.id} onClick={() => setViewing(a)} title={`${a.path ?? a.name}\n${t('md.clickZoom')}`} className="cursor-zoom-in rounded-2xl">
-              <BubbleThumb a={a} />
-            </button>
+            <BubbleThumb key={a.id} a={a} projectDir={projectDir} onRebindProject={rebindFor(a)} revision={revision} onOpen={() => setViewing(a.id)} />
           ))}
         </div>
       )}
       {files.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {files.map((a) => (
-            <FileChip key={a.id} a={a} onOpen={() => setViewing(a)} />
+            <FileChip key={a.id} a={a} projectDir={projectDir} fileExists={fileExists} onRebindProject={rebindFor(a)} onOpen={() => setViewing(a.id)} />
           ))}
         </div>
       )}
@@ -1273,25 +1324,49 @@ function UserBubble({
   )
 }
 
-/** Thumbnail in a sent bubble: the original file (sharp), or the stored small JPEG once it is gone. */
-function BubbleThumb({ a }: { a: Attachment }) {
-  const [failed, setFailed] = useState(0)
-  const srcs = [a.path ? fileUrl(a.path) : null, a.thumb].filter((s): s is string => !!s)
-  const src = srcs[failed]
-  if (!src)
-    return <span className="flex h-24 w-24 items-center justify-center rounded-2xl bg-black/[0.05] px-2 text-center text-[11px] text-ink-3 shadow-[0_0_0_1px_var(--ring)]">{t('att.missingShort')}</span>
-  return <img src={src} decoding="async" onError={() => setFailed((n) => n + 1)} className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+function BubbleThumb({ a, projectDir, revision, onOpen, onRebindProject }: {
+  a: Attachment
+  projectDir?: string | null
+  revision?: number
+  onOpen: () => void
+  onRebindProject?: () => void
+}) {
+  const { candidate, imageKey, fail } = useImageCandidate(attachmentImages(a, projectDir), revision)
+  if (!candidate) {
+    return <MissingFile name={a.name} relativePath={a.relativePath} path={a.path ?? a.fallbackPath}
+      skippedReason={a.skippedReason} onRebindProject={onRebindProject} />
+  }
+  return (
+    <button type="button" onClick={onOpen} title={(candidate.path ?? a.path ?? a.name) + '\n' + t(candidate.path ? 'md.clickZoom' : 'att.missingThumb')}
+      className="cursor-zoom-in rounded-2xl">
+      <img key={imageKey} src={candidate.src} alt={a.name} decoding="async" onError={fail}
+        className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_0_1px_var(--ring)]" />
+    </button>
+  )
 }
 
-function FileChip({ a, onRemove, onOpen }: { a: Attachment; onRemove?: () => void; onOpen?: () => void }) {
+function FileChip({ a, onRemove, onOpen, projectDir, fileExists, onRebindProject }: {
+  a: Attachment
+  onRemove?: () => void
+  onOpen?: () => void
+  projectDir?: string | null
+  fileExists?: PathExistence
+  onRebindProject?: () => void
+}) {
+  const paths = attachmentPaths(a, projectDir)
+  if (fileExists && paths.every((path) => fileExists[path] === false)) {
+    return <MissingFile name={a.name} relativePath={a.relativePath} path={a.path ?? a.fallbackPath}
+      skippedReason={a.skippedReason} onRebindProject={onRebindProject} />
+  }
+  const path = paths.find((candidate) => fileExists?.[candidate]) ?? paths[0] ?? a.name
+  const content = <><IconFile size={16} className="shrink-0 text-ink-2" /><span className="min-w-0 truncate">{a.name}</span></>
+  const chip = 'flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)]'
+  if (onOpen) {
+    return <button type="button" onClick={onOpen} className={chip + ' hover:bg-surface-2'} title={path + '\n' + t('att.clickPreview')}>{content}</button>
+  }
   return (
-    <span
-      onClick={onOpen}
-      className={`flex h-10 max-w-[220px] items-center gap-2 rounded-xl bg-surface pr-2 pl-2.5 text-[12px] text-ink shadow-[0_0_0_1px_var(--ring)] ${onOpen ? 'cursor-pointer hover:bg-surface-2' : ''}`}
-      title={(a.path ?? a.name) + (onOpen ? `\n${t('att.clickPreview')}` : '')}
-    >
-      <IconFile size={16} className="shrink-0 text-ink-2" />
-      <span className="min-w-0 truncate">{a.name}</span>
+    <span className={chip} title={path}>
+      {content}
       {onRemove && (
         <button onClick={onRemove} className="rounded-full p-0.5 text-ink-3 hover:bg-fill hover:text-ink">
           <IconX size={12} />
@@ -1355,7 +1430,18 @@ function SpeakerLine({ msg }: { msg: AssistantMessage }) {
 const REPLY_FOLD_AT = 360
 const REPLY_FOLD_PX = 300
 
-function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: AssistantMessage; latest?: boolean; onQuote?: () => void; children?: ReactNode }) {
+function AssistantBlock({ msg, fileExists, latest = false, onQuote, children }: {
+  msg: AssistantMessage
+  fileExists: PathExistence
+  latest?: boolean
+  onQuote?: () => void
+  children?: ReactNode
+}) {
+  const base = useContext(MarkdownBase)
+  const { projectDir, sourceProjectDir } = base
+  const outputFiles = useMemo(() => outputRefsForMessage(msg, projectDir ?? null, sourceProjectDir),
+    [msg.outputs, msg.outputFiles, projectDir, sourceProjectDir])
+  const preview = useMemo(() => ({ ...base, outputFiles }), [base, outputFiles])
   const usageSnap = useUsage()
   const streaming = msg.status === 'streaming'
   useTicker(streaming)
@@ -1385,7 +1471,7 @@ function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: Assis
       </div>
     )
 
-  return (
+  const body = (
     <div ref={rootRef} className="flex gap-3 pr-10">
       <div className="pt-0.5">
         <RefAvatar r={msg.agent} size={28} />
@@ -1413,7 +1499,7 @@ function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: Assis
               </div>
             )
           ) : (
-            !msg.error && !msg.outputs.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">{t('wb.noText')}</div>
+            !msg.error && !outputFiles.length && !msg.notices?.length && <div className="text-[14px] text-ink-3">{t('wb.noText')}</div>
           )}
           {streaming && busy && !awaitingPermission && (
             <LiveProgress
@@ -1425,7 +1511,7 @@ function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: Assis
               onDetails={msg.activity.length > 0 ? showDetails : undefined}
             />
           )}
-          <Outputs msg={msg} />
+          <Outputs msg={msg} fileExists={fileExists} />
           {(msg.notices ?? []).map((n, i) => (
             <div key={i} className="mt-2 flex items-start gap-2 rounded-xl bg-warn-soft px-3 py-2 text-[12px] leading-relaxed text-warn">
               <IconAlert size={14} className="mt-0.5 shrink-0" />
@@ -1465,38 +1551,52 @@ function AssistantBlock({ msg, latest = false, onQuote, children }: { msg: Assis
       </div>
     </div>
   )
+  return <MarkdownBase.Provider value={preview}>{body}</MarkdownBase.Provider>
 }
 
-/** Files the step produced that its text doesn't already show: images as previews, others as chips. */
-function Outputs({ msg }: { msg: AssistantMessage }) {
-  if (!msg.outputs.length) return null
-  // only skip images the text already embeds with ![..](..); plain links still get a preview
-  const shown = (p: string) => new RegExp('!\\[[^\\]]*\\]\\([^)]*' + fileBase(p).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)').test(msg.content)
-  const images = msg.outputs.filter((p) => IMAGE_RE.test(p) && !shown(p))
-  const files = msg.outputs.filter((p) => !IMAGE_RE.test(p))
+const isOutputImage = (file: OutputFileRef): boolean => isPreviewableImagePath(file.path) || isPreviewableImagePath(file.name)
+
+/** Files the step produced that are not already rendered inline. */
+function Outputs({ msg, fileExists }: { msg: AssistantMessage; fileExists: PathExistence }) {
+  const { baseDir, home, projectDir = baseDir, sourceProjectDir, outputFiles = [], onRebindProject, revision } = useContext(MarkdownBase)
+  if (!outputFiles.length) return null
+  const inline = new Set(extractMarkdownImageTargets(msg.content).map((src) =>
+    findMatchingOutputFile(src, baseDir, home, outputFiles, sourceProjectDir)))
+  const images = outputFiles.filter((file) => !file.inlineOnly && isOutputImage(file) && !inline.has(file))
+  const files = outputFiles.filter((file) => !file.inlineOnly && !isOutputImage(file))
   if (!images.length && !files.length) return null
   return (
     <div className="mt-3">
       {images.length > 0 && (
         <div className="md">
-          {images.map((p) => (
-            <ZoomImage key={p} src={fileUrl(p)} alt={fileBase(p)} path={p} />
+          {images.map((file) => (
+            <OutputImage key={file.path} file={file} projectDir={projectDir} onRebindProject={onRebindProject} revision={revision} />
           ))}
         </div>
       )}
       {files.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {files.slice(0, 12).map((p) => (
-            <button
-              key={p}
-              onClick={() => void window.agentswitch.sys.showInFolder(p)}
-              className="flex h-7 max-w-[260px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2.5 text-[12px] text-ink-2 hover:bg-black/[0.07] hover:text-ink"
-              title={`${p}\n${t('common.showInFinder')}`}
-            >
-              <IconFile size={13} className="shrink-0" />
-              <span className="truncate">{fileBase(p)}</span>
-            </button>
-          ))}
+          {files.slice(0, 12).map((file) => {
+            const paths = resolveOutputFileCandidates(file, projectDir)
+            if (paths.every((path) => fileExists[path] === false)) {
+              return <MissingFile key={file.path} name={file.name} relativePath={file.relativePath} path={file.path || file.sourcePath}
+                skippedReason={file.skippedReason} onRebindProject={file.source === 'workspace-file' ? onRebindProject : undefined} />
+            }
+            const existing = paths.find((path) => fileExists[path] === true)
+            return (
+              <button
+                key={file.path}
+                type="button"
+                disabled={!existing}
+                onClick={() => { if (existing) void window.agentswitch.sys.showInFolder(existing) }}
+                className="flex h-7 max-w-[260px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2.5 text-[12px] text-ink-2 enabled:hover:bg-black/[0.07] enabled:hover:text-ink"
+                title={existing ? existing + '\n' + t('common.showInFinder') : file.path}
+              >
+                <IconFile size={13} className="shrink-0" />
+                <span className="truncate">{file.name}</span>
+              </button>
+            )
+          })}
           {files.length > 12 && <span className="px-1 text-[12px] leading-7 text-ink-3">{t('wb.moreFiles', { n: files.length })}</span>}
         </div>
       )}

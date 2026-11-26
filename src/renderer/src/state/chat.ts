@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from 'react'
-import { KINDS } from '@shared/types'
 import type { ChatEvent, HistoryEntry, HistoryMessage, HistoryStat, HistoryThread, PermissionEvent, PermissionResolution, ProfileId, ProfileKind, RunAttachment } from '@shared/types'
 import { CHAT_CLOSE_EVENT, type ChatCloseDecision } from '@shared/chat'
 import type { Activity, AgentRef, AssistantMessage, Attachment, ChatState, Message, MessageInput, MessageQuote, QueuedMessage, SystemMessage, Thinking, Thread, UserMessage } from '@shared/chat'
 import type { CheckpointChoice, RewindExecuteResult } from '@shared/checkpoints'
+import { LEGACY_BUNDLE_FORMAT, type ExportedThread, type ThreadBundle } from '@shared/transfer'
+import { deriveRelativePath, joinPosixRelative, outputRefsForMessage, toPosixPath } from '@shared/fileResolve'
 import { ChatWrites, openChats, restoreChats } from './chatPersistence'
 import { t as tr } from './i18n'
 import { cleanTitle, fallbackTaskSummary, readMarks, stripMarks } from '@shared/markers'
@@ -956,30 +957,15 @@ export async function compactContext(threadId: string, profileIds: string[], mes
 
 // ---- cross-machine thread export / import -----------------------------------------------------
 
-export interface ExportedThread {
-  thread: Thread
-  /** Folder basename (e.g. "AgentMux"), null for threads without a project. */
-  projectName: string | null
-  /** Original projectDir on the exporting machine (informational only). */
-  sourceProjectDir: string | null
-  /** Driver CLI kind for automatic account mapping on another machine. */
-  driverKind: ProfileKind | null
-}
-
-export interface ThreadBundle {
-  format: 'agentswitch-threads'
-  version: 1
-  exportedAt: number
-  threads: ExportedThread[]
-}
+export { parseThreadBundle, type ExportedThread, type ThreadBundle } from '@shared/transfer'
 
 const folderBase = (p: string | null | undefined): string | null => {
   if (!p) return null
-  const name = p.replace(/\/+$/, '').split('/').filter(Boolean).pop()
+  const name = toPosixPath(p).split('/').filter(Boolean).pop()
   return name || null
 }
 
-/** Builds a portable JSON bundle for the selected thread IDs. */
+/** Collects conversations and their source locations for the main process to archive. */
 export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]): ThreadBundle {
   const kindOf = new Map(profiles.map((p) => [p.id, p.kind]))
   const threads: ExportedThread[] = []
@@ -997,6 +983,8 @@ export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; k
       title: th.title,
       projectDir: th.projectDir,
       workdir: null,
+      sourceProjectDir: th.sourceProjectDir,
+      sourceProjectName: th.sourceProjectName,
       participants: th.participants,
       driver: th.driver,
       messages: merged,
@@ -1014,34 +1002,16 @@ export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; k
       thread: cleaned,
       projectName: folderBase(th.projectDir),
       sourceProjectDir: th.projectDir,
+      sourceWorkdir: th.workdir ?? th.projectDir,
       driverKind
     })
   }
-  return { format: 'agentswitch-threads', version: 1, exportedAt: Date.now(), threads }
-}
-
-/** Parses and validates a thread bundle JSON string; throws on invalid format. */
-export function parseThreadBundle(raw: string): ThreadBundle {
-  const j = JSON.parse(raw) as Partial<ThreadBundle>
-  if (!j || j.format !== 'agentswitch-threads' || j.version !== 1 || !Array.isArray(j.threads)) {
-    throw new Error('invalid bundle')
-  }
-  const threads: ExportedThread[] = []
-  for (const item of j.threads) {
-    if (!item || typeof item !== 'object' || !item.thread || typeof item.thread.id !== 'string' || !Array.isArray(item.thread.messages)) continue
-    threads.push({
-      thread: item.thread,
-      projectName: typeof item.projectName === 'string' && item.projectName ? item.projectName : folderBase(item.thread.projectDir),
-      sourceProjectDir: typeof item.sourceProjectDir === 'string' ? item.sourceProjectDir : item.thread.projectDir ?? null,
-      driverKind: item.driverKind && KINDS.includes(item.driverKind) ? item.driverKind : null
-    })
-  }
-  return { format: 'agentswitch-threads', version: 1, exportedAt: Number(j.exportedAt) || Date.now(), threads }
+  return { format: LEGACY_BUNDLE_FORMAT, version: 1, exportedAt: Date.now(), threads }
 }
 
 /** Map of known local project directories keyed by folder basename (most recently updated wins). */
 export function localProjectsByName(): Record<string, string> {
-  const map: Record<string, string> = {}
+  const map: Record<string, string> = Object.create(null)
   const sorted = [...state.threads].sort((a, b) => b.updatedAt - a.updatedAt)
   for (const th of sorted) {
     const name = folderBase(th.projectDir)
@@ -1054,13 +1024,12 @@ export type ImportConflictMode = 'replace' | 'duplicate'
 
 /**
  * Applies selected imported threads into the local store:
- *  - Remaps projectDir via `projectMap[projectName]` (so different local pwds work seamlessly).
+ *  - Uses the project and file paths resolved by the main process.
  *  - Remaps driver & participants to accounts available on this machine.
  *  - Respects `conflictMode` ('replace' updates matching id; 'duplicate' keeps both with a new id).
  */
 export function applyThreadImport(
   items: ExportedThread[],
-  projectMap: Record<string, string | null>,
   profiles: { id: ProfileId; kind: ProfileKind; status: string }[],
   conflictMode: ImportConflictMode
 ): { added: number; replaced: number } {
@@ -1083,7 +1052,6 @@ export function applyThreadImport(
 
   for (const item of items) {
     const src = item.thread
-    const mappedDir = item.projectName ? (projectMap[item.projectName] ?? null) : null
     const mappedDriverId = pickAccount(src.driver?.profileId ?? null, item.driverKind)
     const mappedParticipants = readyIds.length ? readyIds : profiles.map((p) => p.id)
     const existingIdx = byIdMap.get(src.id)
@@ -1093,8 +1061,8 @@ export function applyThreadImport(
     const nextThread: Thread = {
       ...src,
       id,
-      projectDir: mappedDir,
-      workdir: null,
+      sourceProjectDir: src.sourceProjectDir ?? item.sourceProjectDir,
+      sourceProjectName: src.sourceProjectName ?? item.projectName,
       driver: { profileId: mappedDriverId, model: src.driver?.model ?? null },
       participants: mappedParticipants,
       activeTurn: null,
@@ -1121,6 +1089,49 @@ export function applyThreadImport(
 
   set({ ...state, threads })
   return { added, replaced }
+}
+
+/** Reassociate an idle chat and force its next turn to start a session in the selected folder. */
+export function rebindThreadProject(threadId: string, newProjectDir: string): boolean {
+  const thread = getThread(threadId)
+  if (!thread || thread.preview || thread.activeTurn || thread.pause || !newProjectDir) return false
+  if (thread.projectDir === newProjectDir && thread.workdir === newProjectDir) return true
+
+  const previousDir = thread.projectDir
+  const sourceProjectDir = thread.sourceProjectDir ?? previousDir
+  const relativeOf = (path: string | null, relativePath?: string) =>
+    relativePath ?? (path ? deriveRelativePath(path, previousDir) ?? deriveRelativePath(path, sourceProjectDir) ?? undefined : undefined)
+  const rebindAttachment = (attachment: Attachment): Attachment => {
+    if (attachment.source !== 'workspace-file' || !attachment.relativePath) return attachment
+    const path = joinPosixRelative(newProjectDir, attachment.relativePath)
+    return path ? { ...attachment, path } : attachment
+  }
+  const rebindMessage = (message: Message): Message => {
+    if (message.role === 'user') return { ...message, attachments: message.attachments.map(rebindAttachment) }
+    if (message.role !== 'assistant') return message
+    const outputFiles = outputRefsForMessage(message, previousDir, sourceProjectDir).map((ref) => {
+      if (ref.source !== 'workspace-file') return ref
+      const relativePath = relativeOf(ref.path, ref.relativePath)
+      const path = relativePath ? joinPosixRelative(newProjectDir, relativePath) : null
+      return path ? { ...ref, relativePath, path, sourcePath: ref.sourcePath ?? ref.path } : ref
+    })
+    return { ...message, outputFiles, outputs: outputFiles.filter((ref) => !ref.inlineOnly).map((ref) => ref.path) }
+  }
+  patchThread(threadId, (current) => ({
+    ...current,
+    projectDir: newProjectDir,
+    workdir: newProjectDir,
+    sourceProjectDir,
+    sourceProjectName: current.sourceProjectName ?? folderBase(sourceProjectDir),
+    sessionScope: (current.workdir ?? current.projectDir) !== newProjectDir ? uid() + uid() : current.sessionScope,
+    messages: current.messages.map(rebindMessage),
+    history: current.history?.map(rebindMessage),
+    queuedMessages: current.queuedMessages?.map((entry) => entry.projectDir === previousDir
+      ? { ...entry, projectDir: newProjectDir, attachments: entry.attachments.map(rebindAttachment) }
+      : entry),
+    updatedAt: now()
+  }))
+  return true
 }
 
 // ---- imported CLI history ----------------------------------------------------------------------

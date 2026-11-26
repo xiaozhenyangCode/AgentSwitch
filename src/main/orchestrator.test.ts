@@ -69,6 +69,33 @@ afterEach(() => {
   rmSync(data, { recursive: true, force: true })
 })
 
+it('filters CLI output events and disk-discovered files without excluding the current output directory', async () => {
+  const projectDir = join(data, 'project')
+  mkdirSync(join(projectDir, '.godot'), { recursive: true })
+  writeFileSync(join(projectDir, '.gitignore'), '.agentswitch/\n*.ignored\n')
+  const received: string[] = []
+  runAgent.mockImplementation((spec: RunSpec, emit: (event: AgentEvent) => void) => {
+    writeFileSync(join(projectDir, '.godot', 'shader.index'), 'cache')
+    writeFileSync(join(projectDir, 'ignored.ignored'), 'ignored')
+    writeFileSync(join(projectDir, 'source.ts'), 'export {}')
+    writeFileSync(join(spec.outDir, 'asset.bin'), 'explicit deliverable')
+    writeFileSync(join(spec.outDir, 'work.tmp'), 'temporary')
+    for (const path of ['.godot/shader.index', 'ignored.ignored', join(spec.outDir, 'work.tmp'), join(spec.outDir, 'asset.bin')]) {
+      emit({ t: 'output', path })
+    }
+    return { done: Promise.resolve({ ok: true, sessionId: 'new-session' }), kill: vi.fn() }
+  })
+
+  const req = { ...request([]), projectDir, text: 'Create outputs' }
+  await start(req, (event) => {
+    if (event.kind === 'agent' && event.event.t === 'output') received.push(event.event.path)
+  })
+  expect(received).toEqual([
+    join(projectDir, '.agentswitch/outputs', req.turnId, 'asset.bin'),
+    join(projectDir, 'source.ts')
+  ])
+})
+
 describe('orchestrator history handoff', () => {
   it('uses fresh budgeted history for a portable import and sends the entire current user message once', async () => {
     const transcript = [

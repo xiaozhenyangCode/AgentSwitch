@@ -25,9 +25,10 @@ import {
 import { bindNativeSession, canResume, clearActiveSessions, recordUnconfirmedSession, type NativeSessions } from './historyResume'
 import { createThreadHistory, upsertPersistentThreadHistory, type ThreadHistoryConfig } from './threadHistoryConfig'
 import { Checkpoints } from './checkpoints'
-import { SKIP_DIRS, SNAPSHOT_MAX_FILES } from './checkpointFiles'
+import { SNAPSHOT_MAX_FILES } from './checkpointFiles'
 import { isInside } from './gitOps'
 import { invalidateFileIndex } from './fileSearch'
+import { createOutputFilter } from './outputFilter'
 
 /**
  * One user message = one turn. A turn is a strictly serial list of steps: the next CLI
@@ -204,7 +205,7 @@ const handoffPrompt = (target: string): string =>
 
 // ---- file snapshots (fallback detection of produced files) ------------------------------------
 
-function snapshot(root: string, extra: string[]): Map<string, string> {
+function snapshot(root: string, extra: string[], filter: ReturnType<typeof createOutputFilter>): Map<string, string> {
   const out = new Map<string, string>()
   const walk = (dir: string, depth: number): void => {
     if (out.size >= SNAPSHOT_MAX_FILES || depth > 8) return
@@ -218,8 +219,8 @@ function snapshot(root: string, extra: string[]): Map<string, string> {
       if (out.size >= SNAPSHOT_MAX_FILES) return
       const p = join(dir, e.name)
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) walk(p, depth + 1)
-      } else if (e.isFile()) {
+        if (!extra.includes(p) && !filter.shouldSkipDir(p)) walk(p, depth + 1)
+      } else if (e.isFile() && !filter.shouldIgnoreFile(p)) {
         try {
           const st = statSync(p)
           out.set(p, `${st.mtimeMs}:${st.size}`)
@@ -718,7 +719,9 @@ export class Orchestrator {
     this.busy.set(cfg.id, (this.busy.get(cfg.id) ?? 0) + 1)
     this.onState()
 
-    const before = snapshot(turn.cwd, [turn.outDir])
+    const allowDirs = [turn.outDir]
+    let outputFilter = createOutputFilter(turn.cwd, { allowDirs })
+    const before = snapshot(turn.cwd, allowDirs, outputFilter)
     const baseline = new FileBaseline(turn.cwd)
     const reported = new Set<string>()
     const written = new Set<string>()
@@ -789,7 +792,7 @@ export class Orchestrator {
           }
         }
         if (event.t === 'output') {
-          if (reported.has(abs)) return
+          if (reported.has(abs) || outputFilter.shouldIgnoreFile(abs)) return
           reported.add(abs)
           step.outputs.push(abs)
           return this.emit({ kind: 'agent', ...ids, event: { t: 'output', path: abs } })
@@ -855,7 +858,8 @@ export class Orchestrator {
     if (inline && r.ok && r.sessionId) this.sentSystem.set(r.sessionId, compact && sent ? { fixed, turns: sent.turns + 1 } : { fixed, turns: 0 })
 
     // files changed on disk but not reported by the CLI's own events
-    const after = snapshot(turn.cwd, [turn.outDir])
+    outputFilter = createOutputFilter(turn.cwd, { allowDirs })
+    const after = snapshot(turn.cwd, allowDirs, outputFilter)
     let extra = 0
     for (const [p, sig] of after) {
       if (before.get(p) === sig || reported.has(p) || extra >= 30) continue

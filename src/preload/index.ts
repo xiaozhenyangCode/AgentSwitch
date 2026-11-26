@@ -1,6 +1,7 @@
 import type { CheckpointChoice, CheckpointResult, RewindCheckResult, RewindExecuteResult, TurnCheckpoint } from '@shared/checkpoints'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { ChatChanges, OpenChats } from '@shared/chat'
+import type { CommitImportRequest, CommitImportResult, ImportPreviewResult, ThreadBundle, TransferManifest } from '@shared/transfer'
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
   IPC,
@@ -215,10 +216,13 @@ const api = {
     showInFolder: (p: string): Promise<void> => ipcRenderer.invoke(IPC.showInFolder, p),
     /** Opens AgentSwitch's userData folder in Finder (outside the file allowlist on purpose). */
     showDataDir: (): Promise<void> => ipcRenderer.invoke(IPC.showDataDir),
-    exportThreadsFile: (defaultName: string, content: string): Promise<{ path: string } | null> =>
-      ipcRenderer.invoke(IPC.exportThreadsFile, defaultName, content),
-    importThreadsFile: (): Promise<{ path: string; text: string } | null> =>
+    exportThreadsFile: (defaultName: string, bundle: ThreadBundle): Promise<{ path: string; manifest: TransferManifest } | null> =>
+      ipcRenderer.invoke(IPC.exportThreadsFile, defaultName, bundle),
+    importThreadsFile: (): Promise<ImportPreviewResult | null> =>
       ipcRenderer.invoke(IPC.importThreadsFile),
+    commitThreadsImport: (request: CommitImportRequest): Promise<CommitImportResult> =>
+      ipcRenderer.invoke(IPC.commitThreadsImport, request),
+    pathsExist: (paths: string[]): Promise<Record<string, boolean>> => ipcRenderer.invoke(IPC.pathsExist, paths),
     /** Absolute path of a File picked/dropped in the renderer ('' for in-memory files). */
     pathForFile: (file: File): string => webUtils.getPathForFile(file)
   }

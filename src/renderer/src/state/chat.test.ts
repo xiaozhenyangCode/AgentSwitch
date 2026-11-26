@@ -377,3 +377,112 @@ describe('chat rewind, archive, and quote', () => {
     expect(sentTranscript.map((e) => e.text)).toEqual(['first question', 'first answer'])
   })
 })
+
+describe('chat transfer import and project rebind', () => {
+  it('rebinds an idle thread project, rewrites workspace files, preserves chat attachments, and rotates sessionScope', async () => {
+    const importedThread: Thread = {
+      ...fixture,
+      id: 'imported-1',
+      projectDir: null,
+      workdir: null,
+      sourceProjectDir: '/machine-a/ProjectX',
+      sourceProjectName: 'ProjectX',
+      sessionScope: 'scope-a',
+      messages: [
+        {
+          role: 'user',
+          id: 'u1',
+          turnId: 't1',
+          text: 'check these',
+          createdAt: 1,
+          driver: input.driver,
+          mentions: [],
+          attachments: [
+            { id: 'att-chat', name: 'shot.png', path: '/machine-b/userData/attachments/abc.png', size: 10, isImage: true, thumb: null, source: 'chat-attachment' },
+            { id: 'att-ws', name: 'spec.md', path: '/machine-a/ProjectX/docs/spec.md', size: 20, isImage: false, thumb: null, source: 'workspace-file', relativePath: 'docs/spec.md' }
+          ]
+        },
+        {
+          role: 'assistant',
+          id: 'a1',
+          turnId: 't1',
+          agent: input.driver,
+          actualModel: null,
+          dispatchedBy: null,
+          status: 'done',
+          content: '![chart](assets/chart.png)',
+          activity: [],
+          thinking: null,
+          usage: null,
+          others: [],
+          outputs: ['/machine-a/ProjectX/src/app.ts', '/machine-b/userData/attachments/priv.png'],
+          outputFiles: [
+            { path: '/machine-a/ProjectX/src/app.ts', name: 'app.ts', source: 'workspace-file', relativePath: 'src/app.ts' },
+            { path: '/machine-a/ProjectX/assets/chart.png', name: 'chart.png', source: 'workspace-file', relativePath: 'assets/chart.png', fallbackPath: '/machine-b/userData/attachments/chart.png', inlineOnly: true },
+            { path: '/machine-b/userData/attachments/priv.png', name: 'priv.png', source: 'chat-attachment' }
+          ],
+          error: null,
+          notices: [],
+          review: false,
+          retry: 0,
+          verdict: null,
+          startedAt: 1,
+          endedAt: 2
+        }
+      ]
+    }
+    await open(importedThread)
+
+    expect(chat.rebindThreadProject('imported-1', '/machine-b/ProjectX')).toBe(true)
+    const updated = chat.getThread('imported-1')!
+    expect(updated.projectDir).toBe('/machine-b/ProjectX')
+    expect(updated.workdir).toBe('/machine-b/ProjectX')
+    expect(updated.sourceProjectDir).toBe('/machine-a/ProjectX')
+    expect(updated.sessionScope).not.toBe('scope-a')
+
+    const u = updated.messages[0]
+    expect(u.role === 'user' ? u.attachments[0].path : null).toBe('/machine-b/userData/attachments/abc.png')
+    expect(u.role === 'user' ? u.attachments[1].path : null).toBe('/machine-b/ProjectX/docs/spec.md')
+
+    const a = updated.messages[1]
+    expect(a.role === 'assistant' ? a.outputs : null).toEqual([
+      '/machine-b/ProjectX/src/app.ts',
+      '/machine-b/userData/attachments/priv.png'
+    ])
+    expect(a.role === 'assistant' ? a.outputFiles : null).toMatchObject([
+      { path: '/machine-b/ProjectX/src/app.ts', sourcePath: '/machine-a/ProjectX/src/app.ts', relativePath: 'src/app.ts' },
+      { path: '/machine-b/ProjectX/assets/chart.png', fallbackPath: '/machine-b/userData/attachments/chart.png', inlineOnly: true },
+      { path: '/machine-b/userData/attachments/priv.png', source: 'chat-attachment' }
+    ])
+
+    // Refuses to rebind while a turn is active
+    await send('busy turn', 'imported-1')
+    expect(chat.rebindThreadProject('imported-1', '/machine-b/Other')).toBe(false)
+    finish()
+  })
+
+  it('applies imported threads with source project metadata and supports replace vs duplicate modes', async () => {
+    await open(fixture)
+    const item = {
+      thread: { ...fixture, title: 'From A', projectDir: '/machine-b/App', workdir: null, updatedAt: 99 },
+      projectName: 'App',
+      sourceProjectDir: '/machine-a/App',
+      driverKind: 'claude' as const
+    }
+    const profiles = [{ id: 'test', kind: 'claude' as const, status: 'idle' }]
+    const dup = chat.applyThreadImport([item], profiles, 'duplicate')
+    expect(dup).toEqual({ added: 1, replaced: 0 })
+    const copy = chat.useChat
+    expect(copy).toBeTypeOf('function')
+    const added = chat.getThread(fixture.id)
+    expect(added?.title).toBe('Test')
+
+    const rep = chat.applyThreadImport([item], profiles, 'replace')
+    expect(rep).toEqual({ added: 0, replaced: 1 })
+    const replaced = chat.getThread(fixture.id)!
+    expect(replaced.title).toBe('From A')
+    expect(replaced.projectDir).toBe('/machine-b/App')
+    expect(replaced.sourceProjectDir).toBe('/machine-a/App')
+    expect(replaced.sourceProjectName).toBe('App')
+  })
+})

@@ -1,7 +1,7 @@
 import { app, protocol } from 'electron'
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { extname, isAbsolute, join, sep } from 'node:path'
+import { extname, isAbsolute, join, parse, sep } from 'node:path'
 
 /**
  * `agentswitch-file://f/<base64url(absolute path)>` — read-only access to images inside
@@ -29,6 +29,15 @@ let roots: string[] = []
 const filesFile = (): string => join(app.getPath('userData'), 'allowed-files.json')
 let files: string[] = []
 const FILES_MAX = 2000
+
+export const attachmentsDir = (userData = app.getPath('userData')): string => join(userData, 'attachments')
+
+export function ensureAttachmentsDir(userData?: string): string {
+  const dir = attachmentsDir(userData)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (!lstatSync(dir).isDirectory()) throw new Error('Invalid attachment directory')
+  return dir
+}
 
 /** Must run before app 'ready'. */
 export function registerFileScheme(): void {
@@ -74,7 +83,7 @@ export function allowRoot(dir: string): void {
   } catch {
     return
   }
-  if (real === '/' || roots.includes(real)) return
+  if (real === parse(real).root || roots.includes(real)) return
   roots.push(real)
   try {
     writeFileSync(rootsFile(), JSON.stringify(roots, null, 2))
@@ -87,14 +96,24 @@ const reply = (status: number): Response => new Response(null, { status })
 
 export function handleFileProtocol(): void {
   try {
-    if (existsSync(rootsFile())) roots = (JSON.parse(readFileSync(rootsFile(), 'utf8')) as string[]).filter((r) => typeof r === 'string' && r !== '/')
+    roots = existsSync(rootsFile())
+      ? (JSON.parse(readFileSync(rootsFile(), 'utf8')) as string[]).filter((r) =>
+        typeof r === 'string' && isAbsolute(r) && r !== parse(r).root)
+      : []
   } catch {
     roots = []
   }
   try {
-    if (existsSync(filesFile())) files = (JSON.parse(readFileSync(filesFile(), 'utf8')) as string[]).filter((f) => typeof f === 'string' && isAbsolute(f))
+    files = existsSync(filesFile())
+      ? (JSON.parse(readFileSync(filesFile(), 'utf8')) as string[]).filter((f) => typeof f === 'string' && isAbsolute(f))
+      : []
   } catch {
     files = []
+  }
+  try {
+    allowRoot(ensureAttachmentsDir())
+  } catch (error) {
+    console.warn('[file-protocol] could not initialize attachments directory', error)
   }
   protocol.handle(FILE_SCHEME, async (req) => {
     if (req.method !== 'GET') return reply(405)

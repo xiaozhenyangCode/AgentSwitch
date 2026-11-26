@@ -1,6 +1,8 @@
 import { Children, createContext, isValidElement, memo, useContext, useEffect, useState, type ReactElement, type ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
 import { stripMarks } from '@shared/markers'
+import type { BundleSkipReason, OutputFileRef } from '@shared/chat'
+import { deriveRelativePath, findMatchingOutputFile, joinPosixRelative, resolveMarkdownImagePath, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -8,7 +10,8 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import 'katex/dist/katex.min.css'
-import { fileUrl, localPath, upgradeFileUrl } from '../lib/fileUrl'
+import { baseName, fileUrl, localPath, upgradeFileUrl } from '../lib/fileUrl'
+import { MissingFile, useImageCandidate, type ImageCandidate } from './FilePreview'
 import { IconCheck, IconCopy, IconFolder } from './icons'
 import { useTheme } from '../state/theme'
 import { t } from '../state/i18n'
@@ -29,7 +32,15 @@ const loadMermaid = async (dark: boolean) => {
 }
 
 /** Folder relative image paths resolve against (the thread's working dir) + real HOME for `~/`. */
-export const MarkdownBase = createContext<{ baseDir: string | null; home: string | null }>({ baseDir: null, home: null })
+export const MarkdownBase = createContext<{
+  baseDir: string | null
+  home: string | null
+  projectDir?: string | null
+  sourceProjectDir?: string | null
+  outputFiles?: OutputFileRef[]
+  onRebindProject?: () => void
+  revision?: number
+}>({ baseDir: null, home: null })
 
 /** Plain text of a rendered (highlighted) React subtree. */
 function textOf(node: ReactNode): string {
@@ -124,53 +135,88 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   )
 }
 
-/** Inline preview; click for a large lightbox view (Esc / click to close). */
-export function ZoomImage({ src, alt, path }: { src: string; alt: string; path?: string | null }) {
-  const [broken, setBroken] = useState(false)
+/** Inline preview with a large lightbox using the same candidate order. */
+export function ZoomImage({
+  src, fallbackSrc, alt, name, path, fallbackPath, fullPath, relativePath, skippedReason, onRebindProject, revision
+}: {
+  src?: string | null
+  fallbackSrc?: string | null
+  alt: string
+  name?: string
+  path?: string | null
+  fallbackPath?: string | null
+  fullPath?: string | null
+  relativePath?: string
+  skippedReason?: BundleSkipReason
+  onRebindProject?: () => void
+  revision?: number
+}) {
+  const candidates: ImageCandidate[] = []
+  if (src) candidates.push({ src, path })
+  if (fallbackSrc && fallbackSrc !== src) candidates.push({ src: fallbackSrc, path: fallbackPath })
+  const { candidate, imageKey, fail } = useImageCandidate(candidates, revision)
   const [open, setOpen] = useState(false)
-  useEscape(() => setOpen(false), open)
+  useEscape(() => setOpen(false), open && !!candidate)
+  const label = name || (path ? baseName(path) : alt) || t('md.imageBroken')
+  if (!candidate) {
+    return (
+      <span className="md-figure md-figure-broken">
+        <MissingFile name={label} relativePath={relativePath} path={fullPath ?? path ?? src} skippedReason={skippedReason}
+          reason={!fullPath && !path && !relativePath ? t('md.imageBroken') : undefined} onRebindProject={onRebindProject} />
+      </span>
+    )
+  }
+  const reveal = () => { if (candidate.path) void window.agentswitch.sys.showInFolder(candidate.path) }
+  const caption = alt || name || (path ? baseName(path) : '')
+  const onError = () => {
+    if (candidate === candidates.at(-1)) setOpen(false)
+    fail()
+  }
   return (
     <>
-      <span
-        className={`md-figure${broken ? ' md-figure-broken' : ''}`}
+      <button type="button" className="md-figure text-left"
         onClick={(e) => {
-          if ((e.metaKey || e.ctrlKey) && path) {
-            e.preventDefault()
-            void window.agentswitch.sys.showInFolder(path)
-            return
-          }
-          if (!broken) setOpen(true)
+          if ((e.metaKey || e.ctrlKey) && candidate.path) reveal()
+          else setOpen(true)
         }}
-        title={broken ? t('md.cannotPreview', { path: path ?? src }) : t('md.clickZoom')}
+        title={t('md.clickZoom')} aria-label={caption || t('md.clickZoom')}
       >
-        {broken ? <span className="md-broken">{t('md.imageBroken')}</span> : <img src={src} alt={alt} loading="lazy" onError={() => setBroken(true)} />}
-        {(alt || path) && <span className="md-caption">{alt || path!.split('/').pop()}</span>}
-      </span>
-      {open &&
-        createPortal(
-          <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-(--scrim)" onClick={() => setOpen(false)}>
-            <img src={src} alt={alt} className="max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)]" />
-            {(alt || path) && (
-              <div className="flex items-center gap-3 rounded-full bg-[#000]/65 px-3 py-1 text-[14px] font-medium text-white/90">
-                {alt && <span>{alt}</span>}
-                {path && (
-                  <button
-                    className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[13px] hover:bg-white/25"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      void window.agentswitch.sys.showInFolder(path)
-                    }}
-                  >
-                    <IconFolder size={14} /> {t('common.showInFinder')}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>,
-          document.body
-        )}
+        <img key={imageKey} src={candidate.src} alt={caption} loading="lazy" onError={onError} />
+        {caption && <span className="md-caption">{caption}</span>}
+      </button>
+      {open && createPortal(
+        <div className="fixed inset-0 z-[80] flex cursor-zoom-out flex-col items-center justify-center gap-3 bg-(--scrim)" onClick={() => setOpen(false)}>
+          <img key={imageKey} src={candidate.src} alt={caption} onError={onError} className="max-h-[78vh] max-w-[78vw] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.45)]" />
+          {(caption || candidate.path) && (
+            <div className="flex items-center gap-3 rounded-full bg-[#000]/65 px-3 py-1 text-[14px] font-medium text-white/90">
+              {caption && <span>{caption}</span>}
+              {candidate.path && (
+                <button className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[13px] hover:bg-white/25"
+                  onClick={(e) => { e.stopPropagation(); reveal() }}>
+                  <IconFolder size={14} /> {t('common.showInFinder')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
     </>
   )
+}
+
+export function OutputImage({ file, projectDir, alt, onRebindProject, revision }: {
+  file: OutputFileRef
+  projectDir: string | null
+  alt?: string
+  onRebindProject?: () => void
+  revision?: number
+}) {
+  const [path, fallbackPath] = resolveOutputFileCandidates(file, projectDir)
+  return <ZoomImage src={path && fileUrl(path)} fallbackSrc={fallbackPath && fileUrl(fallbackPath)}
+    path={path} fallbackPath={fallbackPath} fullPath={file.path || file.sourcePath}
+    name={file.name} alt={alt ?? file.name} relativePath={file.relativePath} skippedReason={file.skippedReason}
+    onRebindProject={file.source === 'workspace-file' ? onRebindProject : undefined} revision={revision} />
 }
 
 const components: Components = {
@@ -193,13 +239,25 @@ const components: Components = {
     )
   },
   img: function Img({ src, alt }) {
-    const { baseDir, home } = useContext(MarkdownBase)
+    const { baseDir, home, projectDir = baseDir, sourceProjectDir, outputFiles, onRebindProject, revision } = useContext(MarkdownBase)
     if (typeof src !== 'string' || !src) return null
+    const file = findMatchingOutputFile(src, baseDir, home, outputFiles, sourceProjectDir)
+    if (file) return <OutputImage file={file} projectDir={projectDir} alt={alt ?? undefined} onRebindProject={onRebindProject} revision={revision} />
     const own = upgradeFileUrl(src)
     if (own) return <ZoomImage src={own} alt={alt ?? ''} />
-    const local = localPath(src, baseDir, home)
-    if (local) return <ZoomImage src={fileUrl(local)} alt={alt ?? ''} path={local} />
-    return /^(https?:|data:image\/)/i.test(src) ? <ZoomImage src={src} alt={alt ?? ''} /> : null
+    if (/^(https?:|data:image\/)/i.test(src)) return <ZoomImage src={src} alt={alt ?? ''} />
+
+    const local = resolveMarkdownImagePath(src, baseDir, home)
+    const previous = resolveMarkdownImagePath(src, sourceProjectDir, home)
+    const relativePath = previous ? deriveRelativePath(previous, sourceProjectDir) : null
+    if (relativePath) {
+      const path = projectDir ? joinPosixRelative(projectDir, relativePath) : null
+      return <ZoomImage src={path && fileUrl(path)} alt={alt ?? ''} path={path}
+        name={baseName(relativePath)} fullPath={path ?? previous} relativePath={relativePath}
+        onRebindProject={onRebindProject} revision={revision} />
+    }
+    if (local) return <ZoomImage src={fileUrl(local)} alt={alt ?? ''} path={local} name={baseName(local)} revision={revision} />
+    return null
   },
   table: ({ children }) => (
     <div className="md-table">
@@ -210,7 +268,7 @@ const components: Components = {
 
 /** Links allow file:// in addition to react-markdown's safe default; images allow inline data and local file URLs. */
 const urlTransform = (url: string, key: string) =>
-  (key === 'src' && /^(data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url)) ||
+  (key === 'src' && /^(?:[a-z]:[\\/]|data:image\/(png|jpe?g|gif|webp)[;,]|file:\/\/|agentswitch-file:\/\/|agentmux-file:\/\/)/i.test(url)) ||
   (key === 'href' && /^file:\/\//i.test(url))
     ? url
     : defaultUrlTransform(url)

@@ -10,7 +10,8 @@ import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settin
 import { KIND_META, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
 import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
-import { parseThreadBundle, useChatStatus, type ThreadBundle } from '../state/chat'
+import { useChatStatus } from '../state/chat'
+import type { ImportPreviewResult } from '@shared/transfer'
 import {
   IconAuto,
   IconCheck,
@@ -657,14 +658,13 @@ function TransferBlock({ title }: { title: ReactNode }) {
   const chatStatus = useChatStatus()
   const disabled = chatStatus === 'loading' || chatStatus === 'loadFailed'
   const [exportOpen, setExportOpen] = useState(false)
-  const [importState, setImportState] = useState<{ bundle: ThreadBundle; filePath: string } | null>(null)
+  const [importState, setImportState] = useState<ImportPreviewResult | null>(null)
 
   const openImport = async () => {
     try {
       const picked = await window.agentswitch.sys.importThreadsFile()
       if (!picked) return
-      const bundle = parseThreadBundle(picked.text)
-      setImportState({ bundle, filePath: picked.path })
+      setImportState(picked)
     } catch (e) {
       toast({ kind: 'error', title: t('xfer.invalidFile'), desc: e instanceof Error ? e.message : String(e) })
     }
@@ -683,7 +683,7 @@ function TransferBlock({ title }: { title: ReactNode }) {
         </div>
       </Row>
       {exportOpen && <ExportThreadsDialog onClose={() => setExportOpen(false)} />}
-      {importState && <ImportThreadsDialog bundle={importState.bundle} filePath={importState.filePath} onClose={() => setImportState(null)} />}
+      {importState && <ImportThreadsDialog preview={importState} onClose={() => setImportState(null)} />}
     </>
   )
 }

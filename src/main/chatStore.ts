@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { storedThread, type ChatChanges, type ChatIndex, type ChatState, type Message, type OpenChats, type QueuedMessage, type StoredThread } from '@shared/chat'
+import { storedThread, type ChatChanges, type ChatIndex, type ChatState, type Message, type OpenChats, type OutputFileRef, type QueuedMessage, type StoredThread } from '@shared/chat'
 
 const INDEX = 'index.json'
 const BACKUP = 'legacy-localstorage-backup.json'
@@ -39,6 +39,28 @@ function isChatChanges(value: unknown): value is ChatChanges {
     Array.isArray(index.order) && index.order.every((id) => typeof id === 'string'))
 }
 
+function parseOutputFiles(files: unknown[]): OutputFileRef[] {
+  const parsed: OutputFileRef[] = []
+  for (const file of files as (Partial<OutputFileRef> | null)[]) {
+    if (typeof file?.path !== 'string' || typeof file.name !== 'string' ||
+        (file.source !== 'chat-attachment' && file.source !== 'workspace-file')) continue
+    const { path, name, source, sourcePath, relativePath, mimeType, size, bundlePath, fallbackPath, skippedReason, inlineOnly } = file
+    parsed.push({
+      path, name, source,
+      ...(typeof sourcePath === 'string' ? { sourcePath } : {}),
+      ...(typeof relativePath === 'string' ? { relativePath } : {}),
+      ...(typeof mimeType === 'string' ? { mimeType } : {}),
+      ...(typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
+      ...(typeof bundlePath === 'string' ? { bundlePath } : {}),
+      ...(typeof fallbackPath === 'string' ? { fallbackPath } : {}),
+      ...(skippedReason === 'too-large' || skippedReason === 'missing' || skippedReason === 'unreadable' ||
+        skippedReason === 'filtered' ? { skippedReason } : {}),
+      ...(typeof inlineOnly === 'boolean' ? { inlineOnly } : {})
+    })
+  }
+  return parsed
+}
+
 function parseMessage(message: Message | null): Message {
   if (message?.role === 'user' && typeof message.text === 'string' && message.driver) {
     return {
@@ -48,10 +70,12 @@ function parseMessage(message: Message | null): Message {
     }
   }
   if (message?.role === 'assistant' && typeof message.content === 'string' && message.agent) {
+    const { outputFiles, ...assistant } = message
     return {
-      ...message,
+      ...assistant,
       activity: Array.isArray(message.activity) ? message.activity : [],
       outputs: Array.isArray(message.outputs) ? message.outputs : [],
+      ...(Array.isArray(outputFiles) ? { outputFiles: parseOutputFiles(outputFiles) } : {}),
       permissions: Array.isArray(message.permissions) ? message.permissions.filter(Boolean) : undefined
     }
   }
@@ -78,7 +102,7 @@ function isQueuedMessage(message: QueuedMessage | null): message is QueuedMessag
 
 export function parseThread(value: unknown): StoredThread {
   if (!hasChatFields(value)) throw new Error('Invalid chat')
-  const t = value as StoredThread
+  const { sourceProjectDir, sourceProjectName, ...t } = value as StoredThread
   return storedThread({
     ...t,
     messages: t.messages.map(parseMessage),
@@ -87,6 +111,8 @@ export function parseThread(value: unknown): StoredThread {
     }),
     ...(t.queueHold === undefined || t.queueHold === 'manual' || t.queueHold === 'external' ? {} : { queueHold: undefined }),
     projectDir: typeof t.projectDir === 'string' ? t.projectDir : null,
+    ...(typeof sourceProjectDir === 'string' || sourceProjectDir === null ? { sourceProjectDir } : {}),
+    ...(typeof sourceProjectName === 'string' || sourceProjectName === null ? { sourceProjectName } : {}),
     workdir: typeof t.workdir === 'string' ? t.workdir : null,
     participants: Array.isArray(t.participants) ? t.participants : [],
     driver: t.driver ?? { profileId: null, model: null },

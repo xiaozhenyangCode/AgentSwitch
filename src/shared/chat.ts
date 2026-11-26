@@ -5,6 +5,25 @@ export type ChatCloseDecision = 'saved' | 'cancelled' | 'discarded'
 
 export type PendingPermission = PermissionEvent & { resolved?: PermissionResolution; expired?: true }
 
+export type AttachmentSource = 'chat-attachment' | 'workspace-file'
+export type BundleSkipReason = 'too-large' | 'missing' | 'unreadable' | 'filtered'
+
+export interface OutputFileRef {
+  path: string
+  name: string
+  source: AttachmentSource
+  /** Original path used by Markdown before the file was relocated during import. */
+  sourcePath?: string
+  relativePath?: string
+  mimeType?: string
+  size?: number
+  bundlePath?: string
+  fallbackPath?: string
+  skippedReason?: BundleSkipReason
+  /** Referenced in Markdown only, so it does not need a separate output card. */
+  inlineOnly?: boolean
+}
+
 export interface Attachment {
   id: string
   name: string
@@ -14,6 +33,12 @@ export interface Attachment {
   isImage: boolean
   /** Small JPEG data URL for images (≈160px). */
   thumb: string | null
+  source?: AttachmentSource
+  relativePath?: string
+  mimeType?: string
+  bundlePath?: string
+  fallbackPath?: string
+  skippedReason?: BundleSkipReason
 }
 
 /** Who speaks: account + sub-model (null = account/CLI default). */
@@ -111,6 +136,7 @@ export interface AssistantMessage {
   others: { kind: string; payload: string }[]
   /** Absolute paths of files this step produced. */
   outputs: string[]
+  outputFiles?: OutputFileRef[]
   error: string | null
   /** Non-fatal warnings (e.g. auto-denied tool calls). */
   notices: string[]
@@ -137,6 +163,8 @@ export interface Thread {
   id: string
   title: string
   projectDir: string | null
+  sourceProjectDir?: string | null
+  sourceProjectName?: string | null
   /** Folder runs actually use (projectDir, or AgentSwitch's private workspace). */
   workdir: string | null
   /** Accounts allowed to take part in this thread. */
