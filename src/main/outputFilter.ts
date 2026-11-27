@@ -1,7 +1,11 @@
 import { lstatSync, readFileSync } from 'node:fs'
-import { dirname, join, parse, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import ignore from 'ignore'
-import { isInside } from './gitOps'
+
+function isInside(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel)
+}
 
 const CACHE_DIRS = [
   '.git', '.svn', '.hg', '.godot', '.import', '.mono', 'node_modules', 'dist', 'build', 'out',
