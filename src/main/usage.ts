@@ -15,7 +15,7 @@ import { claudeSessionLog } from './usageDelta'
 import { buildSpawnSpec, claudeCredentialService, clearProfileKeychainCache, getConfig, hasProfile, isLoggedIn, kindBinaryPath, listConfigs, resolveProfileDir, safeRealpath } from './profiles'
 import { hasSubscriptionQuota } from './apiKey'
 import { getBaseEnv } from './shellEnv'
-import { authExpired, oauthCredentialFile, OAUTH_AUTH_ERROR_RE, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type OAuthCredentialStore, type QuotaAttempt, type RefreshResult } from './oauthQuotaAuth'
+import { authExpired, clearOAuthRefreshCooldown, oauthCredentialFile, OAUTH_AUTH_ERROR_RE, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type OAuthCredentialStore, type QuotaAttempt, type RefreshResult } from './oauthQuotaAuth'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
 
 /**
@@ -834,6 +834,7 @@ export function pauseAccountQuota(id: ProfileId, paused: boolean): void {
 const codexRolloutCutoff = new Map<ProfileId, number>()
 
 export function clearAccountUsageCache(id: ProfileId, opts?: { keepStats?: boolean }): void {
+  clearOAuthRefreshCooldown(id)
   quotaPending.get(id)?.controller.abort()
   quotaPending.delete(id)
   claudeProbes.get(id)?.kill(true)
@@ -918,6 +919,7 @@ export function refreshCodexLive(id: ProfileId): Promise<boolean> {
     const dir = resolveProfileDir(cfg)
     const store = oauthCredentialFile(safeRealpath(join(dir, 'auth.json')))
     let rejectedToken: string | undefined
+    let lastAuthError: QuotaErrorInfo | undefined
     return runWithOAuth401Recovery(id, {
       signal,
       request: async (reload) => {
@@ -925,10 +927,14 @@ export function refreshCodexLive(id: ProfileId): Promise<boolean> {
         const credentials = await store.read()
         signal.throwIfAborted()
         if (!credentials) return reload ? { error: authExpired() } : { value: null }
-        rejectedToken = credentials.tokens?.access_token
-        return requestCodexQuota(dir, env, signal)
+        const token = credentials.tokens?.access_token
+        if (reload && rejectedToken && token === rejectedToken && lastAuthError) return { error: lastAuthError }
+        rejectedToken = token
+        const res = await requestCodexQuota(dir, env, signal)
+        if ('error' in res && res.error.kind === 'auth_expired') lastAuthError = res.error
+        return res
       },
-      refresh: () => refreshOAuthCredentials('codex', store, oauthPost(id, signal), signal, rejectedToken)
+      refresh: () => refreshOAuthCredentials('codex', store, oauthPost(id, signal, 'codex'), signal, rejectedToken)
     })
   })
 }
@@ -1098,9 +1104,14 @@ function oauthHttp(
   })
 }
 
-function oauthPost(id: ProfileId, signal: AbortSignal) {
-  return (url: string, body: Record<string, string>) => oauthHttp(url, { 'Content-Type': 'application/json' },
-    buildSpawnSpec(id, 'run', undefined, false).env, signal, JSON.stringify(body))
+function oauthPost(id: ProfileId, signal: AbortSignal, kind: 'claude' | 'codex') {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ...(kind === 'claude' ? { 'User-Agent': 'claude-code/2.1.0' } : {})
+  }
+  return (url: string, body: Record<string, string>) =>
+    oauthHttp(url, headers, buildSpawnSpec(id, 'run', undefined, false).env, signal, JSON.stringify(body))
 }
 
 export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
@@ -1108,6 +1119,7 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
     const dir = resolveProfileDir(cfg)
     let store: OAuthCredentialStore | undefined
     let rejectedToken: string | undefined
+    let lastAuthError: QuotaErrorInfo | undefined
     return runWithOAuth401Recovery(id, {
       signal,
       request: async (reload) => {
@@ -1118,6 +1130,7 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
         if (typeof token !== 'string' || !token) {
           return reload || credentials.data?.claudeAiOauth?.refreshToken || isLoggedIn(id) ? { error: authExpired() } : { value: null }
         }
+        if (reload && rejectedToken && token === rejectedToken && lastAuthError) return { error: lastAuthError }
         rejectedToken = token
         const res = await oauthHttp('https://api.anthropic.com/api/oauth/usage', {
           Authorization: `Bearer ${token}`,
@@ -1129,7 +1142,9 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
           let body: any
           try { body = JSON.parse(res.text) } catch { /* Keep HTTP status. */ }
           const message = body?.error?.message ?? body?.message
-          return quotaError({ status: res.status, message: `HTTP ${res.status}${typeof message === 'string' ? ': ' + message : ''}`, body, headers: res.headers })
+          const err = quotaError({ status: res.status, message: `HTTP ${res.status}${typeof message === 'string' ? ': ' + message : ''}`, body, headers: res.headers })
+          if (err.error.kind === 'auth_expired') lastAuthError = err.error
+          return err
         }
         const d = JSON.parse(res.text)
         const parseWin = (w: any, minutes: number): QuotaWindow | null => {
@@ -1143,7 +1158,7 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
         const limited = [fiveHour, sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
         return { value: { source: 'claude-oauth', report: { fiveHour, sevenDay, limited, plan: null } } }
       },
-      refresh: () => store ? refreshOAuthCredentials('claude', store, oauthPost(id, signal), signal, rejectedToken) : Promise.resolve(authExpired())
+      refresh: () => store ? refreshOAuthCredentials('claude', store, oauthPost(id, signal, 'claude'), signal, rejectedToken) : Promise.resolve(authExpired())
     })
   })
 }

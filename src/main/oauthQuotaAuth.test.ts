@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { authExpired, oauthCredentialFile, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type QuotaAttempt } from './oauthQuotaAuth'
+import { authExpired, clearOAuthRefreshCooldown, oauthCredentialFile, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type QuotaAttempt } from './oauthQuotaAuth'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -102,5 +102,40 @@ describe('OAuth quota recovery', () => {
       return json(200, { access_token: 'ignored' })
     }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
     expect(await store.read()).toEqual(newer)
+  })
+
+  it('classifies HTTP 429 refresh as rate_limited with Retry-After and backs off repeat attempts', async () => {
+    const id = 'claude-429-backoff'
+    clearOAuthRefreshCooldown(id)
+    const { store } = credentialFile({ claudeAiOauth: { accessToken: 'old', refreshToken: 'refresh' } })
+    const post = vi.fn(async (): Promise<{ status: number; text: string; headers?: Record<string, string> }> => ({ status: 429, text: '{"error":"rate_limit_error"}', headers: { 'retry-after': '120' } }))
+    const request = vi.fn(async () => denied)
+
+    const first = await runWithOAuth401Recovery(id, {
+      request,
+      refresh: () => refreshOAuthCredentials('claude', store, post)
+    })
+    expect(first).toEqual({
+      error: { kind: 'rate_limited', message: 'OAuth refresh HTTP 429', resetAt: expect.any(Number) }
+    })
+    expect(post).toHaveBeenCalledTimes(1)
+
+    // Subsequent poll during cooldown must not hammer the OAuth token endpoint again.
+    const second = await runWithOAuth401Recovery(id, {
+      request,
+      refresh: () => refreshOAuthCredentials('claude', store, post)
+    })
+    expect(second).toEqual(first)
+    expect(post).toHaveBeenCalledTimes(1)
+
+    // Clearing cooldown (e.g. after reauth) allows refresh again.
+    clearOAuthRefreshCooldown(id)
+    post.mockResolvedValueOnce({ status: 200, text: JSON.stringify({ access_token: 'fresh', expires_in: 3600 }), headers: {} })
+    const recovered = await runWithOAuth401Recovery(id, {
+      request: async () => (await store.read())?.claudeAiOauth?.accessToken === 'fresh' ? success : denied,
+      refresh: () => refreshOAuthCredentials('claude', store, post)
+    })
+    expect(recovered).toEqual(success)
+    expect(post).toHaveBeenCalledTimes(2)
   })
 })

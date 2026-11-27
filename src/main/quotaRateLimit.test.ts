@@ -339,7 +339,10 @@ describe('OAuth provider quota integration', () => {
     const snap = await usage.refreshUsage(true)
     expect(snap.accounts[cfg.id]).toMatchObject({ quotaErrorKind: 'auth_expired', quota: report, today: { input: 20_000 }, week: { input: 20_000 } })
     expect(runAgentMock).not.toHaveBeenCalled()
-    expect(fetchMock).toHaveBeenCalledTimes(failure === 'invalid_grant' ? 3 : 2)
+    expect(fetchMock).toHaveBeenCalledTimes(failure === 'invalid_grant' ? 2 : 1)
+    if (failure === 'invalid_grant') {
+      expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ 'User-Agent': 'claude-code/2.1.0', Accept: 'application/json' })
+    }
   })
 
   it('uses the resolved Codex profile for each RPC, persists a rotated token and retries', async () => {
@@ -367,7 +370,7 @@ describe('OAuth provider quota integration', () => {
     })
     fetchMock.mockResolvedValueOnce(mockFetchResponse(200, { access_token: 'new', refresh_token: 'rotated' }))
     await expect(usage.refreshAccountQuota(cfg.id)).resolves.toBe(true)
-    expect(spawnMock).toHaveBeenCalledTimes(3)
+    expect(spawnMock).toHaveBeenCalledTimes(2)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(JSON.parse(readFileSync(path, 'utf8')).tokens.refresh_token).toBe('rotated')
     expect(usage.snapshot().accounts[cfg.id].quota?.fiveHour?.percent).toBe(31)

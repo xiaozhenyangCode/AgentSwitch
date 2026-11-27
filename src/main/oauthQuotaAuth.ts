@@ -20,7 +20,30 @@ export const quotaFailure = (message: string, kind: QuotaErrorKind = 'error'): Q
 const AUTH_REQUIRED = 'Authentication required'
 export const authExpired = () => quotaFailure(AUTH_REQUIRED, 'auth_expired')
 
+const REFRESH_BACKOFF_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000]
+const MIN_RETRY_AFTER_MS = 30_000
+const MAX_RETRY_AFTER_MS = 6 * 3600_000
+
 const refreshing = new Map<ProfileId, { request: Promise<RefreshResult>; signal?: AbortSignal }>()
+const refreshCooldowns = new Map<ProfileId, { until: number; attempts: number; failure: QuotaFailure }>()
+
+export function clearOAuthRefreshCooldown(id: ProfileId): void {
+  refreshCooldowns.delete(id)
+}
+
+function parseRetryAfterMs(headers?: Record<string, string>, now = Date.now()): number | null {
+  if (!headers) return null
+  const entry = Object.entries(headers).find(([k]) => k.toLowerCase() === 'retry-after')
+  const raw = entry?.[1]?.trim()
+  if (!raw) return null
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    const ms = Math.round(Number(raw) * 1000)
+    return ms > 0 ? Math.min(Math.max(ms, MIN_RETRY_AFTER_MS), MAX_RETRY_AFTER_MS) : null
+  }
+  const ts = Date.parse(raw)
+  if (!Number.isFinite(ts) || ts <= now) return null
+  return Math.min(Math.max(ts - now, MIN_RETRY_AFTER_MS), MAX_RETRY_AFTER_MS)
+}
 
 export function singleFlightRefresh(id: ProfileId, refresh: () => Promise<RefreshResult>, signal?: AbortSignal): Promise<RefreshResult> {
   const pending = refreshing.get(id)
@@ -43,16 +66,34 @@ export async function runWithOAuth401Recovery<T>(
   try {
     signal?.throwIfAborted()
     const first = await request(false)
-    if (!('error' in first) || first.error.kind !== 'auth_expired') return first
+    if (!('error' in first) || first.error.kind !== 'auth_expired') {
+      if (!('error' in first)) refreshCooldowns.delete(id)
+      return first
+    }
     signal?.throwIfAborted()
     const reloaded = await request(true)
-    if (!('error' in reloaded) || reloaded.error.kind !== 'auth_expired') return reloaded
+    if (!('error' in reloaded) || reloaded.error.kind !== 'auth_expired') {
+      if (!('error' in reloaded)) refreshCooldowns.delete(id)
+      return reloaded
+    }
     signal?.throwIfAborted()
+    const now = Date.now()
+    const cooldown = refreshCooldowns.get(id)
+    if (cooldown && cooldown.until > now) return { error: cooldown.failure }
     const refreshed = await singleFlightRefresh(id, refresh, signal)
     if (refreshed !== 'refreshed') {
+      if (refreshed.kind === 'rate_limited') {
+        const attempts = (cooldown?.attempts ?? 0) + 1
+        const fallbackDelay = REFRESH_BACKOFF_MS[Math.min(attempts - 1, REFRESH_BACKOFF_MS.length - 1)]
+        const until = refreshed.resetAt && refreshed.resetAt > now ? refreshed.resetAt : now + fallbackDelay
+        const failure: QuotaFailure = { ...refreshed, resetAt: until }
+        refreshCooldowns.set(id, { until, attempts, failure })
+        return { error: failure }
+      }
       const error = refreshed.kind === 'auth_expired' && refreshed.message === AUTH_REQUIRED ? reloaded.error : refreshed
       return { error }
     }
+    refreshCooldowns.delete(id)
     signal?.throwIfAborted()
     return await request(true)
   } catch (err) {
@@ -89,7 +130,7 @@ export function oauthCredentialFile(path: string): OAuthCredentialStore {
   }
 }
 
-export type OAuthPost = (url: string, body: Record<string, string>) => Promise<{ status: number; text: string }>
+export type OAuthPost = (url: string, body: Record<string, string>) => Promise<{ status: number; text: string; headers?: Record<string, string> }>
 
 const tokenString = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 
@@ -131,6 +172,10 @@ export async function refreshOAuthCredentials(
   let result
   try { result = JSON.parse(response.text) } catch { /* HTTP status is still available. */ }
   if (response.status < 200 || response.status >= 300) {
+    if (response.status === 429) {
+      const retryMs = parseRetryAfterMs(response.headers)
+      return { kind: 'rate_limited', message: 'OAuth refresh HTTP 429', resetAt: retryMs ? Date.now() + retryMs : null }
+    }
     const invalidGrant = result?.error === 'invalid_grant' || result?.error?.code === 'invalid_grant'
     if (response.status === 400 || response.status === 401 || (response.status < 500 && invalidGrant)) {
       return quotaFailure(`OAuth refresh HTTP ${response.status}${invalidGrant ? ': invalid_grant' : ''}`, 'auth_expired')
