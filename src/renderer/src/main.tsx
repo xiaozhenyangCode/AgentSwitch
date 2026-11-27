@@ -4,7 +4,10 @@ import './state/i18n' // before first paint: UI language from settings.json
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { installAutoHideScrollbars } from './lib/scrollbar'
 import './index.css'
+
+installAutoHideScrollbars()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -67,6 +67,8 @@
   --muted-dot: #aeaeb2;
   --code-bg: #f7f7f9;
   --code-ink: #1d1d1f;
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.36);
 }
 
 .dark {
@@ -101,6 +103,8 @@
   --muted-dot: #636366;
   --code-bg: #1e1e21;
   --code-ink: #e6e6e8;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
 }
 
 @theme {
@@ -209,22 +213,33 @@ label {
   padding: 8px 0 0 12px;
 }
 
+/* Slim, auto-hiding scrollbars: invisible at rest (even with an external mouse), shown on scroll/hover/drag with zero layout shift */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
-::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--tint) 14%, transparent);
-  border-radius: 6px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
-.dark-scroll ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  background-clip: content-box;
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 180ms ease;
+}
+[data-scrolling='true']::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-hover);
+}
+.dark-scroll [data-scrolling='true']::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.24);
+}
+.dark-scroll ::-webkit-scrollbar-thumb:hover,
+.dark-scroll ::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.38);
 }
 
 /* ---- markdown (assistant replies) ----------------------------------------------- */
@@ -371,12 +386,13 @@ label {
   margin: 0;
   padding: 2px 16px 14px;
   overflow-x: auto;
+  overflow-y: hidden;
   font-family: 'SF Mono', ui-monospace, Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--code-ink);
 }
-.md-table { margin: 0 0 14px; overflow-x: auto; border-radius: 12px; box-shadow: 0 0 0 1px var(--ring); }
+.md-table { margin: 0 0 14px; overflow-x: auto; overflow-y: hidden; border-radius: 12px; box-shadow: 0 0 0 1px var(--ring); }
 .md table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 .md th { text-align: left; font-weight: 600; background: var(--code-bg); }
 .md th, .md td { padding: 8px 12px; border-bottom: 1px solid var(--hairline); }
@@ -412,7 +428,7 @@ label {
 .md li > ul, .md li > ol { margin: 2px 0 4px; }
 .md .katex { font-size: 1.06em; color: inherit; }
 .md .katex-display { margin: 10px 0 14px; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
-.md-mermaid { display: flex; justify-content: center; padding: 8px 14px 14px; overflow-x: auto; }
+.md-mermaid { display: flex; justify-content: center; padding: 8px 14px 14px; overflow-x: auto; overflow-y: hidden; }
 .md-mermaid svg { max-width: 100%; max-height: 480px; height: auto; }
 
 @layer components {

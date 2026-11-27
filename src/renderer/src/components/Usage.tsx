@@ -167,7 +167,7 @@ function QuotaGroupSegmentedControl({
     <div
       role="tablist"
       aria-label={t('usage.quotaGroupSwitch')}
-      className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-[7px] bg-black/[0.055] p-0.5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)] [scrollbar-width:none] dark:bg-canvas dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] [&::-webkit-scrollbar]:hidden"
+      className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden rounded-[7px] bg-black/[0.055] p-0.5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)] [scrollbar-width:none] dark:bg-canvas dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] [&::-webkit-scrollbar]:hidden"
     >
       {groups.map((g) => {
         const selected = g.key === activeKey
@@ -890,7 +890,10 @@ export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-hairline px-8" role="tablist">
+      <div
+        className="flex shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-hairline px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        role="tablist"
+      >
         {tabs.map((item) => {
           const active = tab === item.id
           return (
@@ -900,10 +903,8 @@ export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void;
               role="tab"
               aria-selected={active}
               onClick={() => setTab(item.id)}
-              className={`relative -mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
-                active
-                  ? 'border-accent text-ink'
-                  : 'border-transparent text-ink-3 hover:text-ink-2'
+              className={`relative flex shrink-0 items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
+                active ? 'text-ink' : 'text-ink-3 hover:text-ink-2'
               }`}
             >
               <span>{item.label}</span>
@@ -914,6 +915,7 @@ export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void;
               >
                 {item.count.toLocaleString()}
               </span>
+              {active && <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-accent" />}
             </button>
           )
         })}

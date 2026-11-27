@@ -202,7 +202,7 @@ export function DebugDrawer() {
         <span className="shrink-0 font-mono text-[12px] font-medium text-ink-3 dark:text-white/50">&gt;_ {t('nav.debugLog')}</span>
 
         {/* tabs: scroll horizontally, never squeeze the toolbar */}
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {sessions.map((s) => (
             <div
               key={s.sessionId}
