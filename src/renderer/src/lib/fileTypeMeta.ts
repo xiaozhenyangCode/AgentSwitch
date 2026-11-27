@@ -30,7 +30,7 @@ export interface FileTypeMeta {
   icon: FileTypeIconKind
 }
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'heic'])
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'avif', 'heic'])
 const MARKDOWN_EXTS = new Set(['md', 'mdx'])
 const DOC_EXTS = new Set(['txt', 'rtf', 'doc', 'docx'])
 const SHEET_EXTS = new Set(['csv', 'tsv', 'xlsx', 'xls'])

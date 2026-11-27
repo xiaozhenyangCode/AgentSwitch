@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { EditorState } from '@codemirror/state'
-import { drawSelection, EditorView, highlightSpecialChars, lineNumbers } from '@codemirror/view'
+import { selectAll } from '@codemirror/commands'
+import { search, searchKeymap } from '@codemirror/search'
+import { drawSelection, EditorView, highlightSpecialChars, keymap, lineNumbers } from '@codemirror/view'
 import { MergeView, unifiedMergeView } from '@codemirror/merge'
 import { resolveCodeMirrorLanguage } from '../lib/codeEditorLanguages'
 import { buildEditorThemeExtension } from '../lib/codeEditorTheme'
@@ -43,6 +45,9 @@ export function CodeDiffView({
       drawSelection(),
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
+      EditorView.contentAttributes.of({ tabindex: '0' }),
+      search({ top: true }),
+      keymap.of([{ key: 'Mod-a', run: selectAll, preventDefault: true }, ...searchKeymap]),
       resolveCodeMirrorLanguage(language),
       buildEditorThemeExtension(dark)
     ]

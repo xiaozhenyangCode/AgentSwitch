@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { EditorDirEntry } from '@shared/editor'
 import type { FileChange } from '@shared/types'
+import { normalizedFilePathKey } from '@shared/fileResolve'
+import { useEscape } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
+import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
 import { FileTypeIcon } from './AttachmentBar'
-import { IconChevronRight, IconFolder, IconRefresh, IconSearch, IconX, Spinner } from './icons'
+import { IconChevronRight, IconCopy, IconExternal, IconFolder, IconRefresh, IconSearch, IconX, Spinner } from './icons'
 
 export const TREE_MIN_W = 160
 export const TREE_MAX_W = 340
@@ -24,35 +28,111 @@ export interface EditorFileTreeProps {
   activeFilePath: string | null
   activeRealPath?: string | null
   dirtyPaths: ReadonlySet<string>
-  gitStatusByRelPath?: ReadonlyMap<string, FileChange['status']>
+  changedFiles: readonly FileChange[]
   width: number
   onResizeWidth: (width: number) => void
   onOpenFile: (absPath: string) => void
 }
 
-function normPath(p: string): string {
-  return p.replace(/\\/g, '/')
-}
+type TreeMenu = { entry: EditorDirEntry; x: number; y: number; trigger: HTMLElement }
+const rowClass = 'flex h-6.5 w-full min-w-0 items-center gap-1.5 rounded-md pr-1 text-left text-[12px] transition-colors'
+const rowHover = 'text-ink-2 hover:bg-fill hover:text-ink'
+const menuItem = 'flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-[12px] text-ink hover:bg-fill focus:bg-fill focus:outline-none'
 
 export function EditorFileTree({
   projectDir,
   activeFilePath,
   activeRealPath,
   dirtyPaths,
-  gitStatusByRelPath,
+  changedFiles,
   width,
   onResizeWidth,
   onOpenFile
 }: EditorFileTreeProps) {
+  const { toast } = useApp()
   const [entriesByDir, setEntriesByDir] = useState<Map<string, EditorDirEntry[]>>(() => new Map())
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set())
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(() => new Set())
   const [rootRealDir, setRootRealDir] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const [mode, setMode] = useState<'all' | 'modified'>('all')
+  const [menu, setMenu] = useState<TreeMenu | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const seqRef = useRef(0)
   const expandedRef = useRef(expandedDirs)
   expandedRef.current = expandedDirs
+
+  const closeMenu = useCallback((restoreFocus = true) => {
+    if (restoreFocus) menu?.trigger.focus({ preventScroll: true })
+    setMenu(null)
+  }, [menu])
+  useEscape(() => closeMenu(), menu !== null)
+
+  useLayoutEffect(() => {
+    const el = menuRef.current
+    if (!menu || !el) return
+    const margin = 6
+    el.style.left = Math.max(margin, Math.min(menu.x, window.innerWidth - el.offsetWidth - margin)) + 'px'
+    el.style.top = Math.max(margin, Math.min(menu.y, window.innerHeight - el.offsetHeight - margin)) + 'px'
+    el.querySelector('button')?.focus({ preventScroll: true })
+  }, [menu])
+
+  useEffect(() => {
+    if (!menu) return
+    const outside = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target) && !menu.trigger.contains(event.target)) closeMenu(false)
+    }
+    const off = () => closeMenu()
+    window.addEventListener('pointerdown', outside)
+    window.addEventListener('resize', off)
+    window.addEventListener('blur', off)
+    return () => {
+      window.removeEventListener('pointerdown', outside)
+      window.removeEventListener('resize', off)
+      window.removeEventListener('blur', off)
+    }
+  }, [menu, closeMenu])
+
+  const runMenuAction = async (action: 'copy' | 'revealInFinder' | 'openExternal') => {
+    if (!menu || !projectDir) return
+    const { entry } = menu
+    closeMenu()
+    try {
+      if (action === 'copy') {
+        await window.agentswitch.sys.copy(entry.relPath)
+        toast({ kind: 'success', title: t('common.copied') })
+      } else {
+        const result = await window.agentswitch.editor[action]({ path: entry.path, workspaceDir: projectDir })
+        if (!result.ok) toast({ kind: 'error', title: t('editor.fileActionFailed'), desc: result.message })
+      }
+    } catch (error) {
+      toast({ kind: 'error', title: t('editor.fileActionFailed'), desc: String(error) })
+    }
+  }
+
+  const openContextMenu = (event: MouseEvent<HTMLDivElement>, entry: EditorDirEntry) => {
+    event.preventDefault()
+    const trigger = event.currentTarget.querySelector('button')
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    setMenu({ entry, trigger, x: event.clientX || rect.left, y: event.clientY || rect.bottom })
+  }
+
+  const menuButton = (entry: EditorDirEntry) => (
+    <button
+      type="button" aria-haspopup="menu" aria-label={t('editor.fileActions')} title={t('editor.fileActions')}
+      className="mr-1 grid size-6 shrink-0 place-items-center rounded text-ink-3 opacity-0 group-hover:opacity-100 hover:bg-fill focus-visible:opacity-100"
+      onClick={(event) => {
+        const trigger = event.currentTarget
+        const r = trigger.getBoundingClientRect()
+        if (menu?.trigger === trigger) closeMenu()
+        else setMenu({ entry, trigger, x: r.left, y: r.bottom })
+      }}
+    >
+      <span aria-hidden="true">⋯</span>
+    </button>
+  )
 
   const loadDir = useCallback(async (dirPath: string | null, expectedSeq: number) => {
     if (!projectDir) return
@@ -108,6 +188,8 @@ export function EditorFileTree({
     setRootRealDir(null)
     setError(null)
     setFilter('')
+    setMode('all')
+    setMenu(null)
     if (!projectDir) return
     void loadDir(null, seq)
   }, [projectDir, loadDir])
@@ -122,19 +204,15 @@ export function EditorFileTree({
   }, [projectDir, loadDir])
 
   const toggleDir = useCallback((dirPath: string) => {
-    setExpandedDirs((prev) => {
-      const next = new Set(prev)
-      if (next.has(dirPath)) {
-        next.delete(dirPath)
-      } else {
-        next.add(dirPath)
-        if (!entriesByDir.has(dirPath)) {
-          void loadDir(dirPath, seqRef.current)
-        }
-      }
-      return next
-    })
-  }, [entriesByDir, loadDir])
+    const next = new Set(expandedRef.current)
+    if (next.has(dirPath)) next.delete(dirPath)
+    else {
+      next.add(dirPath)
+      if (!entriesByDir.has(dirPath) && !loadingDirs.has(dirPath)) void loadDir(dirPath, seqRef.current)
+    }
+    expandedRef.current = next
+    setExpandedDirs(next)
+  }, [entriesByDir, loadingDirs, loadDir])
 
   const startResize = (e: PointerEvent) => {
     e.preventDefault()
@@ -159,19 +237,17 @@ export function EditorFileTree({
   const rootEntries = rootKey ? (entriesByDir.get(rootKey) ?? []) : []
   const query = filter.trim().toLowerCase()
 
-  const normActive = activeFilePath ? normPath(activeFilePath) : null
-  const normActiveReal = activeRealPath ? normPath(activeRealPath) : null
+  const normActive = activeFilePath ? normalizedFilePathKey(activeFilePath) : null
+  const normActiveReal = activeRealPath ? normalizedFilePathKey(activeRealPath) : null
 
   const normalizedDirty = useMemo(() => {
-    const out = new Set<string>()
-    for (const p of dirtyPaths) out.add(normPath(p))
-    return out
+    return new Set(Array.from(dirtyPaths, normalizedFilePathKey))
   }, [dirtyPaths])
 
+  const gitStatusByRelPath = useMemo(() => new Map(changedFiles.map((file) => [file.path, file.status])), [changedFiles])
   // Aggregate git change indicators onto parent directories for quick scanning.
   const dirHasGitChange = useMemo(() => {
     const set = new Set<string>()
-    if (!gitStatusByRelPath?.size) return set
     for (const rel of gitStatusByRelPath.keys()) {
       const parts = rel.split('/')
       for (let i = 1; i < parts.length; i++) {
@@ -181,89 +257,108 @@ export function EditorFileTree({
     return set
   }, [gitStatusByRelPath])
 
-  const matchesFilter = useCallback((entry: EditorDirEntry): boolean => {
+  const matchesFilter = (entry: EditorDirEntry, parents: readonly string[]): boolean => {
     if (!query) return true
     if (entry.name.toLowerCase().includes(query) || entry.relPath.toLowerCase().includes(query)) return true
-    if (!entry.isDirectory) return false
+    if (!entry.isDirectory || parents.includes(entry.path)) return false
     const children = entriesByDir.get(entry.path)
-    return !!children?.some((child) => matchesFilter(child))
-  }, [entriesByDir, query])
+    return !!children?.some((child) => matchesFilter(child, [...parents, entry.path]))
+  }
 
-  const renderNodes = (entries: EditorDirEntry[], depth: number): ReactNode => {
-    const visible = query ? entries.filter(matchesFilter) : entries
+  const fileRow = (entry: EditorDirEntry, depth: number, parentDir?: string, gitStatus = gitStatusByRelPath.get(entry.relPath)) => {
+    const normEntry = normalizedFilePathKey(entry.path)
+    const isActive = normEntry === normActive || normEntry === normActiveReal
+    const meta = resolveFileTypeMeta(entry.name)
+    const badge = gitStatus && GIT_STATUS_STYLE[gitStatus]
+    return (
+      <div key={entry.relPath} className="group flex items-center" onContextMenu={(event) => openContextMenu(event, entry)}>
+        <button
+          type="button" onClick={() => onOpenFile(entry.path)} title={entry.relPath}
+          style={{ paddingLeft: (parentDir === undefined ? 20 : 8) + depth * 13 }}
+          className={rowClass + (isActive ? ' bg-accent/12 font-medium text-ink dark:bg-accent/20' : ' ' + rowHover)}
+          aria-current={isActive || undefined}
+        >
+          <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
+          <span className="min-w-0 truncate">{entry.name}</span>
+          {parentDir && <span className="min-w-0 truncate text-[10.5px] text-ink-3">{parentDir}</span>}
+          <span className="flex-1" />
+          {normalizedDirty.has(normEntry) && (
+            <span className="size-1.5 shrink-0 rounded-full bg-accent" title={t('editor.unsaved')} />
+          )}
+          {badge && <span className={`shrink-0 font-mono text-[10.5px] font-semibold ${badge.cls}`}>{badge.label}</span>}
+        </button>
+        {menuButton(entry)}
+      </div>
+    )
+  }
+
+  const renderNodes = (entries: EditorDirEntry[], parents: readonly string[]): ReactNode => {
+    const visible = query ? entries.filter((entry) => matchesFilter(entry, parents)) : entries
+    const depth = parents.length
     return visible.map((entry) => {
       if (entry.isDirectory) {
-        const expanded = expandedDirs.has(entry.path) || (!!query && entriesByDir.has(entry.path))
+        const cycle = parents.includes(entry.path)
+        const expanded = !cycle && (expandedDirs.has(entry.path) || (!!query && entriesByDir.has(entry.path)))
         const loading = loadingDirs.has(entry.path)
         const children = entriesByDir.get(entry.path) ?? []
         const hasChanges = dirHasGitChange.has(entry.relPath)
         return (
           <div key={entry.path}>
-            <button
-              type="button"
-              onClick={() => toggleDir(entry.path)}
-              style={{ paddingLeft: 8 + depth * 13 }}
-              className="group flex h-6.5 w-full items-center gap-1 rounded-md pr-2 text-left text-[12px] text-ink-2 transition-colors hover:bg-black/[0.045] hover:text-ink dark:hover:bg-white/[0.06]"
-              title={entry.relPath}
-            >
-              {loading ? (
-                <Spinner size={11} className="shrink-0 text-ink-3" />
-              ) : (
-                <IconChevronRight
-                  size={11}
-                  className={`shrink-0 text-ink-3 transition-transform duration-100 ${expanded ? 'rotate-90' : ''}`}
-                />
-              )}
-              <IconFolder size={13} className="shrink-0 text-ink-3" />
-              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-              {hasChanges && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info/70" />}
-            </button>
-            {expanded && children.length > 0 && renderNodes(children, depth + 1)}
+            <div className="group flex items-center" onContextMenu={(event) => openContextMenu(event, entry)}>
+              <button
+                type="button"
+                onClick={() => toggleDir(entry.path)}
+                style={{ paddingLeft: 8 + depth * 13 }}
+                className={rowClass + ' ' + rowHover}
+                title={entry.relPath}
+                disabled={cycle}
+                aria-expanded={expanded}
+              >
+                {loading ? (
+                  <Spinner size={11} className="shrink-0 text-ink-3" />
+                ) : (
+                  <IconChevronRight
+                    size={11}
+                    className={`shrink-0 text-ink-3 transition-transform duration-100 ${expanded ? 'rotate-90' : ''}`}
+                  />
+                )}
+                <IconFolder size={13} className="shrink-0 text-ink-3" />
+                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                {hasChanges && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info/70" />}
+              </button>
+              {menuButton(entry)}
+            </div>
+            {expanded && children.length > 0 && renderNodes(children, [...parents, entry.path])}
           </div>
         )
       }
 
-      const normEntry = normPath(entry.path)
-      const isActive = normEntry === normActive || normEntry === normActiveReal
-      const isDirty = normalizedDirty.has(normEntry)
-      const meta = resolveFileTypeMeta(entry.name)
-      const gitStatus = gitStatusByRelPath?.get(entry.relPath)
-      const gitBadge = gitStatus ? GIT_STATUS_STYLE[gitStatus] : undefined
-
-      return (
-        <button
-          key={entry.path}
-          type="button"
-          onClick={() => onOpenFile(entry.path)}
-          style={{ paddingLeft: 20 + depth * 13 }}
-          title={entry.relPath}
-          className={`flex h-6.5 w-full items-center gap-1.5 rounded-md pr-2 text-left text-[12px] transition-colors ${
-            isActive
-              ? 'bg-accent/12 font-medium text-ink dark:bg-accent/20'
-              : 'text-ink-2 hover:bg-black/[0.045] hover:text-ink dark:hover:bg-white/[0.06]'
-          }`}
-        >
-          <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
-          <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-          {isDirty && (
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" title={t('editor.unsaved')} />
-          )}
-          {gitBadge && (
-            <span className={`shrink-0 font-mono text-[10.5px] font-semibold ${gitBadge.cls}`}>{gitBadge.label}</span>
-          )}
-        </button>
-      )
+      return fileRow(entry, depth)
     })
   }
 
   const rootLoading = !!projectDir && loadingDirs.has(projectDir) && rootEntries.length === 0
+  const modifiedFiles = mode === 'modified' ? changedFiles.filter((file) => file.path.toLowerCase().includes(query)) : []
 
   return (
     <div
+      data-editor-file-tree
       className="relative flex h-full shrink-0 flex-col border-r border-hairline bg-surface-2/40 select-none"
-      style={{ width }}
+      style={{ width: `min(${width}px, calc(100% - 160px))` }}
     >
-      {/* Compact filter bar */}
+      <div className="mx-2 mt-2 flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
+        {(['all', 'modified'] as const).map((item) => (
+          <button
+            key={item} type="button" onClick={() => setMode(item)} aria-pressed={mode === item}
+            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 py-0.5 text-[11px] ${mode === item ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink'}`}
+          >
+            <span className="truncate">{t(item === 'all' ? 'editor.treeAll' : 'editor.treeModified')}</span>
+            {item === 'modified' && changedFiles.length > 0 && (
+              <span className="rounded bg-fill px-1 font-mono text-[10px]">{changedFiles.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-2">
         <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md bg-surface px-1.5 py-0.5 shadow-[inset_0_0_0_1px_var(--ring)] focus-within:shadow-[inset_0_0_0_1px_var(--accent)]">
           <IconSearch size={11} className="shrink-0 text-ink-3" />
@@ -285,7 +380,7 @@ export function EditorFileTree({
             </button>
           )}
         </div>
-        <button
+        {mode === 'all' && <button
           type="button"
           onClick={refreshTree}
           disabled={!projectDir}
@@ -294,13 +389,23 @@ export function EditorFileTree({
           className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink disabled:opacity-40 dark:hover:bg-white/[0.08]"
         >
           <IconRefresh size={12} />
-        </button>
+        </button>}
       </div>
 
       {/* Tree body */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5">
         {!projectDir ? (
           <div className="px-2.5 py-6 text-center text-[11.5px] text-ink-3">{t('editor.treeNoWorkspace')}</div>
+        ) : mode === 'modified' ? (
+          modifiedFiles.length ? modifiedFiles.map((file) => {
+            const split = file.path.lastIndexOf('/')
+            return fileRow({ path: file.abs, relPath: file.path, name: file.path.slice(split + 1), isDirectory: false },
+              0, split < 0 ? '' : file.path.slice(0, split), file.status)
+          }) : (
+            <div className="px-2.5 py-6 text-center text-[11.5px] text-ink-3">
+              {t(query && changedFiles.length ? 'editor.treeNoMatches' : 'editor.treeModifiedEmpty')}
+            </div>
+          )
         ) : rootLoading ? (
           <div className="flex items-center justify-center gap-1.5 py-6 text-[11.5px] text-ink-3">
             <Spinner size={12} />
@@ -311,7 +416,7 @@ export function EditorFileTree({
         ) : rootEntries.length === 0 ? (
           <div className="px-2.5 py-6 text-center text-[11.5px] text-ink-3">{t('editor.treeEmpty')}</div>
         ) : (
-          renderNodes(rootEntries, 0)
+          renderNodes(rootEntries, [])
         )}
       </div>
 
@@ -322,6 +427,38 @@ export function EditorFileTree({
         onDoubleClick={() => onResizeWidth(TREE_DEFAULT_W)}
         title={t('chg.resize')}
       />
+      {menu && createPortal(
+        <div ref={menuRef} role="menu" aria-label={t('editor.fileActions')} data-editor-panel
+          className="fixed z-[80] w-52 rounded-lg bg-surface p-1 shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.2)]"
+          onContextMenu={(event) => event.preventDefault()}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) closeMenu(false)
+          }}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && ['a', 'f', 's'].includes(event.key.toLowerCase())) {
+              event.preventDefault()
+              event.stopPropagation()
+              return
+            }
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+            event.preventDefault()
+            const items = Array.from(event.currentTarget.querySelectorAll('button'))
+            const index = items.indexOf(document.activeElement as HTMLButtonElement)
+            items[(index + items.length + (event.key === 'ArrowDown' ? 1 : -1)) % items.length]?.focus()
+          }}
+        >
+          <button type="button" role="menuitem" className={menuItem} onClick={() => void runMenuAction('copy')}>
+            <IconCopy size={13} />{t('editor.copyRelPath')}
+          </button>
+          <button type="button" role="menuitem" className={menuItem} onClick={() => void runMenuAction('revealInFinder')}>
+            <IconFolder size={13} />{t('common.showInFinder')}
+          </button>
+          {!menu.entry.isDirectory && <button type="button" role="menuitem" className={menuItem} onClick={() => void runMenuAction('openExternal')}>
+            <IconExternal size={13} />{t('editor.openExternal')}
+          </button>}
+        </div>,
+        document.body
+      )}
     </div>
   )
 }

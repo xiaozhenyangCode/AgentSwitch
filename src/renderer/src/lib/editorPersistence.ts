@@ -51,7 +51,7 @@ export function readWorkspaceEditorStore(storage: StorageLike | null = getDefaul
       store[key] = {
         tabs,
         activePath,
-        open: item.open === true && tabs.length > 0,
+        open: item.open === true,
         ...(typeof item.width === 'number' && Number.isFinite(item.width) && { width: item.width }),
         ...(typeof item.treeOpen === 'boolean' && { treeOpen: item.treeOpen }),
         ...(typeof item.treeWidth === 'number' && Number.isFinite(item.treeWidth) && { treeWidth: item.treeWidth }),
@@ -73,6 +73,10 @@ export function loadWorkspaceEditorState(
   return store[normalizeWorkspaceKey(workspaceDir)] ?? null
 }
 
+export function loadWorkspaceTreeOpen(workspaceDir: string | null, storage?: StorageLike | null): boolean {
+  return loadWorkspaceEditorState(workspaceDir, storage)?.treeOpen ?? true
+}
+
 export function saveWorkspaceEditorState(
   workspaceDir: string | null | undefined,
   patch: Partial<Omit<PersistedWorkspaceEditorState, 'updatedAt'>>,
@@ -88,7 +92,7 @@ export function saveWorkspaceEditorState(
     : prev?.tabs ?? []
   const candidateActive = patch.activePath !== undefined ? patch.activePath : prev?.activePath ?? null
   const activePath = candidateActive && tabs.includes(candidateActive) ? candidateActive : tabs[0] ?? null
-  const open = (patch.open !== undefined ? patch.open : prev?.open ?? false) && tabs.length > 0
+  const open = patch.open ?? prev?.open ?? false
 
   store[key] = {
     tabs,
@@ -124,8 +128,8 @@ export function resolveRestoredWorkspaceTabs(
   saved: PersistedWorkspaceEditorState | null,
   existingMap: Readonly<Record<string, boolean>>
 ): { tabs: string[]; activePath: string | null; open: boolean } {
-  if (!saved || !saved.tabs.length) {
-    return { tabs: [], activePath: null, open: false }
+  if (!saved?.tabs.length) {
+    return { tabs: [], activePath: null, open: saved?.open ?? false }
   }
   const tabs = saved.tabs.filter((path) => existingMap[path] === true)
   if (!tabs.length) {

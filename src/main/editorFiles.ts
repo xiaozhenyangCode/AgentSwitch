@@ -34,7 +34,9 @@ const failure = (code: EditorErrorCode, message: string): EditorFailure => ({ ok
 const outside = (): EditorFailure => failure('OUT_OF_BOUNDS', 'File is outside the authorized workspace')
 const notFile = (): EditorFailure => failure('NOT_A_FILE', 'Path is not a regular file')
 const tooLarge = (): EditorFailure => failure('FILE_TOO_LARGE', 'File exceeds the editor size limit')
-const binary = (): EditorFailure => failure('BINARY_FILE', 'File is binary')
+const binary = (size?: number): EditorFailure => ({
+  ...failure('BINARY_FILE', 'File is binary'), ...(size !== undefined && { size })
+})
 
 class EditorFileError extends Error {
   constructor(readonly result: EditorFailure) {
@@ -99,7 +101,7 @@ const eolOf = (text: string): EditorEol => text.includes('\r\n') ? 'CRLF' : 'LF'
 async function readTextFile(realPath: string): Promise<{ text: string; st: Stats }> {
   const original = await statCanonicalFile(realPath)
   if (original.size > EDITOR_MAX_BYTES) throw new EditorFileError({ ...tooLarge(), size: original.size })
-  if (isKnownBinaryPath(realPath)) throw new EditorFileError(binary())
+  if (isKnownBinaryPath(realPath)) throw new EditorFileError(binary(original.size))
 
   const file = await open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
@@ -119,7 +121,7 @@ async function readTextFile(realPath: string): Promise<{ text: string; st: Stats
     if (size !== st.size || !sameVersion(st, after)) {
       throw new EditorFileError(failure('IO_ERROR', 'File changed while reading'))
     }
-    if (buf.subarray(0, Math.min(size, BINARY_PROBE_BYTES)).includes(0)) throw new EditorFileError(binary())
+    if (buf.subarray(0, Math.min(size, BINARY_PROBE_BYTES)).includes(0)) throw new EditorFileError(binary(st.size))
     return { text: buf.toString('utf8', 0, size), st }
   } finally {
     await file.close()

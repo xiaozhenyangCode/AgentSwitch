@@ -115,3 +115,7 @@ export function detectEditorLanguage(filePath: string): string {
 export function isKnownBinaryPath(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(extension(fileName(filePath)))
 }
+
+export function isPreviewableEditorImage(filePath: string): boolean {
+  return /^\.(?:png|jpe?g|gif|webp|svg|bmp|ico|avif)$/.test(extension(fileName(filePath)))
+}

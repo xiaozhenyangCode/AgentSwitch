@@ -1,7 +1,7 @@
 export type EditorDiffMode = 'none' | 'conflict' | 'unsaved'
 
 export interface EditorDiffSnapshot {
-  status: 'loading' | 'ready' | 'error'
+  status: 'loading' | 'ready' | 'image' | 'error'
   content: string
   savedContent: string
   mtimeMs: number

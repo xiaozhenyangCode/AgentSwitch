@@ -1,16 +1,20 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { openSearchPanel } from '@codemirror/search'
+import { EditorView } from '@codemirror/view'
 import type { FileChange } from '@shared/types'
 import { detectIndentInfo } from '../lib/codeEditorTheme'
-import { loadWorkspaceEditorState, saveWorkspaceEditorState } from '../lib/editorPersistence'
+import { loadWorkspaceEditorState, loadWorkspaceTreeOpen, saveWorkspaceEditorState } from '../lib/editorPersistence'
 import { escLayers, useFocusCloseHandler } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { btnPrimary, btnSecondary } from '../lib/ui'
-import { isTabDirty, type EditorTab, type PendingClosePrompt } from '../state/useCodeEditor'
+import { isTabDirty, type EditorTab, type EditorViewMode, type PendingClosePrompt } from '../state/useCodeEditor'
 import { t } from '../state/i18n'
 import { FileTypeIcon } from './AttachmentBar'
 import { CodeDiffView } from './CodeDiffView'
 import { CodeEditor, type EditorCursorStatus, type EditorSelectionRange } from './CodeEditor'
 import { EditorFileTree, TREE_DEFAULT_W, TREE_MAX_W, TREE_MIN_W } from './EditorFileTree'
+import { EditorImagePreview, fmtBytes } from './EditorImagePreview'
+import { Markdown, MarkdownBase } from './Markdown'
 import { Modal } from './common'
 import {
   IconAlert,
@@ -32,9 +36,6 @@ const WIDTH_KEY = 'agentswitch.editorWidth'
 const DEFAULT_W = 540
 const MIN_W = 360
 const MAX_W = 1100
-
-const fmtBytes = (n: number) =>
-  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`
 
 const LANGUAGE_LABELS: Readonly<Record<string, string>> = {
   typescript: 'TypeScript',
@@ -103,14 +104,16 @@ export interface CodeEditorPanelProps {
   tabs: EditorTab[]
   activeTab: EditorTab | null
   projectDir: string | null
+  home: string | null
   maximized: boolean
   focusToken: number
   pendingClose: PendingClosePrompt | null
-  gitStatusByRelPath?: ReadonlyMap<string, FileChange['status']>
+  changedFiles: readonly FileChange[]
   onToggleMaximize: () => void
   onSelectTab: (tabId: string) => void
   onSelectAdjacentTab: (delta: -1 | 1) => void
   onOpenFile: (absPath: string) => void
+  onSetTabViewMode: (tabId: string, mode: EditorViewMode) => void
   onCloseTab: (tabId: string) => void
   onClosePanel: () => void
   onChangeContent: (tabId: string, content: string) => void
@@ -133,14 +136,16 @@ export function CodeEditorPanel({
   tabs,
   activeTab,
   projectDir,
+  home,
   maximized,
   focusToken,
   pendingClose,
-  gitStatusByRelPath,
+  changedFiles,
   onToggleMaximize,
   onSelectTab,
   onSelectAdjacentTab,
   onOpenFile,
+  onSetTabViewMode,
   onCloseTab,
   onClosePanel,
   onChangeContent,
@@ -155,16 +160,16 @@ export function CodeEditorPanel({
 }: CodeEditorPanelProps) {
   const panelRef = useRef<HTMLElement>(null)
   const [width, setWidth] = useState(() => clampWidth(loadWorkspaceEditorState(projectDir)?.width))
-  const [treeOpen, setTreeOpen] = useState(false)
+  const [treeOpen, setTreeOpen] = useState(() => loadWorkspaceTreeOpen(projectDir))
   const [treeWidth, setTreeWidth] = useState(() => clampTreeWidth(loadWorkspaceEditorState(projectDir)?.treeWidth))
   const [cursor, setCursor] = useState<EditorCursorStatus>({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
 
-  // Restore persisted panel width & tree width when switching workspaces (file tree stays collapsed by default).
+  // Restore panel and tree preferences for the selected workspace.
   useEffect(() => {
     const saved = loadWorkspaceEditorState(projectDir)
     setWidth(clampWidth(saved?.width))
     setTreeWidth(clampTreeWidth(saved?.treeWidth))
-    setTreeOpen(false)
+    setTreeOpen(loadWorkspaceTreeOpen(projectDir))
   }, [projectDir])
 
   // Reset cursor readout when switching tabs.
@@ -172,54 +177,102 @@ export function CodeEditorPanel({
     setCursor({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
   }, [activeTab?.id])
 
-  // Intercept native menu ⌘W ONLY when focus is inside the editor panel and a tab is open.
+  const toggleTree = () => {
+    const next = !treeOpen
+    setTreeOpen(next)
+    saveWorkspaceEditorState(projectDir, { treeOpen: next })
+  }
+
+  const closeActive = () => {
+    if (activeTab) onCloseTab(activeTab.id)
+    else onClosePanel()
+  }
+
   useFocusCloseHandler(() => {
     const panel = panelRef.current
     const activeEl = document.activeElement
     if (!panel || !activeEl || !panel.contains(activeEl)) return false
-    if (!activeTab) return false
-    onCloseTab(activeTab.id)
+    closeActive()
     return true
-  }, !!activeTab)
+  })
 
-  // Focus-scoped editor shortcuts: ⌥⌘←/→ switch tabs, ⌘B toggle tree, ESC exit diff, fallback ⌘W.
+  // Keep an in-panel focus target if closing a tab removes the focused element.
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return
-      const panel = panelRef.current
-      const activeEl = document.activeElement
-      if (!panel || !activeEl || !panel.contains(activeEl)) return
+    if (document.activeElement === document.body) {
+      panelRef.current?.focus({ preventScroll: true })
+    }
+  }, [activeTab?.id, activeTab?.status, activeTab?.viewMode])
 
-      const mod = event.metaKey || event.ctrlKey
-      if (mod && event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-        if (tabs.length > 1) {
-          event.preventDefault()
-          event.stopPropagation()
-          onSelectAdjacentTab(event.key === 'ArrowLeft' ? -1 : 1)
-        }
-        return
-      }
-      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
+  useEffect(() => {
+    const panel = panelRef.current
+    if (focusToken && panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true })
+  }, [focusToken])
+
+  const onPanelKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const target = event.target
+    if (event.defaultPrevented || event.nativeEvent.isComposing || !(target instanceof HTMLElement) ||
+        !event.currentTarget.contains(target) || escLayers() > 0) return
+
+    const key = event.key.toLowerCase()
+    const mod = event.metaKey || event.ctrlKey
+    const textInput = target.closest('input, textarea, select, [contenteditable="true"]')
+    const inCodeMirror = target.closest('.cm-editor')
+    if (key === 'escape') {
+      event.stopPropagation()
+      if (activeTab && activeTab.diffMode !== 'none') {
         event.preventDefault()
-        event.stopPropagation()
-        setTreeOpen((v) => !v)
-        return
-      }
-      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w' && activeTab && escLayers() === 0) {
-        event.preventDefault()
-        event.stopPropagation()
-        onCloseTab(activeTab.id)
-        return
-      }
-      if (event.key === 'Escape' && escLayers() === 0 && activeTab && activeTab.diffMode !== 'none') {
-        event.preventDefault()
-        event.stopPropagation()
         onExitDiff(activeTab.id)
       }
+      return
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTab, tabs.length, onCloseTab, onExitDiff, onSelectAdjacentTab])
+    if (!mod || event.shiftKey) return
+    if (event.altKey) {
+      if (tabs.length > 1 && (key === 'arrowleft' || key === 'arrowright')) {
+        event.preventDefault()
+        event.stopPropagation()
+        onSelectAdjacentTab(key === 'arrowleft' ? -1 : 1)
+      }
+      return
+    }
+    if ((key === 'a' && (inCodeMirror || textInput)) || (key === 'f' && inCodeMirror)) return
+    if (!['a', 'b', 'f', 's', 'w'].includes(key)) return
+    event.preventDefault()
+    event.stopPropagation()
+    switch (key) {
+      case 'a': {
+        const preview = target.closest('[data-editor-markdown-preview]')
+        const selection = window.getSelection()
+        if (preview && selection) {
+          const range = document.createRange()
+          range.selectNodeContents(preview)
+          selection.removeAllRanges()
+          selection.addRange(range)
+        }
+        break
+      }
+      case 'b': {
+        if (!projectDir) break
+        if (treeOpen && target.closest('[data-editor-file-tree]')) panelRef.current?.focus()
+        toggleTree()
+        break
+      }
+      case 'f': {
+        const editor = panelRef.current?.querySelector<HTMLElement>('.cm-agentswitch-host')
+        const view = !textInput && editor && EditorView.findFromDOM(editor)
+        if (view) {
+          view.focus()
+          openSearchPanel(view)
+        }
+        break
+      }
+      case 's':
+        if (activeTab?.status === 'ready') onSaveTab(activeTab.id)
+        break
+      case 'w':
+        closeActive()
+        break
+    }
+  }
 
   const persistWidth = (w: number) => {
     localStorage.setItem(WIDTH_KEY, String(w))
@@ -278,6 +331,14 @@ export function CodeEditorPanel({
     activeTab.error?.code !== 'NOT_FOUND'
   const crumbs = activeTab ? breadcrumbSegments(activeTab.realPath ?? activeTab.path, activeTab.workspaceDir ?? projectDir) : []
   const showingDiff = activeTab?.status === 'ready' && activeTab.diffMode !== 'none'
+  const isSvg = !!activeTab && /\.svg$/i.test(activeTab.realPath ?? activeTab.path)
+  const isMarkdown = activeTab?.language === 'markdown'
+  const canSwitchView = activeTab?.status === 'ready' && !showingDiff && (isSvg || isMarkdown)
+  const showingPreview = canSwitchView && activeTab.viewMode === 'preview'
+  const showingImage = activeTab?.status === 'image' || (showingPreview && isSvg)
+  const markdownPath = activeTab?.realPath ?? activeTab?.path ?? ''
+  const markdownPosix = markdownPath.startsWith('/') ? markdownPath : markdownPath.replace(/\\/g, '/')
+  const markdownDir = markdownPosix.slice(0, markdownPosix.lastIndexOf('/')) || '/'
 
   const revealInFinder = () => {
     if (!activeTab) return
@@ -298,7 +359,9 @@ export function CodeEditorPanel({
   return (
     <aside
       ref={panelRef}
+      data-editor-panel
       tabIndex={-1}
+      onKeyDown={onPanelKeyDown}
       className={`relative flex h-full min-w-0 flex-col border-l border-hairline bg-surface outline-none ${maximized ? 'flex-1' : 'shrink-0'}`}
       style={maximized ? undefined : { width }}
     >
@@ -318,7 +381,8 @@ export function CodeEditorPanel({
       <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-hairline bg-surface-2/80 pr-2 pl-1.5">
         <button
           type="button"
-          onClick={() => setTreeOpen((v) => !v)}
+          onClick={toggleTree}
+          disabled={!projectDir}
           className={`${iconBtn} ${treeOpen ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
           title={`${t('editor.toggleTree')} (⌘B)`}
           aria-label={t('editor.toggleTree')}
@@ -414,7 +478,7 @@ export function CodeEditorPanel({
               <IconDiff size={14} />
             </button>
           )}
-          {canExternalAction && (
+          {canExternalAction && !showingImage && (
             <>
               <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
                 <IconFolder size={14} />
@@ -450,6 +514,17 @@ export function CodeEditorPanel({
               </Fragment>
             ))}
           </div>
+          {canSwitchView && (
+            <div className="flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
+              {(['source', 'preview'] as const).map((mode) => (
+                <button key={mode} type="button" aria-pressed={activeTab.viewMode === mode}
+                  onClick={() => onSetTabViewMode(activeTab.id, mode)}
+                  className={`rounded px-2 text-[11px] ${activeTab.viewMode === mode ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink'}`}>
+                  {t(mode === 'source' ? 'editor.modeSource' : 'editor.modePreview')}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -524,13 +599,13 @@ export function CodeEditorPanel({
 
       {/* Main Workspace Split: Optional File Tree + Code/Diff Editor */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {treeOpen && (
+        {treeOpen && projectDir && (
           <EditorFileTree
             projectDir={projectDir}
             activeFilePath={activeTab?.path ?? null}
             activeRealPath={activeTab?.realPath ?? null}
             dirtyPaths={dirtyPaths}
-            gitStatusByRelPath={gitStatusByRelPath}
+            changedFiles={changedFiles}
             width={treeWidth}
             onResizeWidth={handleResizeTree}
             onOpenFile={onOpenFile}
@@ -541,7 +616,7 @@ export function CodeEditorPanel({
           {!activeTab ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-ink-3">
               <IconFile size={24} className="opacity-50" />
-              <span>{t('editor.empty')}</span>
+              <span>{t(projectDir ? 'editor.empty' : 'editor.treeNoWorkspace')}</span>
             </div>
           ) : activeTab.status === 'loading' ? (
             <div className="flex h-full items-center justify-center gap-2 text-[13px] text-ink-3">
@@ -566,6 +641,23 @@ export function CodeEditorPanel({
               onKeepMineAndSave={activeTab.diffMode === 'conflict' ? () => onSaveTab(activeTab.id, { force: true }) : undefined}
               onExit={() => onExitDiff(activeTab.id)}
             />
+          ) : showingImage ? (
+            <EditorImagePreview
+              key={activeTab.id}
+              path={activeTab.path}
+              realPath={activeTab.realPath}
+              name={activeTab.name}
+              size={activeTab.size}
+              syncVersion={activeTab.syncVersion}
+              onReveal={revealInFinder}
+              onOpenExternal={openExternal}
+            />
+          ) : showingPreview ? (
+            <div data-editor-markdown-preview tabIndex={0} className="h-full overflow-auto p-4 text-[13px] outline-none select-text">
+              <MarkdownBase.Provider value={{ baseDir: markdownDir, home, projectDir, onOpenEditorFile: onOpenFile }}>
+                <Markdown text={activeTab.content} />
+              </MarkdownBase.Provider>
+            </div>
           ) : (
             <CodeEditor
               fileKey={activeTab.id}
@@ -589,10 +681,10 @@ export function CodeEditorPanel({
       </div>
 
       {/* Compact Single-Row Bottom Status Bar (25px) */}
-      {activeTab?.status === 'ready' && (
+      {activeTab?.status === 'ready' && !showingImage && (
         <div className="flex h-[25px] shrink-0 items-center justify-between gap-3 border-t border-hairline bg-surface-2/75 px-3 text-[11px] text-ink-3 select-none">
           <div className="flex min-w-0 items-center gap-2 tabular-nums">
-            {!showingDiff && (
+            {!showingDiff && !showingPreview && (
               <>
                 <span className="truncate">{t('editor.statusCursor', { line: cursor.line, col: cursor.col })}</span>
                 {cursor.selectedChars > 0 && (
@@ -613,7 +705,7 @@ export function CodeEditorPanel({
             {activeTab.conflictMtimeMs === null && activeTab.externalChange && (
               <span className="rounded bg-warn-soft px-1.5 py-px font-medium text-warn">{t('editor.statusModified')}</span>
             )}
-            {showingDiff && (
+            {(showingDiff || showingPreview) && (
               <span className="rounded bg-fill px-1.5 py-px text-ink-2">{t('editor.statusReadOnly')}</span>
             )}
             <span>{LANGUAGE_LABELS[activeTab.language] ?? activeTab.language}</span>
@@ -686,7 +778,9 @@ function EditorBlockedState({
     code === 'FILE_TOO_LARGE'
       ? t('editor.errTooLargeDesc', { size: tab.error?.size ? fmtBytes(tab.error.size) : '> 2 MB' })
       : code === 'BINARY_FILE'
-        ? t('editor.errBinaryDesc')
+        ? tab.error?.size !== undefined
+          ? t('editor.errBinaryDescWithSize', { size: fmtBytes(tab.error.size) })
+          : t('editor.errBinaryDesc')
         : code === 'OUT_OF_BOUNDS'
           ? t('editor.errOutOfBoundsDesc')
           : code === 'NOT_FOUND'

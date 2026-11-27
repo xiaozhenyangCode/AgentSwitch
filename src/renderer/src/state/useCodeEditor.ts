@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { EditorEol, EditorErrorCode, EditorFileChangedEvent, EditorReadResult, EditorSaveResult } from '@shared/editor'
+import { isPreviewableEditorImage, type EditorEol, type EditorErrorCode, type EditorFileChangedEvent, type EditorReadResult, type EditorSaveResult } from '@shared/editor'
 import {
   applyAcceptDiskVersion,
   applyKeepMineSaved,
@@ -16,13 +16,16 @@ import {
 import { t } from '../state/i18n'
 import { useApp } from './AppContext'
 
+export type EditorViewMode = 'source' | 'preview'
+
 export interface EditorTab {
   id: string
   path: string
   realPath: string | null
   workspaceDir: string | null
   name: string
-  status: 'loading' | 'ready' | 'error'
+  status: 'loading' | 'ready' | 'image' | 'error'
+  viewMode: EditorViewMode
   content: string
   savedContent: string
   mtimeMs: number
@@ -52,7 +55,7 @@ export interface PendingClosePrompt {
 export const isTabDirty = (tab: EditorTab): boolean => tab.status === 'ready' && tab.content !== tab.savedContent
 
 function fileNameOf(filePath: string): string {
-  const parts = filePath.split(/[/\\]/)
+  const parts = filePath.split(filePath.startsWith('/') ? '/' : /[/\\]/)
   return parts[parts.length - 1] || filePath
 }
 
@@ -64,6 +67,7 @@ function makeLoadingTab(path: string, workspaceDir: string | null): EditorTab {
     workspaceDir,
     name: fileNameOf(path),
     status: 'loading',
+    viewMode: /\.svg$/i.test(path) ? 'preview' : 'source',
     content: '',
     savedContent: '',
     mtimeMs: 0,
@@ -95,19 +99,22 @@ export function useCodeEditor(projectDir: string | null) {
   activeIdRef.current = activeId
   const openRef = useRef<boolean>(open)
   openRef.current = open
-  const watchedPathsRef = useRef(new Set<string>())
+  const watchedPathsRef = useRef(new Map<string, symbol>())
+  const readsByTab = useRef(new Map<string, symbol>())
   const prevProjectDirRef = useRef<string | null | undefined>(undefined)
   const restoredWorkspaceRef = useRef<string | null>(null)
   const restoreSeqRef = useRef(0)
 
   const watchPath = useCallback((path: string, workspaceDir: string | null) => {
     if (watchedPathsRef.current.has(path)) return
-    watchedPathsRef.current.add(path)
+    const request = Symbol()
+    watchedPathsRef.current.set(path, request)
+    const forgetFailedWatch = () => {
+      if (watchedPathsRef.current.get(path) === request) watchedPathsRef.current.delete(path)
+    }
     void window.agentswitch.editor.watchFile({ path, workspaceDir }).then((res) => {
-      if (!res.ok) watchedPathsRef.current.delete(path)
-    }).catch(() => {
-      watchedPathsRef.current.delete(path)
-    })
+      if (!res.ok) forgetFailedWatch()
+    }).catch(forgetFailedWatch)
   }, [])
 
   const unwatchPath = useCallback((path: string) => {
@@ -118,19 +125,24 @@ export function useCodeEditor(projectDir: string | null) {
   // Cleanup all active watchers on unmount.
   useEffect(() => {
     const watched = watchedPathsRef.current
+    const reads = readsByTab.current
     return () => {
-      for (const path of watched) {
+      reads.clear()
+      for (const path of watched.keys()) {
         void window.agentswitch.editor.unwatchFile(path).catch(() => {})
       }
       watched.clear()
     }
   }, [])
 
-  const removeTabsNow = useCallback((ids: string[], closePanelWhenEmpty = true) => {
+  const removeTabsNow = useCallback((ids: string[], closePanelWhenEmpty = false) => {
     const removeSet = new Set(ids)
     const current = tabsRef.current
     for (const tab of current) {
-      if (removeSet.has(tab.id)) unwatchPath(tab.path)
+      if (removeSet.has(tab.id)) {
+        readsByTab.current.delete(tab.id)
+        unwatchPath(tab.path)
+      }
     }
     const next = current.filter((tab) => !removeSet.has(tab.id))
     setTabs(next)
@@ -156,20 +168,35 @@ export function useCodeEditor(projectDir: string | null) {
     silentReload = false,
     skipIfMissing = false
   ) => {
+    const request = Symbol()
+    readsByTab.current.set(tabId, request)
     const res: EditorReadResult = await window.agentswitch.editor.readFile({ path, workspaceDir }).catch((err: unknown): EditorReadResult => ({
       ok: false,
       code: 'IO_ERROR',
       message: err instanceof Error ? err.message : String(err)
     }))
+    if (readsByTab.current.get(tabId) !== request) return
+    readsByTab.current.delete(tabId)
 
-    if (!res.ok) {
-      unwatchPath(path)
+    const image = !res.ok && res.code === 'BINARY_FILE' && isPreviewableEditorImage(res.realPath ?? path)
+    if (!res.ok && !image) {
       if (skipIfMissing && (res.code === 'NOT_FOUND' || res.code === 'OUT_OF_BOUNDS')) {
         removeTabsNow([tabId], true)
         return
       }
+      const current = tabsRef.current.find((tab) => tab.id === tabId)
+      const deleted = res.code === 'NOT_FOUND'
+      const preserveWatch = silentReload && (deleted || (current && (current.saving || isTabDirty(current))))
+      if (!preserveWatch) unwatchPath(path)
       setTabs((prev) => prev.map((tab) => {
         if (tab.id !== tabId) return tab
+        if (silentReload && (deleted || isTabDirty(tab) || tab.saving)) {
+          return {
+            ...tab,
+            externalChange: deleted ? 'deleted' : 'modified',
+            syncVersion: deleted && tab.viewMode === 'preview' ? tab.syncVersion + 1 : tab.syncVersion
+          }
+        }
         return {
           ...tab,
           realPath: res.realPath ?? tab.realPath,
@@ -186,20 +213,36 @@ export function useCodeEditor(projectDir: string | null) {
     }
 
     // Deduplicate if another tab already holds the same canonical realPath (e.g. symlink).
-    const existingDuplicate = tabsRef.current.find((tab) => tab.id !== tabId && tab.realPath === res.realPath)
+    const existingDuplicate = res.realPath && tabsRef.current.find((tab) => tab.id !== tabId && tab.realPath === res.realPath)
     if (existingDuplicate) {
       unwatchPath(path)
       setTabs((prev) => prev.filter((tab) => tab.id !== tabId))
-      setActiveId(existingDuplicate.id)
-      setFocusToken((n) => n + 1)
+      if (activeIdRef.current === tabId) {
+        setActiveId(existingDuplicate.id)
+        setFocusToken((n) => n + 1)
+      }
       return
     }
 
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== tabId) return tab
       // If a silent reload raced with the user typing, avoid clobbering their draft.
-      if (silentReload && isTabDirty(tab)) {
+      if (silentReload && (isTabDirty(tab) || tab.saving)) {
         return { ...tab, externalChange: 'modified' }
+      }
+      if (!res.ok) {
+        return {
+          ...exitDiffState(tab),
+          status: 'image',
+          viewMode: 'preview',
+          realPath: res.realPath ?? null,
+          size: res.size ?? 0,
+          syncVersion: tab.syncVersion + 1,
+          externalChange: null,
+          conflictMtimeMs: null,
+          loadingDiff: false,
+          error: undefined
+        }
       }
       return {
         ...applyAcceptDiskVersion(tab, {
@@ -208,6 +251,9 @@ export function useCodeEditor(projectDir: string | null) {
           size: res.size
         }),
         realPath: res.realPath,
+        viewMode: tab.status === 'loading' || tab.status === 'image'
+          ? (/\.svg$/i.test(res.realPath) ? 'preview' : 'source')
+          : tab.viewMode,
         eol: res.eol,
         language: res.language,
         loadingDiff: false,
@@ -218,11 +264,10 @@ export function useCodeEditor(projectDir: string | null) {
   }, [removeTabsNow, unwatchPath, watchPath])
 
   const openFile = useCallback((path: string, workspaceOverride?: string | null) => {
-    const trimmed = path.trim()
-    if (!trimmed) return
+    if (!path.trim()) return
     const ws = workspaceOverride !== undefined ? workspaceOverride : projectDir
 
-    const existing = tabsRef.current.find((tab) => tab.path === trimmed || tab.realPath === trimmed)
+    const existing = tabsRef.current.find((tab) => tab.path === path || tab.realPath === path)
     if (existing) {
       setOpen(true)
       setActiveId(existing.id)
@@ -233,12 +278,12 @@ export function useCodeEditor(projectDir: string | null) {
       return
     }
 
-    const newTab = makeLoadingTab(trimmed, ws)
+    const newTab = makeLoadingTab(path, ws)
     setTabs((prev) => [...prev, newTab])
     setActiveId(newTab.id)
     setOpen(true)
     setFocusToken((n) => n + 1)
-    void loadTabContent(newTab.id, trimmed, ws)
+    void loadTabContent(newTab.id, path, ws)
   }, [projectDir, loadTabContent])
 
   const updateContent = useCallback((tabId: string, nextContent: string) => {
@@ -291,7 +336,8 @@ export function useCodeEditor(projectDir: string | null) {
           mtimeMs: res.mtimeMs,
           size: res.size
         }),
-        saving: false
+        saving: false,
+        syncVersion: /\.svg$/i.test(item.realPath ?? item.path) ? item.syncVersion + 1 : item.syncVersion
       }
     }))
     return true
@@ -302,6 +348,10 @@ export function useCodeEditor(projectDir: string | null) {
     if (!tab) return
     void loadTabContent(tab.id, tab.path, tab.workspaceDir, false)
   }, [loadTabContent])
+
+  const setTabViewMode = useCallback((tabId: string, viewMode: EditorViewMode) => {
+    setTabs((prev) => prev.map((tab) => tab.id === tabId && tab.status === 'ready' ? { ...tab, viewMode } : tab))
+  }, [])
 
   const dismissExternalChange = useCallback((tabId: string) => {
     setTabs((prev) => prev.map((item) => (item.id === tabId ? { ...item, externalChange: null } : item)))
@@ -363,10 +413,12 @@ export function useCodeEditor(projectDir: string | null) {
       )
       for (const tab of matched) {
         if (event.deleted) {
-          setTabs((prev) => prev.map((item) => (item.id === tab.id ? { ...item, externalChange: 'deleted' } : item)))
+          setTabs((prev) => prev.map((item) => item.id === tab.id ? {
+            ...item, externalChange: 'deleted', syncVersion: item.viewMode === 'preview' ? item.syncVersion + 1 : item.syncVersion
+          } : item))
           continue
         }
-        if (tab.status !== 'ready') continue
+        if (tab.status !== 'ready' && tab.status !== 'image') continue
         if (!isTabDirty(tab) && !tab.saving) {
           void loadTabContent(tab.id, tab.path, tab.workspaceDir, true)
         } else {
@@ -393,7 +445,7 @@ export function useCodeEditor(projectDir: string | null) {
       saveWorkspaceEditorState(prev, {
         tabs: prevTabs.map((tab) => tab.path),
         activePath: prevActive?.path ?? prevTabs[0]?.path ?? null,
-        open: openRef.current && prevTabs.length > 0
+        open: openRef.current
       })
     }
 
@@ -407,12 +459,17 @@ export function useCodeEditor(projectDir: string | null) {
         hasDirtyStale = dirtyTabs.length > 0
         if (cleanIds.length) removeTabsNow(cleanIds, !hasDirtyStale)
         if (dirtyTabs.length) {
+          setOpen(true)
           setPendingClose({
             kind: 'workspace',
             tabIds: dirtyTabs.map((tab) => tab.id),
             names: dirtyTabs.map((tab) => tab.name)
           })
         }
+      }
+      if (!hasDirtyStale) {
+        setOpen(false)
+        setMaximized(false)
       }
     }
 
@@ -423,6 +480,7 @@ export function useCodeEditor(projectDir: string | null) {
     const saved = loadWorkspaceEditorState(projectDir)
     if (!saved || !saved.tabs.length) {
       restoredWorkspaceRef.current = projectDir
+      if (saved?.open) setOpen(true)
       return
     }
 
@@ -465,7 +523,7 @@ export function useCodeEditor(projectDir: string | null) {
     saveWorkspaceEditorState(projectDir, {
       tabs: wsTabs.map((tab) => tab.path),
       activePath: active?.path ?? wsTabs[0]?.path ?? null,
-      open: open && wsTabs.length > 0
+      open
     })
   }, [projectDir, tabs, activeId, open])
 
@@ -494,6 +552,16 @@ export function useCodeEditor(projectDir: string | null) {
     setMaximized(false)
   }, [removeTabsNow])
 
+  const togglePanel = useCallback(() => {
+    if (openRef.current) {
+      setOpen(false)
+      setMaximized(false)
+    } else {
+      setOpen(true)
+      setFocusToken((n) => n + 1)
+    }
+  }, [])
+
   const resolvePendingClose = useCallback(async (action: 'save' | 'discard' | 'cancel') => {
     const prompt = pendingClose
     if (!prompt) return
@@ -515,7 +583,7 @@ export function useCodeEditor(projectDir: string | null) {
       }
     }
     setPendingClose(null)
-    removeTabsNow(prompt.tabIds, true)
+    removeTabsNow(prompt.tabIds, prompt.kind !== 'tab')
     if (prompt.kind === 'panel') {
       setOpen(false)
       setMaximized(false)
@@ -546,6 +614,8 @@ export function useCodeEditor(projectDir: string | null) {
     openConflictDiff,
     toggleUnsavedDiff,
     exitDiff,
+    setTabViewMode,
+    togglePanel,
     requestCloseTab,
     requestClosePanel,
     resolvePendingClose

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   loadWorkspaceEditorState,
+  loadWorkspaceTreeOpen,
   MAX_PERSISTED_WORKSPACES,
   readWorkspaceEditorStore,
   resolveRestoredWorkspaceTabs,
@@ -63,6 +64,23 @@ describe('editorPersistence', () => {
       activePath: null,
       open: false
     })
+  })
+
+  it('defaults the tree to open and persists each workspace folding preference without tabs', () => {
+    const storage = createMemoryStorage()
+    expect(loadWorkspaceTreeOpen('/proj/a', storage)).toBe(true)
+    saveWorkspaceEditorState('/proj/a', { treeOpen: false, open: true }, storage)
+    saveWorkspaceEditorState('/proj/b', { width: 650 }, storage)
+    saveWorkspaceEditorState('/proj/a', { tabs: [] }, storage)
+
+    expect(loadWorkspaceTreeOpen('/proj/a', storage)).toBe(false)
+    expect(loadWorkspaceTreeOpen('/proj/b', storage)).toBe(true)
+    expect(resolveRestoredWorkspaceTabs(loadWorkspaceEditorState('/proj/a', storage), {})).toEqual({
+      tabs: [], activePath: null, open: true
+    })
+
+    saveWorkspaceEditorState('/proj/a', { treeOpen: true }, storage)
+    expect(loadWorkspaceTreeOpen('/proj/a', storage)).toBe(true)
   })
 
   it('enforces LRU cap across workspaces and survives corrupt storage', () => {

@@ -3,7 +3,7 @@ import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import type { OutputFileRef } from '@shared/chat'
 import { deriveRelativePath, extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, joinPosixRelative, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
-import type { FileChange, ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { FileSearchMenu } from '../components/FileSearchMenu'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
@@ -51,7 +51,7 @@ import {
 } from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
 import { Markdown, MarkdownBase, OutputImage } from '../components/Markdown'
-import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconMaximize, IconMinimize, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
+import { IconAlert, IconArchive, IconArrowRight, IconArrowUp, IconAt, IconCheck, IconChevronDown, IconClock, IconCompact, IconCopy, IconEdit, IconFile, IconFolder, IconFolderTree, IconMaximize, IconMinimize, IconPlus, IconQuote, IconRefresh, IconSidebar, IconStop, IconTerminal, IconX, Spinner } from '../components/icons'
 import { findModel, getModelList, loadModels, useModels, useModelsVersion } from '../state/models'
 import {
   activeThread,
@@ -553,13 +553,6 @@ export function WorkbenchPage() {
   const gitTools = showGitTools && git.status ? { status: git.status, disabled: git.disabled, run: git.run } : null
   const conflictLabel = gitTools ? gitConflictLabel(gitTools.status.inProgress, gitTools.status.conflicts) : null
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
-  const gitStatusByRelPath = useMemo(() => {
-    const map = new Map<string, FileChange['status']>()
-    for (const file of fc.changes?.files ?? []) {
-      map.set(file.path, file.status)
-    }
-    return map
-  }, [fc.changes?.files])
 
   const openRewind = useCallback(
     async (msg: UserMessage) => {
@@ -687,6 +680,12 @@ export function WorkbenchPage() {
               ) : (
                 <span className="text-[13px] text-ink-2">{t('chg.short')}</span>
               )}
+            </button>
+            <button type="button" onClick={codeEditor.togglePanel}
+              className={pill + ` gap-1.5 px-3 ${codeEditor.open ? 'bg-surface-2 text-accent' : ''}`}
+              title={t('editor.togglePanel')} aria-label={t('editor.togglePanel')} aria-pressed={codeEditor.open}>
+              <IconFolderTree size={15} />
+              <span className="text-[13px]">{t('editor.panelShort')}</span>
             </button>
           </div>
         </div>
@@ -995,14 +994,16 @@ export function WorkbenchPage() {
           tabs={codeEditor.tabs}
           activeTab={codeEditor.activeTab}
           projectDir={ctx.projectDir}
+          home={info?.realHome ?? null}
           maximized={codeEditor.maximized}
           focusToken={codeEditor.focusToken}
           pendingClose={codeEditor.pendingClose}
-          gitStatusByRelPath={gitStatusByRelPath}
+          changedFiles={fc.changes?.files ?? []}
           onToggleMaximize={() => codeEditor.setMaximized((v) => !v)}
           onSelectTab={codeEditor.selectTab}
           onSelectAdjacentTab={codeEditor.selectAdjacentTab}
           onOpenFile={codeEditor.openFile}
+          onSetTabViewMode={codeEditor.setTabViewMode}
           onCloseTab={codeEditor.requestCloseTab}
           onClosePanel={codeEditor.requestClosePanel}
           onChangeContent={codeEditor.updateContent}
@@ -2166,6 +2167,7 @@ function Composer({
     const onWinKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return
       const active = document.activeElement as HTMLElement | null
+      if (active?.closest('[data-editor-panel]')) return
       if (active === ta.current) return // handled by textarea onKeyDown
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable || active.closest('.xterm'))) return
       e.preventDefault()
@@ -2318,7 +2320,7 @@ function Composer({
       if (event.key !== 'Escape' || event.defaultPrevented) return
       const el = ta.current
       if (!el || (!expanded && event.target !== el)) return
-      if (event.target instanceof Element && event.target.closest('.xterm')) return
+      if (event.target instanceof Element && event.target.closest('.xterm, [data-editor-panel]')) return
       const action = composerEscapeAction({
         expanded, composing: composingRef.current || event.isComposing || event.keyCode === 229,
         higherLayer: escLayers() > 0, extensionsOpen: extOpen, mention: !!mention, slash: !!slash, file: fileOpen, ghost

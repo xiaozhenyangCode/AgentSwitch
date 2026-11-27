@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, sy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EDITOR_MAX_BYTES, detectEditorLanguage, isKnownBinaryPath, type EditorEol, type EditorFileChangedEvent } from '@shared/editor'
+import { EDITOR_MAX_BYTES, detectEditorLanguage, isKnownBinaryPath, isPreviewableEditorImage, type EditorEol, type EditorFileChangedEvent } from '@shared/editor'
 import { EditorFileWatcher, listEditorDir, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
 import { allowFile, allowRoot, isAllowedEditorAttachment, isAllowedEditorWorkspace } from './fileProtocol'
 
@@ -115,9 +115,20 @@ describe('editor file reads and saves', () => {
     ['extensionless', Buffer.from('x'.repeat(8191) + '\0')]
   ])('rejects binary content in %s even on a forced save', async (name, data) => {
     const path = await fixture(name, data)
-    expect(await readEditorFile({ path, workspaceDir })).toMatchObject({ ok: false, code: 'BINARY_FILE', realPath: path })
+    expect(await readEditorFile({ path, workspaceDir })).toMatchObject({
+      ok: false, code: 'BINARY_FILE', realPath: path, size: Buffer.byteLength(data)
+    })
     expect(await saveEditorFile({ path, workspaceDir, force: true, expectedMtimeMs: 0, content: 'text' }))
       .toMatchObject({ ok: false, code: 'BINARY_FILE' })
+  })
+
+  it('recognizes supported editor image extensions without classifying unrelated files as images', () => {
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']) {
+      expect(isPreviewableEditorImage('/workspace/preview.' + ext.toUpperCase())).toBe(true)
+    }
+    for (const path of ['archive.svgz', 'image.png.txt', 'photo.heic', 'file.pdf', '/workspace/png']) {
+      expect(isPreviewableEditorImage(path)).toBe(false)
+    }
   })
 
   it('rejects a stale save, then allows explicit force', async () => {
