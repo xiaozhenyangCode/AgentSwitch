@@ -157,10 +157,12 @@ export async function refreshOAuthCredentials(
     return quotaFailure('Invalid OAuth issuer')
   }
   signal?.throwIfAborted()
+  const scopes = claude && Array.isArray(tokens.scopes) ? tokens.scopes.filter(tokenString) : []
   const response = await post(endpoint.href, {
     grant_type: 'refresh_token',
     refresh_token: tokens[refresh],
-    client_id: claude ? '9d1c250a-e61b-44d9-88ed-5944d1962f5e' : provenance?.client_id || 'app_EMoamEEZ73f0CkXaXp7hrann'
+    client_id: claude ? '9d1c250a-e61b-44d9-88ed-5944d1962f5e' : provenance?.client_id || 'app_EMoamEEZ73f0CkXaXp7hrann',
+    ...(scopes.length ? { scope: scopes.join(' ') } : {})
   })
   signal?.throwIfAborted()
   const latest = await store.read()

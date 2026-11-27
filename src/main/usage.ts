@@ -1108,7 +1108,8 @@ function oauthPost(id: ProfileId, signal: AbortSignal, kind: 'claude' | 'codex')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    ...(kind === 'claude' ? { 'User-Agent': 'claude-code/2.1.0' } : {})
+    // Match Claude Code's axios client UA; platform.claude.com/v1/oauth/token WAF returns 429 for curl/* and claude-code/* UAs.
+    ...(kind === 'claude' ? { 'User-Agent': 'axios/1.8.4' } : {})
   }
   return (url: string, body: Record<string, string>) =>
     oauthHttp(url, headers, buildSpawnSpec(id, 'run', undefined, false).env, signal, JSON.stringify(body))

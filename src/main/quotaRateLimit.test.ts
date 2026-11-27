@@ -341,7 +341,7 @@ describe('OAuth provider quota integration', () => {
     expect(runAgentMock).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(failure === 'invalid_grant' ? 2 : 1)
     if (failure === 'invalid_grant') {
-      expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ 'User-Agent': 'claude-code/2.1.0', Accept: 'application/json' })
+      expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ 'User-Agent': 'axios/1.8.4', Accept: 'application/json' })
     }
   })
 
