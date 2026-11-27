@@ -2679,8 +2679,8 @@ function Composer({
               onRebindProject={viewing.source === 'workspace-file' ? onRebindProject : undefined} onClose={() => setViewing(null)} />
           )}
           {atts.length > 0 && (
-            <div className="max-h-[96px] shrink-0 overflow-y-auto px-4 pt-3">
-              <AttachmentBar items={atts} projectDir={projectDir} revision={previewRevision}
+            <div className="shrink-0 px-4 pt-3">
+              <AttachmentBar variant="cards" items={atts} projectDir={projectDir} revision={previewRevision}
                 onOpen={(a) => setViewing(a.id)} onRemove={removeAttachment} />
             </div>
           )}
