@@ -32,7 +32,7 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { escLayers, useEscape } from '../lib/escStack'
 import { COMPOSER_MAX_HEIGHT, composerEscapeAction, nextComposerExpanded, showComposerExpand } from '../lib/composerExpand'
-import { applyFileReference, insertFileReferenceAtCaret, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
+import { applyFileReference, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
 import { attachmentRefLabel, COMPOSER_ATTACHMENT_LIMIT, mergeAttachments, removeFileReferences, scanFileReferences, type FileReferenceSpan } from '@shared/fileReferences'
 import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
@@ -183,7 +183,7 @@ function mirrorSegments(text: string, spans: { index: number; length: number }[]
   for (const s of spans) {
     if (s.index > at) out.push(text.slice(at, s.index))
     out.push(
-      <span key={s.index} className="mention-capsule rounded-[5px] bg-accent/18 text-accent">
+      <span key={s.index} spellCheck={false} className="mention-capsule text-accent">
         {text.slice(s.index, s.index + s.length)}
       </span>
     )
@@ -1206,8 +1206,8 @@ function renderUserText({ text, mentions, attachments }: UserMessage, onOpen: (a
   const chips = refs.map(({ start, end, index }): { start: number; end: number; node: ReactNode } => {
     const a = attachments[index]
     return { start, end, node: (
-      <button key={start} type="button" title={attachmentTitle(a)} onClick={() => onOpen(a)}
-        className="inline-flex max-w-full items-center gap-1 rounded-md bg-white/25 px-1.5 align-baseline text-white hover:bg-white/35">
+      <button key={start} type="button" spellCheck={false} title={attachmentTitle(a)} onClick={() => onOpen(a)}
+        className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded bg-white/25 px-1.5 py-0.5 align-baseline leading-tight text-white hover:bg-white/35">
         <IconFile size={12} className="shrink-0" aria-hidden="true" /> <span className="truncate">{a.refLabel || a.name}</span>
       </button>
     ) }
@@ -2347,11 +2347,6 @@ function Composer({
     applyReferenceEdit(el, applyFileReference(el.value, match.start, el.selectionStart, attachmentRefLabel(attachment)))
   }
 
-  const insertAttachment = (a: Attachment) => {
-    const el = ta.current
-    if (!el || composingRef.current) return
-    applyReferenceEdit(el, insertFileReferenceAtCaret(el.value, el.selectionStart, el.selectionEnd, attachmentRefLabel(a)))
-  }
 
   const removeAttachment = (a: Attachment) => {
     setAtts((items) => items.filter((item) => item.id !== a.id))
@@ -2684,9 +2679,9 @@ function Composer({
               onRebindProject={viewing.source === 'workspace-file' ? onRebindProject : undefined} onClose={() => setViewing(null)} />
           )}
           {atts.length > 0 && (
-            <div className="max-h-[96px] shrink-0 overflow-y-auto px-4 pt-4">
+            <div className="max-h-[96px] shrink-0 overflow-y-auto px-4 pt-3">
               <AttachmentBar items={atts} projectDir={projectDir} revision={previewRevision}
-                onOpen={(a) => setViewing(a.id)} onInsert={insertAttachment} onRemove={removeAttachment} />
+                onOpen={(a) => setViewing(a.id)} onRemove={removeAttachment} />
             </div>
           )}
 
@@ -2712,6 +2707,7 @@ function Composer({
             <div
               ref={mirror}
               aria-hidden
+              spellCheck={false}
               className={`pointer-events-none absolute inset-y-0 left-0 overflow-hidden text-ink ${editorText}`}
             >
               {mirrorSegments(text, mentionSpans)}
@@ -2719,6 +2715,7 @@ function Composer({
             <textarea
               ref={ta}
               rows={1}
+              spellCheck={false}
               onScroll={syncMirror}
               value={text}
               aria-autocomplete={fileOpen ? 'list' : undefined}

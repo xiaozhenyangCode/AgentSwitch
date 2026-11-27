@@ -39,4 +39,15 @@ describe('project file references', () => {
     const next = insertFileReferenceAtCaret('compare this with next', 8, 12, 'my screenshot.png')
     expect(next).toEqual({ value: 'compare #`my screenshot.png` with next', caret: 28 })
   })
+
+  it('keeps consecutive # file references cleanly separated without duplicating an existing space', () => {
+    const first = applyFileReference('#git', 0, 4, '.gitignore')
+    expect(first).toEqual({ value: '#.gitignore ', caret: 12 })
+
+    const second = applyFileReference(first.value + '#CON', first.caret, first.caret + 4, 'CONTRIBUTING.md')
+    expect(second).toEqual({ value: '#.gitignore #CONTRIBUTING.md ', caret: 29 })
+
+    const beforeSpace = applyFileReference('#git and more', 0, 4, '.gitignore')
+    expect(beforeSpace).toEqual({ value: '#.gitignore and more', caret: 12 })
+  })
 })

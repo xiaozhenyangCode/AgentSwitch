@@ -18,8 +18,10 @@ export function matchFileTrigger(value: string, caret: number): FileTrigger | nu
 }
 
 export function applyFileReference(value: string, start: number, caret: number, label: string) {
-  const reference = formatComposerFileRef(label) + ' '
-  return { value: value.slice(0, start) + reference + value.slice(caret), caret: start + reference.length }
+  const after = value.slice(caret)
+  const hasTrailingSpace = /^[ \t]/.test(after)
+  const reference = formatComposerFileRef(label) + (hasTrailingSpace ? '' : ' ')
+  return { value: value.slice(0, start) + reference + after, caret: start + reference.length + (hasTrailingSpace ? 1 : 0) }
 }
 
 export function insertFileReferenceAtCaret(value: string, start: number, end: number, label: string) {

@@ -459,12 +459,22 @@ label {
   to { opacity: 1; }
 }
 
-/* @mention in the composer mirror: the soft background grows through box-shadow only, so the
-   glyphs keep their exact textarea positions (no padding / margin) */
+/* @mention / #file reference in the composer mirror: subtle 1px spread + inset ring keeps
+   adjacent space-separated tags visually distinct while keeping exact textarea caret alignment */
 .mention-capsule {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+.dark .mention-capsule {
+  background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 /* CollapsibleBody: the part revealed by 展开全部 fades in (opacity only, no layout per frame) */
