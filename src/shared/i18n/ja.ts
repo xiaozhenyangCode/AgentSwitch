@@ -173,6 +173,7 @@ export const ja: Dict = {
   'usage.rolling': 'ローリング枠',
   'usage.noWindow': 'この枠はありません',
   'usage.currentModel': '現在のモデル',
+  'usage.quotaGroupSwitch': 'モデル使用枠を切り替え',
   'usage.today': '今日 {n}',
   'usage.noQuota': '使用枠のデータなし',
   'usage.quotaAge': '使用枠データ {ago}',

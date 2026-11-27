@@ -182,6 +182,7 @@ export const zhTW: Dict = {
   'usage.rolling': '滾動視窗',
   'usage.noWindow': '無此視窗',
   'usage.currentModel': '當前模型',
+  'usage.quotaGroupSwitch': '切換模型額度池',
   'usage.today': '今日 {n}',
   'usage.noQuota': '不提供額度資料',
   'usage.quotaAge': '額度資料 {ago}',

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
+import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaGroup, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
 import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { useApp } from '../state/AppContext'
@@ -23,7 +23,7 @@ import {
   useUsage
 } from '../state/usage'
 import { KindAvatar, Modal, ProfileAvatar } from './common'
-import { IconChevronDown, IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
+import { IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
 import { RequestLogView } from './RequestLogView'
 
 const STALE = 6 * 3600_000
@@ -85,69 +85,122 @@ export function QuotaMeter({ kind, label, w, stale, title }: { kind: ProfileKind
   )
 }
 
-function useOutsideClose(open: boolean, close: () => void) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && close()
-    window.addEventListener('mousedown', h)
-    return () => window.removeEventListener('mousedown', h)
-  }, [open, close])
-  return ref
+const MAX_GROUP_LABEL_LEN = 16
+
+/** Compact label for a quota pool segmented control tab. */
+export function formatQuotaGroupLabel(group: Pick<QuotaGroup, 'key' | 'name'>): string {
+  const key = group.key.trim().toLowerCase()
+  const name = group.name.trim()
+  if (key === 'gemini' || /^gemini\s+models?$/i.test(name)) return 'Gemini'
+  if (key === '3p' || /^claude\s+(?:and|&)\s+gpt(?:\s+models?)?$/i.test(name)) return 'Claude & GPT'
+  const compact = (name || group.key.trim())
+    .replace(/\s+models?$/i, '')
+    .replace(/\s+and\s+/gi, ' & ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!compact) return group.key
+  return compact.length > MAX_GROUP_LABEL_LEN ? `${compact.slice(0, MAX_GROUP_LABEL_LEN - 1).trimEnd()}…` : compact
 }
 
-/** agy: chip naming the quota group in use; hover / click shows every group. */
-function QuotaGroupChip({ u, model }: { u: AccountUsage | undefined; model?: string | null }) {
-  const [open, setOpen] = useState(false)
-  const [pinned, setPinned] = useState(false)
-  const close = useCallback(() => {
-    setOpen(false)
-    setPinned(false)
-  }, [])
-  const ref = useOutsideClose(open, close)
-  const q = u?.quota
-  const eff = effectiveQuota(u, model)
-  if (!q?.groups?.length || !eff.group) return null
+export type QuotaGroupAlert = 'danger' | 'warn' | null
+
+/** Alert dot level for a quota pool: red if rate-limited or >=100%, orange if >=80%, else null. */
+export function quotaGroupAlertLevel(
+  group: Pick<QuotaGroup, 'fiveHour' | 'sevenDay'>,
+  opts?: { limited?: boolean; warnThreshold?: number }
+): QuotaGroupAlert {
+  const five = liveWindow(group.fiveHour)
+  const seven = liveWindow(group.sevenDay)
+  const maxPct = Math.max(five ? pctOf(five) : 0, seven ? pctOf(seven) : 0)
+  if (opts?.limited || maxPct >= 100) return 'danger'
+  if (maxPct >= (opts?.warnThreshold ?? 80)) return 'warn'
+  return null
+}
+
+/** Resolve which quota pool should be active for a card (selected if still valid, else active model's pool). */
+export function resolveActiveQuotaGroup(
+  groups: QuotaGroup[] | undefined,
+  selectedKey: string | null | undefined,
+  defaultGroup: QuotaGroup | null | undefined
+): QuotaGroup | null {
+  if (!groups?.length) return null
+  if (selectedKey) {
+    const matched = groups.find((g) => g.key === selectedKey)
+    if (matched) return matched
+  }
+  return defaultGroup ?? groups[0]
+}
+
+/** Hover tooltip text for a quota pool segment: full name, included models, and 5h / 7d summary. */
+export function formatQuotaGroupTooltip(
+  group: QuotaGroup,
+  opts?: { isDefault?: boolean; limited?: boolean }
+): string {
+  const five = liveWindow(group.fiveHour)
+  const seven = liveWindow(group.sevenDay)
+  const fiveText = five ? `${Math.round(pctOf(five))}%` : '—'
+  const sevenText = seven ? `${Math.round(pctOf(seven))}%` : '—'
+  const isLimited = !!opts?.limited || (five ? pctOf(five) >= 100 : false) || (seven ? pctOf(seven) >= 100 : false)
+  const title = (group.name.trim() || group.key) + (opts?.isDefault ? ` (${t('usage.currentModel')})` : '')
+  const modelsLine = group.models.length ? group.models.join(' · ') : ''
+  const usageLine = `5h ${fiveText} · 7d ${sevenText}${isLimited ? t('usage.limitedSuffix') : ''}`
+  return [title, modelsLine, usageLine].filter(Boolean).join('\n')
+}
+
+/** Compact macOS-style segmented control for switching an account's quota pools inline. */
+function QuotaGroupSegmentedControl({
+  groups,
+  activeKey,
+  defaultKey,
+  accountRateLimited,
+  onSelect
+}: {
+  groups: QuotaGroup[]
+  activeKey: string
+  defaultKey: string | null
+  accountRateLimited: boolean
+  onSelect: (key: string) => void
+}) {
+  if (groups.length <= 1) return null
+  const dense = groups.length > 3
   return (
-    <div ref={ref} className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => !pinned && setOpen(false)}>
-      <button
-        onClick={() => {
-          setPinned((p) => !p)
-          setOpen(true)
-        }}
-        className={`flex h-[22px] items-center gap-1 rounded-md border px-2 text-[11.5px] font-medium transition-colors ${open ? 'border-black/[0.14] bg-black/[0.03] text-ink' : 'border-black/[0.09] text-ink-2 hover:text-ink'}`}
-      >
-        {eff.group.name}
-        <IconChevronDown size={11} />
-      </button>
-      {open && (
-        // right-aligned to the chip (it sits at the card's right edge) so the panel opens inwards;
-        // pt bridges the gap so moving the pointer onto it doesn't close the hover popover
-        <div className="absolute top-full right-0 z-40 w-[360px] max-w-[calc(100vw-64px)] pt-1.5">
-          <div className="max-h-[min(420px,60vh)] overflow-y-auto rounded-xl bg-surface p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_36px_rgba(0,0,0,0.18)]">
-            {q.groups.map((g) => {
-              const five = liveWindow(g.fiveHour)
-              const seven = liveWindow(g.sevenDay)
-              const cur = g.key === eff.group?.key
-              return (
-                <div key={g.key} className={`rounded-lg px-2.5 py-2 ${cur ? 'bg-accent/[0.06]' : ''}`}>
-                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink">
-                    {g.name}
-                    {cur && <span className="rounded bg-accent/10 px-1 text-[10.5px] font-medium text-accent">{t('usage.currentModel')}</span>}
-                  </div>
-                  <div className="mt-0.5 truncate text-[11px] text-ink-3" title={g.models.join(', ')}>
-                    {g.models.join(' · ')}
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-3">
-                    <QuotaMeter kind="gemini" label="5h" w={g.fiveHour ? five : null} stale={false} />
-                    <QuotaMeter kind="gemini" label="7d" w={g.sevenDay ? seven : null} stale={false} />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+    <div
+      role="tablist"
+      aria-label={t('usage.quotaGroupSwitch')}
+      className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-[7px] bg-black/[0.055] p-0.5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)] [scrollbar-width:none] dark:bg-canvas dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] [&::-webkit-scrollbar]:hidden"
+    >
+      {groups.map((g) => {
+        const selected = g.key === activeKey
+        const isDefault = g.key === defaultKey
+        const groupLimited = accountRateLimited && isDefault
+        const alert = !selected ? quotaGroupAlertLevel(g, { limited: groupLimited }) : null
+        const label = formatQuotaGroupLabel(g)
+        return (
+          <button
+            key={g.key}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            title={formatQuotaGroupTooltip(g, { isDefault, limited: groupLimited })}
+            onClick={() => onSelect(g.key)}
+            className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-[5px] text-[11px] leading-none whitespace-nowrap transition-all ${
+              dense ? 'px-1.5' : 'px-2'
+            } ${
+              selected
+                ? 'bg-surface font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.06)] dark:bg-fill-hover dark:shadow-[0_1px_2px_rgba(0,0,0,0.35),0_0_0_0.5px_rgba(255,255,255,0.12)]'
+                : 'text-ink-2 hover:text-ink'
+            }`}
+          >
+            <span>{label}</span>
+            {alert && (
+              <span
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${alert === 'danger' ? 'bg-red' : 'bg-orange'}`}
+              />
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -160,16 +213,21 @@ const todayBrief = (u: AccountUsage | undefined) => {
 }
 
 /** The two fixed-width quota cells of an account row (5h | 7d); one spanning note when there is no data. */
-function AccountQuotaCells({ kind, u, model }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null }) {
+function AccountQuotaCells({ kind, u, model, group }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null; group?: QuotaGroup | null }) {
   const q = u?.quota
   if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">{t('usage.noQuota')}</div>
   const eff = effectiveQuota(u, model)
+  const fiveRaw = group ? group.fiveHour : eff.fiveHour
+  const sevenRaw = group ? group.sevenDay : eff.sevenDay
+  const five = fiveRaw ? liveWindow(fiveRaw) : null
+  const seven = sevenRaw ? liveWindow(sevenRaw) : null
   const stale = Date.now() - q.fetchedAt > STALE
-  const tip = t('usage.quotaAge', { ago: fmtAgo(q.fetchedAt) }) + (q.limited && !stale ? t('usage.limitedSuffix') : '')
+  const groupLimited = group ? (five ? pctOf(five) >= 100 : false) || (seven ? pctOf(seven) >= 100 : false) : q.limited
+  const tip = t('usage.quotaAge', { ago: fmtAgo(q.fetchedAt) }) + (groupLimited && !stale ? t('usage.limitedSuffix') : '')
   return (
     <>
-      <QuotaMeter kind={kind} label="5h" w={eff.fiveHour ? liveWindow(eff.fiveHour) : null} stale={stale} title={tip} />
-      <QuotaMeter kind={kind} label="7d" w={eff.sevenDay ? liveWindow(eff.sevenDay) : null} stale={stale} title={tip} />
+      <QuotaMeter kind={kind} label="5h" w={five} stale={stale} title={tip} />
+      <QuotaMeter kind={kind} label="7d" w={seven} stale={stale} title={tip} />
     </>
   )
 }
@@ -230,6 +288,14 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   const { openLogin } = useApp()
   const snap = useUsage()
   const u = snap?.accounts[p.id]
+  const groups = u?.quota?.groups
+  const eff = effectiveQuota(u, p.defaultModel)
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
+  useEffect(() => {
+    setSelectedGroupKey(null)
+  }, [p.defaultModel])
+  const activeGroup = resolveActiveQuotaGroup(groups, selectedGroupKey, eff.group)
+  const hasGroupSwitcher = !!(groups && groups.length > 1 && activeGroup)
   const level = quotaLevel(p, u)
   const authExpired = u?.quotaErrorKind === 'auth_expired'
   const isErrorRateLimited = u?.quotaErrorKind === 'rate_limited'
@@ -248,29 +314,42 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
         : (level.reason ?? t('status.rateLimited'))
   return (
     <div className={`${CARD} px-4 py-3.5`}>
-      <div className="flex min-w-0 items-center gap-2">
-        <ProfileAvatar profile={p} size={22} />
-        <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
-        {idlest && !authExpired && (
-          <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
-            {t('usage.idlest')}
-          </span>
-        )}
-        {authExpired ? null : notReadyBadge ? (
-          <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
-        ) : limited ? (
-          <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
-        ) : null}
-        <span className="flex-1" />
-        <QuotaGroupChip u={u} model={p.defaultModel} />
-        {authExpired && (
-          <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-px text-[11px] font-medium text-warn">{t('usage.authExpiredBadge')}</span>
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <ProfileAvatar profile={p} size={22} />
+          <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
+          {idlest && !authExpired && (
+            <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
+              {t('usage.idlest')}
+            </span>
+          )}
+          {authExpired ? null : notReadyBadge ? (
+            <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
+          ) : limited ? (
+            <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
+          ) : null}
+        </div>
+        {(hasGroupSwitcher || authExpired) && (
+          <div className={`flex min-w-0 shrink-0 items-center gap-1.5 ${groups && groups.length > 3 ? 'max-w-[58%]' : 'max-w-[65%]'}`}>
+            {hasGroupSwitcher && (
+              <QuotaGroupSegmentedControl
+                groups={groups!}
+                activeKey={activeGroup!.key}
+                defaultKey={eff.group?.key ?? null}
+                accountRateLimited={isRateLimited}
+                onSelect={setSelectedGroupKey}
+              />
+            )}
+            {authExpired && (
+              <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-px text-[11px] font-medium text-warn">{t('usage.authExpiredBadge')}</span>
+            )}
+          </div>
         )}
       </div>
       {u?.quota ? (
         <>
           <div className="mt-3 grid grid-cols-2 gap-5">
-            <AccountQuotaCells kind={p.kind} u={u} model={p.defaultModel} />
+            <AccountQuotaCells kind={p.kind} u={u} model={p.defaultModel} group={activeGroup} />
           </div>
           <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
             {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}

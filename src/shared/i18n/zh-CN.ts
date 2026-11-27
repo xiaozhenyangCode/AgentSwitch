@@ -184,6 +184,7 @@ export const zhCN = {
   'usage.rolling': '滚动窗口',
   'usage.noWindow': '无此窗口',
   'usage.currentModel': '当前模型',
+  'usage.quotaGroupSwitch': '切换模型额度池',
   'usage.today': '今日 {n}',
   'usage.noQuota': '不提供额度数据',
   'usage.quotaAge': '额度数据 {ago}',

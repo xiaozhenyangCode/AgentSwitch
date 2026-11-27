@@ -173,6 +173,7 @@ export const en: Dict = {
   'usage.rolling': 'Rolling window',
   'usage.noWindow': 'No such window',
   'usage.currentModel': 'Current model',
+  'usage.quotaGroupSwitch': 'Switch model quota pool',
   'usage.today': 'Today {n}',
   'usage.noQuota': 'No quota data',
   'usage.quotaAge': 'Quota data {ago}',
