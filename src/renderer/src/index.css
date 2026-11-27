@@ -213,6 +213,12 @@ label {
   padding: 8px 0 0 12px;
 }
 
+.cm-agentswitch-host,
+.cm-agentswitch-host .cm-editor {
+  height: 100%;
+  user-select: text;
+}
+
 /* Slim, auto-hiding scrollbars: invisible at rest (even with an external mouse), shown on scroll/hover/drag with zero layout shift */
 ::-webkit-scrollbar {
   width: 6px;

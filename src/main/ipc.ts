@@ -103,7 +103,9 @@ import { forgetModels, forgetModelsByKind, listModels, refreshModelsByKind } fro
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
-import { allowFile, allowRoot, attachmentsDir, isAllowedPath } from './fileProtocol'
+import { allowFile, allowRoot, attachmentsDir, isAllowedEditorAttachment, isAllowedEditorWorkspace, isAllowedPath } from './fileProtocol'
+import { EditorFileWatcher, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
+import type { EditorActionResult, EditorReadRequest, EditorSaveRequest, EditorWatchRequest } from '@shared/editor'
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -135,6 +137,7 @@ const STAGE_MAX = 50 * 1024 * 1024
 export function registerIpc(getWindow: () => BrowserWindow | null): {
   ptys: PtyManager
   orchestrator: Orchestrator
+  editorWatcher: EditorFileWatcher
   broadcastAll: () => void
 } {
   const send = (channel: string, payload: unknown): void => {
@@ -424,6 +427,49 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.ptyBuffer, (_e, id: unknown) => ptys.getBuffer(typeof id === 'string' ? id : ''))
   ipcMain.handle(IPC.ptySessions, () => ptys.list(sessionLabel))
   ipcMain.handle(IPC.filesSearch, (_e, request: FileSearchRequest) => searchProjectFiles(request))
+
+  const editorWatcher = new EditorFileWatcher((event) => send(IPC.editorFileChanged, event))
+  const editorOptions = {
+    isExtraAllowed: isAllowedEditorAttachment,
+    isWorkspaceAllowed: isAllowedEditorWorkspace,
+    watcher: editorWatcher
+  }
+  const resolveEditorRequest = (req: EditorWatchRequest) =>
+    resolveAuthorizedEditorPath(req?.path, req?.workspaceDir, editorOptions.isExtraAllowed, editorOptions.isWorkspaceAllowed)
+  const pendingEditorWatches = new Map<string, symbol>()
+
+  ipcMain.handle(IPC.editorReadFile, (_e, req: EditorReadRequest) => readEditorFile(req, editorOptions))
+  ipcMain.handle(IPC.editorSaveFile, (_e, req: EditorSaveRequest) => saveEditorFile(req, editorOptions))
+  ipcMain.handle(IPC.editorWatchFile, async (e, req: EditorWatchRequest): Promise<EditorActionResult> => {
+    const path = req?.path
+    const request = Symbol()
+    if (typeof path === 'string') pendingEditorWatches.set(path, request)
+    const resolved = await resolveEditorRequest(req)
+    const isPending = pendingEditorWatches.get(path) === request
+    if (isPending) pendingEditorWatches.delete(path)
+    if (!resolved.ok) return resolved
+    if (!isPending || e.sender.isDestroyed() || getWindow()?.webContents !== e.sender) {
+      return { ok: false, code: 'IO_ERROR', message: 'Watch request was cancelled' }
+    }
+    return editorWatcher.watch(path, resolved.realPath)
+  })
+  ipcMain.handle(IPC.editorUnwatchFile, (_e, path: unknown) => {
+    if (typeof path !== 'string') return
+    pendingEditorWatches.delete(path)
+    editorWatcher.unwatch(path)
+  })
+  ipcMain.handle(IPC.editorRevealInFinder, async (_e, req: EditorWatchRequest): Promise<EditorActionResult> => {
+    const resolved = await resolveEditorRequest(req)
+    if (!resolved.ok) return resolved
+    shell.showItemInFolder(resolved.realPath)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.editorOpenExternal, async (_e, req: EditorWatchRequest): Promise<EditorActionResult> => {
+    const resolved = await resolveEditorRequest(req)
+    if (!resolved.ok) return resolved
+    const error = await shell.openPath(resolved.realPath)
+    return error ? { ok: false, code: 'IO_ERROR', message: error } : { ok: true }
+  })
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))
@@ -844,5 +890,5 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }
   })
 
-  return { ptys, orchestrator, broadcastAll: broadcast }
+  return { ptys, orchestrator, editorWatcher, broadcastAll: broadcast }
 }

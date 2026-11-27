@@ -39,6 +39,7 @@ export const MarkdownBase = createContext<{
   sourceProjectDir?: string | null
   outputFiles?: OutputFileRef[]
   onRebindProject?: () => void
+  onOpenEditorFile?: (path: string) => void
   revision?: number
 }>({ baseDir: null, home: null })
 

@@ -57,6 +57,21 @@ export function isAllowedPath(p: string): boolean {
   }
 }
 
+/** The editor receives canonical paths and checks workspace grants separately from attachment grants. */
+export function isAllowedEditorWorkspace(realDir: string): boolean {
+  return roots.includes(realDir)
+}
+
+export function isAllowedEditorAttachment(realPath: string): boolean {
+  if (files.includes(realPath)) return true
+  try {
+    const root = realpathSync(attachmentsDir())
+    return roots.includes(root) && realPath !== root && inside(realPath, root)
+  } catch {
+    return false
+  }
+}
+
 /** Allow-lists one attached file (resolved through symlinks); persisted, newest kept. */
 export function allowFile(p: string): void {
   if (!isAbsolute(p)) return

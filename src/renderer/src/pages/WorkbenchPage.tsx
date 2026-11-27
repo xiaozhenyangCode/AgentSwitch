@@ -23,6 +23,9 @@ import { QuotaDot } from '../components/Usage'
 import { estimateMessageCost, fmtTokens, useUsage } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
 import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
+import { CodeEditorPanel } from '../components/CodeEditorPanel'
+import { QuickOpenModal } from '../components/QuickOpenModal'
+import { useCodeEditor } from '../state/useCodeEditor'
 import { GitGraphView } from '../components/GitGraphView'
 import { gitConflictLabel } from '../components/GitConflicts'
 import { ProjectBar } from '../components/ProjectBar'
@@ -283,10 +286,22 @@ export function WorkbenchPage() {
       .filter((file) => !file.inlineOnly && !isOutputImage(file)).slice(0, 12)
       .flatMap((file) => resolveOutputFileCandidates(file, projectDir))
   }), [messages, projectDir, sourceProjectDir])
+  const codeEditor = useCodeEditor(projectDir)
+  const [quickOpen, setQuickOpen] = useState(false)
+  useEffect(() => {
+    const onQuickOpenKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.isComposing && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        setQuickOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onQuickOpenKey)
+    return () => window.removeEventListener('keydown', onQuickOpenKey)
+  }, [])
   const fileExists = usePathsExist(filePaths, previewRevision)
   const markdownBase = useMemo(() => ({
-    baseDir: thread?.workdir ?? projectDir, home: info?.realHome ?? null, projectDir, sourceProjectDir, onRebindProject, revision: previewRevision
-  }), [thread?.workdir, projectDir, info?.realHome, sourceProjectDir, onRebindProject, previewRevision])
+    baseDir: thread?.workdir ?? projectDir, home: info?.realHome ?? null, projectDir, sourceProjectDir, onRebindProject, onOpenEditorFile: codeEditor.openFile, revision: previewRevision
+  }), [thread?.workdir, projectDir, info?.realHome, sourceProjectDir, onRebindProject, codeEditor.openFile, previewRevision])
   const checkpoints = useCheckpoints(thread?.id)
   const checkpointReplies = useMemo(() => {
     const turns = new Map(checkpoints.turns?.map(({ turnId, status }) => [turnId, status]))
@@ -604,7 +619,7 @@ export function WorkbenchPage() {
 
   return (
     <div className="flex h-full">
-      <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-clip">
+      <div className={`relative flex h-full min-w-0 flex-1 flex-col overflow-clip ${codeEditor.open && codeEditor.maximized ? 'hidden' : ''}`}>
         <div className={`drag flex h-14 shrink-0 items-center gap-2.5 pr-8 transition-[padding] duration-200 ${sidebarOpen ? 'pl-8' : 'pl-[86px]'}`}>
           {!sidebarOpen && (
             <button
@@ -796,6 +811,7 @@ export function WorkbenchPage() {
           projectDir={ctx.projectDir}
           previewRevision={previewRevision}
           onRebindProject={onRebindProject}
+          onOpenEditorFile={codeEditor.openFile}
           onHeight={setComposerH}
           onSend={onSend}
           onStop={() => thread && stop(thread.id)}
@@ -958,11 +974,38 @@ export function WorkbenchPage() {
           </div>
         )}
       </div>
-      {changesOpen && (
+      {changesOpen && !(codeEditor.open && codeEditor.maximized) && (
         <ChangesPanel key={ctx.projectDir} changes={fc.changes} loading={fc.loading} readFailed={fc.readFailed} dir={ctx.projectDir}
-          onRefresh={showGitTools ? git.refreshAll : fc.refresh} onClose={toggleChanges} onViewHistory={openHistory} gitRevision={git.revision} gitTools={gitTools
+          onRefresh={showGitTools ? git.refreshAll : fc.refresh} onClose={toggleChanges} onViewHistory={openHistory}
+          onEditFile={(p) => codeEditor.openFile(p)} gitRevision={git.revision} gitTools={gitTools
             ? { ...gitTools, disabled: gitTools.disabled || fc.loading }
             : null} />
+      )}
+      {codeEditor.open && (
+        <CodeEditorPanel
+          tabs={codeEditor.tabs}
+          activeTab={codeEditor.activeTab}
+          projectDir={ctx.projectDir}
+          maximized={codeEditor.maximized}
+          focusToken={codeEditor.focusToken}
+          pendingClose={codeEditor.pendingClose}
+          onToggleMaximize={() => codeEditor.setMaximized((v) => !v)}
+          onSelectTab={codeEditor.selectTab}
+          onCloseTab={codeEditor.requestCloseTab}
+          onClosePanel={codeEditor.requestClosePanel}
+          onChangeContent={codeEditor.updateContent}
+          onSaveTab={(id, opts) => void codeEditor.saveTab(id, opts)}
+          onReloadTab={codeEditor.reloadTab}
+          onDismissExternalChange={codeEditor.dismissExternalChange}
+          onResolvePendingClose={(action) => void codeEditor.resolvePendingClose(action)}
+        />
+      )}
+      {quickOpen && (
+        <QuickOpenModal
+          projectDir={ctx.projectDir}
+          onSelect={(absPath) => codeEditor.openFile(absPath)}
+          onClose={() => setQuickOpen(false)}
+        />
       )}
       {git.pullConflict && (
         <Modal onClose={git.dismissPullConflict} width={460}>
@@ -1301,20 +1344,31 @@ function UserBubble({
 }) {
   const [viewingId, setViewing] = useState<string | null>(null)
   const viewing = msg.attachments.find((a) => a.id === viewingId)
-  const { projectDir, onRebindProject, revision } = useContext(MarkdownBase)
+  const { projectDir, onRebindProject, onOpenEditorFile, revision } = useContext(MarkdownBase)
   const rebindFor = (a: Attachment) => (a.source === 'workspace-file' || !!a.relativePath) ? onRebindProject : undefined
+  const openAttachment = (a: Attachment) => {
+    if (!a.isImage && onOpenEditorFile) {
+      const candidates = attachmentPaths(a, projectDir)
+      const target = candidates.find((p) => fileExists[p] !== false) ?? candidates[0]
+      if (target) {
+        onOpenEditorFile(target)
+        return
+      }
+    }
+    setViewing(a.id)
+  }
   return (
     <div className="flex flex-col items-end gap-1.5 pl-24">
       {viewing && <AttachmentViewer a={viewing} projectDir={projectDir} onRebindProject={rebindFor(viewing)} revision={revision} onClose={() => setViewing(null)} />}
       <AttachmentBar items={msg.attachments} projectDir={projectDir} revision={revision} fileExists={fileExists}
-        alignEnd onRebindProject={onRebindProject} onOpen={(a) => setViewing(a.id)} />
+        alignEnd onRebindProject={onRebindProject} onOpen={openAttachment} />
       {msg.text && msg.kind === 'handoff' ? (
         <div className="flex items-center gap-1.5 rounded-full bg-black/[0.05] px-3 py-1 text-[12.5px] text-ink-2">
           <IconArrowRight size={13} className="text-accent" />
           {msg.text}
         </div>
       ) : (
-        (msg.text || msg.quote) && <UserText msg={msg} onOpen={(a) => setViewing(a.id)} />
+        (msg.text || msg.quote) && <UserText msg={msg} onOpen={openAttachment} />
       )}
       {msg.note && (
         <div className="flex items-center gap-1 text-[11px] text-info">
@@ -1901,6 +1955,7 @@ function Composer({
   projectDir,
   previewRevision,
   onRebindProject,
+  onOpenEditorFile,
   onHeight,
   onSend,
   onStop,
@@ -1927,6 +1982,7 @@ function Composer({
   projectDir: string | null
   previewRevision: number
   onRebindProject?: () => void
+  onOpenEditorFile?: (path: string) => void
   onHeight: (h: number) => void
   /** Resolves false when the user declined to send (the draft comes back). */
   onSend: (text: string, attachments: Attachment[], quote: MessageQuote | null) => Promise<boolean> | void
@@ -2681,7 +2737,16 @@ function Composer({
           {atts.length > 0 && (
             <div className="shrink-0 px-4 pt-3">
               <AttachmentBar variant="cards" items={atts} projectDir={projectDir} revision={previewRevision}
-                onOpen={(a) => setViewing(a.id)} onRemove={removeAttachment} />
+                onOpen={(a) => {
+                  if (!a.isImage && onOpenEditorFile) {
+                    const target = attachmentPaths(a, projectDir)[0]
+                    if (target) {
+                      onOpenEditorFile(target)
+                      return
+                    }
+                  }
+                  setViewing(a.id)
+                }} onRemove={removeAttachment} />
             </div>
           )}
 

@@ -12,7 +12,7 @@ import { GitConflictBar, GitConflictList, GitConflictModal } from './GitConflict
 import { GitRepositoryDialog } from './GitRepositoryDialog'
 import { Segmented } from './common'
 import { DiffView } from './Process'
-import { IconBranch, IconChevronDown, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
+import { IconBranch, IconChevronDown, IconEdit, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
 
 /**
  * 文件修改 panel (right of the chat): the project's working-tree changes from git, or — when
@@ -145,6 +145,7 @@ export function ChangesPanel({
   onRefresh,
   onClose,
   onViewHistory,
+  onEditFile,
   gitTools,
   gitRevision
 }: {
@@ -155,6 +156,7 @@ export function ChangesPanel({
   onRefresh: () => void
   onClose: () => void
   onViewHistory: () => void
+  onEditFile?: (absPath: string) => void
   gitTools: GitTools | null
   gitRevision: number
 }) {
@@ -258,13 +260,13 @@ export function ChangesPanel({
           <>
             {!tools.status.atRoot && <p className="px-2 pb-2 text-[11px] text-ink-3">{t('git.repoScope')}</p>}
             {(['staged', 'unstaged', 'untracked'] as const).map((name) => (
-              <ChangeGroup key={dir + name} name={name} files={files} tools={tools} />
+              <ChangeGroup key={dir + name} name={name} files={files} tools={tools} onEditFile={onEditFile} />
             ))}
           </>
         ) : files.length === 0 ? (
           <Empty text={changes.repo ? t('chg.clean') : t('chg.notRepo')} />
         ) : (
-          files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} />)
+          files.map((f) => <FileRow key={f.abs + ':' + f.status} f={f} onEditFile={onEditFile} />)
         )}
         {(!tools || tab === 'changes') && !!changes?.more && <div className="px-2 py-2 text-[12px] text-ink-3">{t('chg.more', { n: changes.more })}</div>}
       </div>
@@ -289,10 +291,11 @@ function Empty({ text }: { text: string }) {
 const gitButton = 'rounded-md px-2 py-1 text-[11.5px] text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-45'
 const rowAction = 'grid h-6 w-6 place-items-center rounded text-ink-3 hover:bg-black/[0.06] dark:hover:bg-white/[0.07] hover:text-ink disabled:opacity-45'
 
-function ChangeGroup({ name, files, tools }: {
+function ChangeGroup({ name, files, tools, onEditFile }: {
   name: 'staged' | 'unstaged' | 'untracked'
   files: FileChange[]
   tools: GitTools
+  onEditFile?: (absPath: string) => void
 }) {
   const { confirm } = useApp()
   const { run, disabled } = tools
@@ -341,7 +344,8 @@ function ChangeGroup({ name, files, tools }: {
         const ignore = (mode: 'file' | 'dir' | 'ext') => () => void run({ kind: 'ignore', path: file.path, mode })
         const filename = file.path.split('/').at(-1) ?? ''
         return (
-          <FileRow key={file.abs} f={file} menu={disabled ? undefined : [
+          <FileRow key={file.abs} f={file} onEditFile={onEditFile} menu={disabled ? undefined : [
+            ...(onEditFile && file.status !== 'D' ? [{ label: t('editor.editFile'), run: () => onEditFile(file.abs) }] : []),
             { label: actionLabel, run: stage },
             ...(staged ? [] : [{ label: discardLabel, run: () => void discard(file), destructive: true }]),
             { label: t('git.ignoreFile'), run: ignore('file') },
@@ -362,7 +366,7 @@ function ChangeGroup({ name, files, tools }: {
 
 type FileMenuAction = { label: string; run: () => void; destructive?: boolean }
 
-export function FileRow({ f, children, menu }: { f: FileChange | GitCommitFile; children?: ReactNode; menu?: FileMenuAction[] }) {
+export function FileRow({ f, children, menu, onEditFile }: { f: FileChange | GitCommitFile; children?: ReactNode; menu?: FileMenuAction[]; onEditFile?: (absPath: string) => void }) {
   const [open, setOpen] = useState(false)
   const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null)
   const slash = f.path.lastIndexOf('/')
@@ -397,6 +401,10 @@ export function FileRow({ f, children, menu }: { f: FileChange | GitCommitFile; 
             {children}
             {openablePath && (
               <>
+                {onEditFile && (
+                  <button className={rowAction} onClick={() => onEditFile(openablePath)}
+                    title={t('editor.editFile')} aria-label={t('editor.editFile')}><IconEdit size={13} /></button>
+                )}
                 <button className={rowAction} onClick={() => void window.agentswitch.sys.showInFolder(openablePath)}
                   title={t('common.showInFinder')} aria-label={t('common.showInFinder')}><IconFolder size={13} /></button>
                 <button className={rowAction} onClick={() => void window.agentswitch.sys.openPath(openablePath).catch(() => {})}

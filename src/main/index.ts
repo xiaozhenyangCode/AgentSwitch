@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { readSettings, writeSettings } from './appSettings'
 import { initProfiles } from './profiles'
 import { registerIpc } from './ipc'
+import type { EditorFileWatcher } from './editorFiles'
 import { initShellEnv } from './shellEnv'
 import { handleFileProtocol, registerFileScheme } from './fileProtocol'
 import { initTheme } from './theme'
@@ -157,7 +158,7 @@ async function finishClose(win: BrowserWindow): Promise<void> {
   if (quitRequested || decision === 'discarded') app.quit()
 }
 
-function createWindow(): void {
+function createWindow(editorWatcher: EditorFileWatcher): void {
   const saved = loadWindowBounds()
   mainWindow = new BrowserWindow({
     width: saved.width,
@@ -191,7 +192,10 @@ function createWindow(): void {
     mainWindow.show()
     if (saved.fullScreen) mainWindow.setFullScreen(true)
   })
-  mainWindow.on('closed', () => (mainWindow = null))
+  mainWindow.on('closed', () => {
+    editorWatcher.unwatchAll()
+    mainWindow = null
+  })
 
   // Never navigate the app window; external links go to the default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -225,6 +229,7 @@ app.whenReady().then(async () => {
   broadcastAll = ipc.broadcastAll
   // A window can veto quitting while it still has unsaved chats.
   app.on('will-quit', () => {
+    ipc.editorWatcher.unwatchAll()
     ipc.orchestrator.stopAll()
     permissions.cancelAll(() => true)
     ptys.killAll()
@@ -238,9 +243,9 @@ app.whenReady().then(async () => {
     })
   })
 
-  createWindow()
+  createWindow(ipc.editorWatcher)
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(ipc.editorWatcher)
   })
 })
 
