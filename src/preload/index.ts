@@ -1,7 +1,7 @@
 import type { CheckpointChoice, CheckpointResult, RewindCheckResult, RewindExecuteResult, TurnCheckpoint } from '@shared/checkpoints'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { ChatChanges, OpenChats } from '@shared/chat'
-import type { EditorActionResult, EditorFileChangedEvent, EditorReadRequest, EditorReadResult, EditorSaveRequest, EditorSaveResult, EditorWatchRequest } from '@shared/editor'
+import type { EditorActionResult, EditorFileChangedEvent, EditorListDirRequest, EditorListDirResult, EditorReadRequest, EditorReadResult, EditorSaveRequest, EditorSaveResult, EditorWatchRequest } from '@shared/editor'
 import type { CommitImportRequest, CommitImportResult, ImportPreviewResult, ThreadBundle, TransferExportResult, TransferImportResult, TransferProgressEvent } from '@shared/transfer'
 import type { I18nState, LanguagePref } from '@shared/i18n'
 import {
@@ -223,7 +223,8 @@ const api = {
     unwatchFile: (path: string): Promise<void> => ipcRenderer.invoke(IPC.editorUnwatchFile, path),
     onFileChanged: (cb: (event: EditorFileChangedEvent) => void) => subscribe(IPC.editorFileChanged, cb),
     revealInFinder: (req: EditorWatchRequest): Promise<EditorActionResult> => ipcRenderer.invoke(IPC.editorRevealInFinder, req),
-    openExternal: (req: EditorWatchRequest): Promise<EditorActionResult> => ipcRenderer.invoke(IPC.editorOpenExternal, req)
+    openExternal: (req: EditorWatchRequest): Promise<EditorActionResult> => ipcRenderer.invoke(IPC.editorOpenExternal, req),
+    listDir: (req: EditorListDirRequest): Promise<EditorListDirResult> => ipcRenderer.invoke(IPC.editorListDir, req)
   },
   git: {
     /** Changed files of a project folder (read-only git status / diff). */

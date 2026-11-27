@@ -218,6 +218,22 @@ label {
   height: 100%;
   user-select: text;
 }
+.cm-agentswitch-diff .cm-mergeView {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.cm-agentswitch-diff .cm-mergeViewEditors {
+  min-height: 100%;
+  align-items: stretch;
+}
+.cm-agentswitch-diff .cm-mergeViewEditor {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.cm-agentswitch-diff .cm-merge-a {
+  border-right: 1px solid var(--hairline);
+}
 
 /* Slim, auto-hiding scrollbars: invisible at rest (even with an external mouse), shown on scroll/hover/drag with zero layout shift */
 ::-webkit-scrollbar {

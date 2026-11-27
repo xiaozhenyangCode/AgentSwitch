@@ -1,4 +1,4 @@
-import { formatComposerFileRef } from '@shared/fileReferences'
+import { formatComposerFileRef, type FileLineRange } from '@shared/fileReferences'
 
 export interface FileTrigger {
   start: number
@@ -24,11 +24,11 @@ export function applyFileReference(value: string, start: number, caret: number, 
   return { value: value.slice(0, start) + reference + after, caret: start + reference.length + (hasTrailingSpace ? 1 : 0) }
 }
 
-export function insertFileReferenceAtCaret(value: string, start: number, end: number, label: string) {
+export function insertFileReferenceAtCaret(value: string, start: number, end: number, label: string, lineRange?: FileLineRange | null) {
   const before = value.slice(0, start)
   const after = value.slice(end)
   const lead = before && !/\s$/u.test(before) ? ' ' : ''
   const tail = /^\s/u.test(after) ? '' : ' '
-  const reference = lead + formatComposerFileRef(label) + tail
+  const reference = lead + formatComposerFileRef(label, lineRange) + tail
   return { value: before + reference + after, caret: start + reference.length }
 }

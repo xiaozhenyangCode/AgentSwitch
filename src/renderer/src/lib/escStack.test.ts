@@ -67,4 +67,32 @@ describe('escStack / ⌘W topmost layer handling', () => {
     popLogin()
     popSettings()
   })
+
+  it('invokes focus-scoped ⌘W handler only when no modal layer is open', () => {
+    let focused = false
+    const closeTab = vi.fn(() => {
+      if (!focused) return false
+      return true
+    })
+    const popFocus = mod.pushFocusCloseHandler(closeTab)
+
+    // Focus outside editor -> returns false so window closes normally
+    expect(mod.closeTopLayer()).toBe(false)
+    expect(closeTab).toHaveBeenCalledTimes(1)
+
+    // Focus inside editor -> consumes ⌘W to close tab instead of window
+    focused = true
+    expect(mod.closeTopLayer()).toBe(true)
+    expect(closeTab).toHaveBeenCalledTimes(2)
+
+    // When a modal is open, the modal takes priority over the focus handler
+    const closeModal = vi.fn()
+    const popModal = mod.pushLayer({ onEsc: closeModal, onClose: closeModal })
+    expect(mod.closeTopLayer()).toBe(true)
+    expect(closeModal).toHaveBeenCalledTimes(1)
+    expect(closeTab).toHaveBeenCalledTimes(2)
+
+    popModal()
+    popFocus()
+  })
 })

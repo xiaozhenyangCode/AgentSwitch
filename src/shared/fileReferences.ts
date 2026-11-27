@@ -7,6 +7,19 @@ type AttachmentLabel = Pick<Attachment, 'name' | 'relativePath' | 'refLabel' | '
 type AttachmentPath = Pick<Attachment, 'path' | 'relativePath' | 'id'>
 export const COMPOSER_ATTACHMENT_LIMIT = 24
 
+/** A 1-based, inclusive range. */
+export interface FileLineRange {
+  startLine: number
+  endLine: number
+}
+
+export function formatLineRangeSuffix(lineRange?: FileLineRange | null): string {
+  if (!lineRange) return ''
+  const { startLine, endLine } = lineRange
+  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine) return ''
+  return startLine === endLine ? ':' + startLine : ':' + startLine + '-' + endLine
+}
+
 export function formatInlineCodePath(path: string): string {
   const value = /[\x00-\x1f\x7f]/.test(path) ? JSON.stringify(path) : path
   const longest = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length))
@@ -15,8 +28,9 @@ export function formatInlineCodePath(path: string): string {
   return fence + padding + value + padding + fence
 }
 
-export function formatComposerFileRef(label: string): string {
-  return '#' + (/[\s#@＠"'`\\\x00-\x1f\x7f]/u.test(label) ? formatInlineCodePath(label) : label)
+export function formatComposerFileRef(label: string, lineRange?: FileLineRange | null): string {
+  const path = /[\s#@＠"'`\\\x00-\x1f\x7f]/u.test(label) ? formatInlineCodePath(label) : label
+  return '#' + path + formatLineRangeSuffix(lineRange)
 }
 
 export function attachmentRefLabel(att: AttachmentLabel): string {
@@ -90,6 +104,12 @@ export interface FileReferenceSpan {
   end: number
   raw: string
   index: number
+  lineRange?: FileLineRange
+}
+
+function parseLineRange(start: string, end = start): FileLineRange | undefined {
+  const range = { startLine: Number(start), endLine: Number(end) }
+  return formatLineRangeSuffix(range) ? range : undefined
 }
 
 /** Code spans protect standalone examples. A hash immediately before a code span quotes a label. */
@@ -110,6 +130,8 @@ export function scanFileReferences(text: string, items: readonly AttachmentLabel
   const code = markdownCodeSpans(text)
   const spans: FileReferenceSpan[] = []
   const word = /[^\s#`]+/y
+  const quotedRange = /:([1-9]\d*)(?:-([1-9]\d*))?(?=$|[\s.,;:!?()[\]{}，。；：！？、）】》”’])/uy
+  const trailingPunctuation = /[.,;:!?()[\]{}，。；：！？、）】》”’]$/u
   let codeIndex = 0
   for (let start = text.indexOf('#'); start >= 0;) {
     while (code[codeIndex]?.end <= start) codeIndex++
@@ -120,6 +142,7 @@ export function scanFileReferences(text: string, items: readonly AttachmentLabel
     }
     let end = start + 1
     let index: number | null | undefined
+    let lineRange: FileLineRange | undefined
     if (start === 0 || /\s/u.test(text[start - 1])) {
       if (span?.start === end && span.delimiter) {
         end = span.end
@@ -132,21 +155,36 @@ export function scanFileReferences(text: string, items: readonly AttachmentLabel
             if (typeof decoded === 'string') index = lookup(decoded)
           } catch { /* A literal quote in a path is valid too. */ }
         }
+        if (typeof index === 'number') {
+          quotedRange.lastIndex = end
+          const suffix = quotedRange.exec(text)
+          if (suffix) {
+            lineRange = parseLineRange(suffix[1], suffix[2])
+            if (lineRange) end += suffix[0].length
+          }
+        }
       } else {
         word.lastIndex = end
         const match = word.exec(text)
         if (match) {
           let label = match[0]
           index = lookup(label)
-          while (index === undefined && /[.,;:!?()[\]{}，。；：！？、）】》”’]$/u.test(label)) {
+          while (index === undefined && trailingPunctuation.test(label)) {
             label = label.slice(0, -1)
             index = lookup(label)
+          }
+          if (index === undefined) {
+            const suffix = /:([1-9]\d*)(?:-([1-9]\d*))?$/.exec(label)
+            if (suffix) {
+              lineRange = parseLineRange(suffix[1], suffix[2])
+              if (lineRange) index = lookup(label.slice(0, suffix.index))
+            }
           }
           end += label.length
         }
       }
     }
-    if (typeof index === 'number') spans.push({ start, end, raw: text.slice(start, end), index })
+    if (typeof index === 'number') spans.push({ start, end, raw: text.slice(start, end), index, ...(lineRange && { lineRange }) })
     start = text.indexOf('#', end)
   }
   return spans
@@ -177,8 +215,8 @@ export function serializePromptWithAttachments(rawText: string, attachments: rea
   let after = 0
   const referenced = new Set<string>()
   const labels = attachments.map((att) => ({ ...att, source: att.scope === 'workspace' ? 'workspace-file' as const : 'chat-attachment' as const }))
-  for (const { start, end, index } of scanFileReferences(rawText, labels)) {
-    body += rawText.slice(after, start) + formatInlineCodePath(attachments[index].promptPath)
+  for (const { start, end, index, lineRange } of scanFileReferences(rawText, labels)) {
+    body += rawText.slice(after, start) + formatInlineCodePath(attachments[index].promptPath + formatLineRangeSuffix(lineRange))
     referenced.add(attachments[index].promptPath)
     after = end
   }

@@ -50,4 +50,14 @@ describe('project file references', () => {
     const beforeSpace = applyFileReference('#git and more', 0, 4, '.gitignore')
     expect(beforeSpace).toEqual({ value: '#.gitignore and more', caret: 12 })
   })
+
+  it('inserts line ranges consecutively at the caret and separates surrounding prose', () => {
+    const first = insertFileReferenceAtCaret('see now', 3, 3, 'src/foo.ts', { startLine: 12, endLine: 28 })
+    expect(first).toEqual({ value: 'see #src/foo.ts:12-28 now', caret: 'see #src/foo.ts:12-28'.length })
+    const second = insertFileReferenceAtCaret(first.value, first.caret, first.caret, 'my file.ts', { startLine: 2, endLine: 2 })
+    expect(second).toEqual({
+      value: 'see #src/foo.ts:12-28 #`my file.ts`:2 now',
+      caret: 'see #src/foo.ts:12-28 #`my file.ts`:2'.length
+    })
+  })
 })

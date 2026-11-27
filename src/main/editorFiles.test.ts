@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EDITOR_MAX_BYTES, detectEditorLanguage, isKnownBinaryPath, type EditorEol, type EditorFileChangedEvent } from '@shared/editor'
-import { EditorFileWatcher, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
+import { EditorFileWatcher, listEditorDir, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
 import { allowFile, allowRoot, isAllowedEditorAttachment, isAllowedEditorWorkspace } from './fileProtocol'
 
 vi.mock('electron', () => ({ app: { getPath: () => scratch } }))
@@ -258,5 +258,66 @@ describe('editor language and binary detection', () => {
     for (const name of ['.env', 'Makefile', 'x.json', 'x.svg', 'x.txt']) {
       expect(isKnownBinaryPath(name)).toBe(false)
     }
+  })
+})
+
+describe('editor directory listing (editor:listDir)', () => {
+  it('filters default pruned names and nested .gitignore rules, sorts dirs before files naturally, and omits escaping symlinks', async () => {
+    await mkdir(join(workspaceDir, '.git'))
+    await mkdir(join(workspaceDir, 'node_modules'))
+    await mkdir(join(workspaceDir, 'dist'))
+    await mkdir(join(workspaceDir, '.agentswitch'))
+    await mkdir(join(workspaceDir, 'src'))
+    await mkdir(join(workspaceDir, 'docs'))
+    await writeFile(join(workspaceDir, '.DS_Store'), 'mac')
+    await writeFile(join(workspaceDir, '.gitignore'), '*.log\nignored-dir/\n')
+    await mkdir(join(workspaceDir, 'ignored-dir'))
+    await writeFile(join(workspaceDir, 'debug.log'), 'log')
+    await writeFile(join(workspaceDir, 'file10.ts'), 'ten')
+    await writeFile(join(workspaceDir, 'file2.ts'), 'two')
+    await writeFile(join(workspaceDir, 'README.md'), 'readme')
+
+    const outside = join(scratch, 'outside-secret.txt')
+    await writeFile(outside, 'secret')
+    await symlink(outside, join(workspaceDir, 'escape-link.txt'))
+    await symlink(join(workspaceDir, 'README.md'), join(workspaceDir, 'internal-link.md'))
+
+    const rootRes = await listEditorDir({ workspaceDir })
+    expect(rootRes.ok).toBe(true)
+    if (!rootRes.ok) return
+    expect(rootRes.entries.map((e) => `${e.isDirectory ? 'd:' : 'f:'}${e.name}`)).toEqual([
+      'd:docs',
+      'd:src',
+      'f:.gitignore',
+      'f:file2.ts',
+      'f:file10.ts',
+      'f:internal-link.md',
+      'f:README.md'
+    ])
+
+    // Nested .gitignore inside src/
+    await writeFile(join(workspaceDir, 'src', '.gitignore'), 'generated.ts\n')
+    await writeFile(join(workspaceDir, 'src', 'generated.ts'), 'gen')
+    await writeFile(join(workspaceDir, 'src', 'index.ts'), 'ok')
+    await writeFile(join(workspaceDir, 'src', 'sub.log'), 'ignored by root')
+
+    const srcRes = await listEditorDir({ workspaceDir, dirPath: join(workspaceDir, 'src') })
+    expect(srcRes.ok).toBe(true)
+    if (!srcRes.ok) return
+    expect(srcRes.entries.map((e) => e.relPath)).toEqual(['src/.gitignore', 'src/index.ts'])
+  })
+
+  it('blocks traversal, out-of-workspace directories, escaping symlink dirs, and unauthorized workspaces', async () => {
+    const outsideDir = join(scratch, 'outside-dir')
+    await mkdir(outsideDir)
+    const linkDir = join(workspaceDir, 'escape-dir')
+    await symlink(outsideDir, linkDir, 'dir')
+
+    for (const dirPath of [`${workspaceDir}/../outside-dir`, outsideDir, linkDir]) {
+      expect(await listEditorDir({ workspaceDir, dirPath })).toMatchObject({ ok: false, code: 'OUT_OF_BOUNDS' })
+    }
+    expect(await listEditorDir({ workspaceDir }, { isWorkspaceAllowed: () => false })).toMatchObject({
+      ok: false, code: 'OUT_OF_BOUNDS'
+    })
   })
 })

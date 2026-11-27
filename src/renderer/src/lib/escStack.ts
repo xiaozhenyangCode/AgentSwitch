@@ -13,6 +13,7 @@ interface Layer {
 }
 
 const stack: Layer[] = []
+const focusCloseHandlers: Array<{ id: number; handler: () => boolean }> = []
 let seq = 0
 
 declare global {
@@ -24,13 +25,19 @@ declare global {
 /**
  * Called by the main process menu (`File → Close Window`, ⌘W).
  * Consumes ⌘W on the topmost open dialog/overlay and returns true so the window stays open;
- * returns false when no layer is open so the window closes normally.
+ * if no overlay is open, checks focus-scoped close handlers (e.g. closing the active editor tab);
+ * returns false when nothing handles it so the window closes normally.
  */
 export function closeTopLayer(): boolean {
-  if (!stack.length) return false
-  const top = stack[stack.length - 1]
-  if (top.onClose) top.onClose()
-  return true
+  if (stack.length) {
+    const top = stack[stack.length - 1]
+    if (top.onClose) top.onClose()
+    return true
+  }
+  for (let i = focusCloseHandlers.length - 1; i >= 0; i--) {
+    if (focusCloseHandlers[i].handler()) return true
+  }
+  return false
 }
 
 if (typeof window !== 'undefined') {
@@ -86,6 +93,26 @@ export function useLayer({
 /** While `active`, Esc calls `onEsc` and ⌘W calls `onClose` (defaults to `onEsc`). */
 export function useEscape(onEsc: () => void, active = true, onClose: () => void = onEsc): void {
   useLayer({ onEsc, onClose, active })
+}
+
+/** Registers a low-priority ⌘W handler (runs only when no modal layer is open). Return true to consume ⌘W. */
+export function pushFocusCloseHandler(handler: () => boolean): () => void {
+  const id = ++seq
+  focusCloseHandlers.push({ id, handler })
+  return () => {
+    const i = focusCloseHandlers.findIndex((x) => x.id === id)
+    if (i >= 0) focusCloseHandlers.splice(i, 1)
+  }
+}
+
+/** React hook for registering a focus-scoped ⌘W handler (e.g. closing an active editor tab). */
+export function useFocusCloseHandler(handler: () => boolean, active = true): void {
+  const ref = useRef(handler)
+  ref.current = handler
+  useEffect(() => {
+    if (!active) return
+    return pushFocusCloseHandler(() => ref.current())
+  }, [active])
 }
 
 /** True while any layer is open (e.g. the composer should not treat Esc as its own). */

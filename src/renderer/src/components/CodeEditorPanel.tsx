@@ -1,18 +1,26 @@
-import { Fragment, useState, type PointerEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import type { FileChange } from '@shared/types'
+import { detectIndentInfo } from '../lib/codeEditorTheme'
+import { loadWorkspaceEditorState, saveWorkspaceEditorState } from '../lib/editorPersistence'
+import { escLayers, useFocusCloseHandler } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { btnPrimary, btnSecondary } from '../lib/ui'
 import { isTabDirty, type EditorTab, type PendingClosePrompt } from '../state/useCodeEditor'
 import { t } from '../state/i18n'
 import { FileTypeIcon } from './AttachmentBar'
-import { CodeEditor } from './CodeEditor'
+import { CodeDiffView } from './CodeDiffView'
+import { CodeEditor, type EditorCursorStatus, type EditorSelectionRange } from './CodeEditor'
+import { EditorFileTree, TREE_DEFAULT_W, TREE_MAX_W, TREE_MIN_W } from './EditorFileTree'
 import { Modal } from './common'
 import {
   IconAlert,
   IconCheck,
   IconChevronRight,
+  IconDiff,
   IconExternal,
   IconFile,
   IconFolder,
+  IconFolderTree,
   IconMaximize,
   IconMinimize,
   IconRefresh,
@@ -27,6 +35,53 @@ const MAX_W = 1100
 
 const fmtBytes = (n: number) =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`
+
+const LANGUAGE_LABELS: Readonly<Record<string, string>> = {
+  typescript: 'TypeScript',
+  tsx: 'TypeScript JSX',
+  javascript: 'JavaScript',
+  jsx: 'JavaScript JSX',
+  json: 'JSON',
+  markdown: 'Markdown',
+  html: 'HTML',
+  vue: 'Vue',
+  svelte: 'Svelte',
+  css: 'CSS',
+  scss: 'SCSS',
+  sass: 'Sass',
+  less: 'Less',
+  python: 'Python',
+  go: 'Go',
+  rust: 'Rust',
+  java: 'Java',
+  kotlin: 'Kotlin',
+  swift: 'Swift',
+  c: 'C',
+  cpp: 'C++',
+  shell: 'Shell',
+  yaml: 'YAML',
+  toml: 'TOML',
+  xml: 'XML',
+  ini: 'INI',
+  env: 'Env',
+  sql: 'SQL',
+  dockerfile: 'Dockerfile',
+  makefile: 'Makefile',
+  ruby: 'Ruby',
+  php: 'PHP',
+  plaintext: 'Plain Text'
+}
+
+function clampWidth(val: number | undefined): number {
+  const fallback = Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W
+  const candidate = typeof val === 'number' && Number.isFinite(val) ? val : fallback
+  return Math.min(MAX_W, Math.max(MIN_W, candidate))
+}
+
+function clampTreeWidth(val: number | undefined): number {
+  const candidate = typeof val === 'number' && Number.isFinite(val) ? val : TREE_DEFAULT_W
+  return Math.min(TREE_MAX_W, Math.max(TREE_MIN_W, candidate))
+}
 
 function breadcrumbSegments(filePath: string, projectDir: string | null): string[] {
   const normFile = filePath.replace(/\\/g, '/')
@@ -51,15 +106,27 @@ export interface CodeEditorPanelProps {
   maximized: boolean
   focusToken: number
   pendingClose: PendingClosePrompt | null
+  gitStatusByRelPath?: ReadonlyMap<string, FileChange['status']>
   onToggleMaximize: () => void
   onSelectTab: (tabId: string) => void
+  onSelectAdjacentTab: (delta: -1 | 1) => void
+  onOpenFile: (absPath: string) => void
   onCloseTab: (tabId: string) => void
   onClosePanel: () => void
   onChangeContent: (tabId: string, content: string) => void
   onSaveTab: (tabId: string, options?: { force?: boolean }) => void
   onReloadTab: (tabId: string) => void
   onDismissExternalChange: (tabId: string) => void
+  onOpenConflictDiff: (tabId: string) => void
+  onToggleUnsavedDiff: (tabId: string) => void
+  onExitDiff: (tabId: string) => void
   onResolvePendingClose: (action: 'save' | 'discard' | 'cancel') => void
+  onReferenceToChat?: (payload: {
+    path: string
+    realPath: string | null
+    workspaceDir: string | null
+    lineRange: EditorSelectionRange | null
+  }) => void
 }
 
 export function CodeEditorPanel({
@@ -69,19 +136,95 @@ export function CodeEditorPanel({
   maximized,
   focusToken,
   pendingClose,
+  gitStatusByRelPath,
   onToggleMaximize,
   onSelectTab,
+  onSelectAdjacentTab,
+  onOpenFile,
   onCloseTab,
   onClosePanel,
   onChangeContent,
   onSaveTab,
   onReloadTab,
   onDismissExternalChange,
-  onResolvePendingClose
+  onOpenConflictDiff,
+  onToggleUnsavedDiff,
+  onExitDiff,
+  onResolvePendingClose,
+  onReferenceToChat
 }: CodeEditorPanelProps) {
-  const [width, setWidth] = useState(() =>
-    Math.min(MAX_W, Math.max(MIN_W, Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W))
-  )
+  const panelRef = useRef<HTMLElement>(null)
+  const [width, setWidth] = useState(() => clampWidth(loadWorkspaceEditorState(projectDir)?.width))
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [treeWidth, setTreeWidth] = useState(() => clampTreeWidth(loadWorkspaceEditorState(projectDir)?.treeWidth))
+  const [cursor, setCursor] = useState<EditorCursorStatus>({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
+
+  // Restore persisted panel width & tree width when switching workspaces (file tree stays collapsed by default).
+  useEffect(() => {
+    const saved = loadWorkspaceEditorState(projectDir)
+    setWidth(clampWidth(saved?.width))
+    setTreeWidth(clampTreeWidth(saved?.treeWidth))
+    setTreeOpen(false)
+  }, [projectDir])
+
+  // Reset cursor readout when switching tabs.
+  useEffect(() => {
+    setCursor({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
+  }, [activeTab?.id])
+
+  // Intercept native menu ⌘W ONLY when focus is inside the editor panel and a tab is open.
+  useFocusCloseHandler(() => {
+    const panel = panelRef.current
+    const activeEl = document.activeElement
+    if (!panel || !activeEl || !panel.contains(activeEl)) return false
+    if (!activeTab) return false
+    onCloseTab(activeTab.id)
+    return true
+  }, !!activeTab)
+
+  // Focus-scoped editor shortcuts: ⌥⌘←/→ switch tabs, ⌘B toggle tree, ESC exit diff, fallback ⌘W.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return
+      const panel = panelRef.current
+      const activeEl = document.activeElement
+      if (!panel || !activeEl || !panel.contains(activeEl)) return
+
+      const mod = event.metaKey || event.ctrlKey
+      if (mod && event.altKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        if (tabs.length > 1) {
+          event.preventDefault()
+          event.stopPropagation()
+          onSelectAdjacentTab(event.key === 'ArrowLeft' ? -1 : 1)
+        }
+        return
+      }
+      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        event.stopPropagation()
+        setTreeOpen((v) => !v)
+        return
+      }
+      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w' && activeTab && escLayers() === 0) {
+        event.preventDefault()
+        event.stopPropagation()
+        onCloseTab(activeTab.id)
+        return
+      }
+      if (event.key === 'Escape' && escLayers() === 0 && activeTab && activeTab.diffMode !== 'none') {
+        event.preventDefault()
+        event.stopPropagation()
+        onExitDiff(activeTab.id)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [activeTab, tabs.length, onCloseTab, onExitDiff, onSelectAdjacentTab])
+
+  const persistWidth = (w: number) => {
+    localStorage.setItem(WIDTH_KEY, String(w))
+    if (projectDir) saveWorkspaceEditorState(projectDir, { width: w })
+  }
 
   const startDrag = (e: PointerEvent) => {
     if (maximized) return
@@ -97,19 +240,44 @@ export function CodeEditorPanel({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       document.body.style.cursor = ''
-      localStorage.setItem(WIDTH_KEY, String(w))
+      persistWidth(w)
     }
     document.body.style.cursor = 'col-resize'
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
 
+  const handleResizeTree = (nextW: number) => {
+    const clamped = clampTreeWidth(nextW)
+    setTreeWidth(clamped)
+    if (projectDir) saveWorkspaceEditorState(projectDir, { treeWidth: clamped })
+  }
+
   const dirty = activeTab ? isTabDirty(activeTab) : false
+  const dirtyPaths = useMemo(() => {
+    const set = new Set<string>()
+    for (const tab of tabs) {
+      if (isTabDirty(tab)) {
+        set.add(tab.path)
+        if (tab.realPath) set.add(tab.realPath)
+      }
+    }
+    return set
+  }, [tabs])
+
+  const indentInfo = useMemo(
+    () => (activeTab?.status === 'ready' ? detectIndentInfo(activeTab.content) : null),
+    // Re-evaluate indent style when switching files or reloading from disk rather than every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeTab?.id, activeTab?.status, activeTab?.syncVersion]
+  )
+
   const canExternalAction =
     !!activeTab &&
     activeTab.error?.code !== 'OUT_OF_BOUNDS' &&
     activeTab.error?.code !== 'NOT_FOUND'
   const crumbs = activeTab ? breadcrumbSegments(activeTab.realPath ?? activeTab.path, activeTab.workspaceDir ?? projectDir) : []
+  const showingDiff = activeTab?.status === 'ready' && activeTab.diffMode !== 'none'
 
   const revealInFinder = () => {
     if (!activeTab) return
@@ -129,7 +297,9 @@ export function CodeEditorPanel({
 
   return (
     <aside
-      className={`relative flex h-full min-w-0 flex-col border-l border-hairline bg-surface ${maximized ? 'flex-1' : 'shrink-0'}`}
+      ref={panelRef}
+      tabIndex={-1}
+      className={`relative flex h-full min-w-0 flex-col border-l border-hairline bg-surface outline-none ${maximized ? 'flex-1' : 'shrink-0'}`}
       style={maximized ? undefined : { width }}
     >
       {!maximized && (
@@ -138,7 +308,7 @@ export function CodeEditorPanel({
           onPointerDown={startDrag}
           onDoubleClick={() => {
             setWidth(DEFAULT_W)
-            localStorage.setItem(WIDTH_KEY, String(DEFAULT_W))
+            persistWidth(DEFAULT_W)
           }}
           title={t('chg.resize')}
         />
@@ -146,6 +316,17 @@ export function CodeEditorPanel({
 
       {/* Top Tab Bar + Action Controls */}
       <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-hairline bg-surface-2/80 pr-2 pl-1.5">
+        <button
+          type="button"
+          onClick={() => setTreeOpen((v) => !v)}
+          className={`${iconBtn} ${treeOpen ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
+          title={`${t('editor.toggleTree')} (⌘B)`}
+          aria-label={t('editor.toggleTree')}
+          aria-pressed={treeOpen}
+        >
+          <IconFolderTree size={15} />
+        </button>
+
         <div className="no-drag flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden py-1">
           {tabs.map((tab) => {
             const selected = activeTab?.id === tab.id
@@ -221,6 +402,18 @@ export function CodeEditorPanel({
               <span>{t('common.save')}</span>
             </button>
           )}
+          {activeTab?.status === 'ready' && (dirty || activeTab.diffMode === 'unsaved') && (
+            <button
+              type="button"
+              onClick={() => onToggleUnsavedDiff(activeTab.id)}
+              className={`${iconBtn} ${activeTab.diffMode === 'unsaved' ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
+              title={t('editor.compareSaved')}
+              aria-label={t('editor.compareSaved')}
+              aria-pressed={activeTab.diffMode === 'unsaved'}
+            >
+              <IconDiff size={14} />
+            </button>
+          )}
           {canExternalAction && (
             <>
               <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
@@ -253,24 +446,27 @@ export function CodeEditorPanel({
             {crumbs.map((seg, i) => (
               <Fragment key={`${i}:${seg}`}>
                 {i > 0 && <IconChevronRight size={10} className="shrink-0 opacity-55" />}
-                <span className={`truncate ${i === crumbs.length - 1 ? 'text-ink-2 font-medium' : ''}`}>{seg}</span>
+                <span className={`truncate ${i === crumbs.length - 1 ? 'font-medium text-ink-2' : ''}`}>{seg}</span>
               </Fragment>
             ))}
           </div>
-          {activeTab.status === 'ready' && (
-            <div className="flex shrink-0 items-center gap-2 text-[11px] text-ink-3">
-              <span className="uppercase">{activeTab.language}</span>
-              <span>{activeTab.eol}</span>
-            </div>
-          )}
         </div>
       )}
 
       {/* Save Conflict Banner */}
-      {activeTab?.conflictMtimeMs !== null && activeTab?.status === 'ready' && (
+      {activeTab?.conflictMtimeMs !== null && activeTab?.status === 'ready' && activeTab.diffMode !== 'conflict' && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-danger/25 bg-danger-soft px-3 py-2 text-[12px] text-danger">
           <IconAlert size={14} className="shrink-0" />
           <span className="min-w-0 flex-1 font-medium">{t('editor.conflictBanner')}</span>
+          <button
+            type="button"
+            disabled={activeTab.loadingDiff}
+            onClick={() => onOpenConflictDiff(activeTab.id)}
+            className="inline-flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2 disabled:opacity-50"
+          >
+            {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
+            {t('editor.viewDiff')}
+          </button>
           <button
             type="button"
             onClick={() => onReloadTab(activeTab.id)}
@@ -289,21 +485,32 @@ export function CodeEditorPanel({
       )}
 
       {/* External Modification / Deletion Banner */}
-      {activeTab && activeTab.conflictMtimeMs === null && activeTab.externalChange && activeTab.status === 'ready' && (
+      {activeTab && activeTab.conflictMtimeMs === null && activeTab.externalChange && activeTab.status === 'ready' && activeTab.diffMode !== 'conflict' && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warn/30 bg-warn-soft px-3 py-2 text-[12px] text-warn">
           <IconAlert size={14} className="shrink-0" />
           <span className="min-w-0 flex-1 font-medium">
             {t(activeTab.externalChange === 'deleted' ? 'editor.externalDeleted' : 'editor.externalModified')}
           </span>
           {activeTab.externalChange === 'modified' && (
-            <button
-              type="button"
-              onClick={() => onReloadTab(activeTab.id)}
-              className="flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2"
-            >
-              <IconRefresh size={11} />
-              {t('editor.reload')}
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={activeTab.loadingDiff}
+                onClick={() => onOpenConflictDiff(activeTab.id)}
+                className="inline-flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2 disabled:opacity-50"
+              >
+                {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
+                {t('editor.viewDiff')}
+              </button>
+              <button
+                type="button"
+                onClick={() => onReloadTab(activeTab.id)}
+                className="flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2"
+              >
+                <IconRefresh size={11} />
+                {t('editor.reload')}
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -315,37 +522,108 @@ export function CodeEditorPanel({
         </div>
       )}
 
-      {/* Main Editor Body */}
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {!activeTab ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-ink-3">
-            <IconFile size={24} className="opacity-50" />
-            <span>{t('editor.empty')}</span>
-          </div>
-        ) : activeTab.status === 'loading' ? (
-          <div className="flex h-full items-center justify-center gap-2 text-[13px] text-ink-3">
-            <Spinner size={16} />
-            <span>{t('ext.loading')}</span>
-          </div>
-        ) : activeTab.status === 'error' ? (
-          <EditorBlockedState
-            tab={activeTab}
-            canExternalAction={canExternalAction}
-            onReveal={revealInFinder}
-            onOpenExternal={openExternal}
-          />
-        ) : (
-          <CodeEditor
-            fileKey={activeTab.id}
-            value={activeTab.content}
-            language={activeTab.language}
-            syncVersion={activeTab.syncVersion}
-            focusToken={focusToken}
-            onChange={(next) => onChangeContent(activeTab.id, next)}
-            onSave={() => onSaveTab(activeTab.id)}
+      {/* Main Workspace Split: Optional File Tree + Code/Diff Editor */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {treeOpen && (
+          <EditorFileTree
+            projectDir={projectDir}
+            activeFilePath={activeTab?.path ?? null}
+            activeRealPath={activeTab?.realPath ?? null}
+            dirtyPaths={dirtyPaths}
+            gitStatusByRelPath={gitStatusByRelPath}
+            width={treeWidth}
+            onResizeWidth={handleResizeTree}
+            onOpenFile={onOpenFile}
           />
         )}
+
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+          {!activeTab ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-ink-3">
+              <IconFile size={24} className="opacity-50" />
+              <span>{t('editor.empty')}</span>
+            </div>
+          ) : activeTab.status === 'loading' ? (
+            <div className="flex h-full items-center justify-center gap-2 text-[13px] text-ink-3">
+              <Spinner size={16} />
+              <span>{t('ext.loading')}</span>
+            </div>
+          ) : activeTab.status === 'error' ? (
+            <EditorBlockedState
+              tab={activeTab}
+              canExternalAction={canExternalAction}
+              onReveal={revealInFinder}
+              onOpenExternal={openExternal}
+            />
+          ) : showingDiff ? (
+            <CodeDiffView
+              mode={activeTab.diffMode === 'conflict' ? 'conflict' : 'unsaved'}
+              original={activeTab.diffMode === 'conflict' ? (activeTab.diskContent ?? activeTab.savedContent) : activeTab.savedContent}
+              modified={activeTab.content}
+              language={activeTab.language}
+              saving={activeTab.saving}
+              onAcceptDisk={activeTab.diffMode === 'conflict' ? () => onReloadTab(activeTab.id) : undefined}
+              onKeepMineAndSave={activeTab.diffMode === 'conflict' ? () => onSaveTab(activeTab.id, { force: true }) : undefined}
+              onExit={() => onExitDiff(activeTab.id)}
+            />
+          ) : (
+            <CodeEditor
+              fileKey={activeTab.id}
+              value={activeTab.content}
+              language={activeTab.language}
+              syncVersion={activeTab.syncVersion}
+              focusToken={focusToken}
+              onChange={(next) => onChangeContent(activeTab.id, next)}
+              onSave={() => onSaveTab(activeTab.id)}
+              onCursorChange={setCursor}
+              addToChatLabel={t('editor.addToChat')}
+              onReferenceToChat={onReferenceToChat && ((lineRange) => onReferenceToChat({
+                path: activeTab.path,
+                realPath: activeTab.realPath,
+                workspaceDir: activeTab.workspaceDir,
+                lineRange
+              }))}
+            />
+          )}
+        </div>
       </div>
+
+      {/* Compact Single-Row Bottom Status Bar (25px) */}
+      {activeTab?.status === 'ready' && (
+        <div className="flex h-[25px] shrink-0 items-center justify-between gap-3 border-t border-hairline bg-surface-2/75 px-3 text-[11px] text-ink-3 select-none">
+          <div className="flex min-w-0 items-center gap-2 tabular-nums">
+            {!showingDiff && (
+              <>
+                <span className="truncate">{t('editor.statusCursor', { line: cursor.line, col: cursor.col })}</span>
+                {cursor.selectedChars > 0 && (
+                  <span className="truncate text-ink-2">
+                    · {t('editor.statusSelection', { lines: cursor.selectedLines, chars: cursor.selectedChars })}
+                  </span>
+                )}
+              </>
+            )}
+            {showingDiff && (
+              <span className="truncate font-medium text-accent">{t('editor.statusDiff')}</span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2.5 tabular-nums">
+            {activeTab.conflictMtimeMs !== null && (
+              <span className="rounded bg-danger-soft px-1.5 py-px font-medium text-danger">{t('editor.statusConflict')}</span>
+            )}
+            {activeTab.conflictMtimeMs === null && activeTab.externalChange && (
+              <span className="rounded bg-warn-soft px-1.5 py-px font-medium text-warn">{t('editor.statusModified')}</span>
+            )}
+            {showingDiff && (
+              <span className="rounded bg-fill px-1.5 py-px text-ink-2">{t('editor.statusReadOnly')}</span>
+            )}
+            <span>{LANGUAGE_LABELS[activeTab.language] ?? activeTab.language}</span>
+            {indentInfo && (
+              <span>{indentInfo.kind === 'tabs' ? `Tabs: ${indentInfo.size}` : `Spaces: ${indentInfo.size}`}</span>
+            )}
+            <span>{activeTab.eol}</span>
+          </div>
+        </div>
+      )}
 
       {/* Unsaved Changes Confirmation Modal */}
       {pendingClose && (

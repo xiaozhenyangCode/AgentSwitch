@@ -335,3 +335,16 @@ export const IconCompact = (p: P) => (
     <path d="m9 20 3-3 3 3M12 17v4" />
   </svg>
 )
+export const IconFolderTree = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 5h6l1.5 2H20v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18V5Z" />
+    <path d="M8.5 11.5h7M8.5 15h4.5" />
+  </svg>
+)
+export const IconDiff = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <path d="M12 4.5v15" />
+    <path d="M6.5 12h3M14.5 10.5h3M16 9v3" />
+  </svg>
+)

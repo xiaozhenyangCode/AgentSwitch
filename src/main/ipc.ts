@@ -104,8 +104,8 @@ import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
 import { allowFile, allowRoot, attachmentsDir, fileAccessSnapshot, isAllowedEditorAttachment, isAllowedEditorWorkspace, isAllowedPath } from './fileProtocol'
-import { EditorFileWatcher, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
-import type { EditorActionResult, EditorReadRequest, EditorSaveRequest, EditorWatchRequest } from '@shared/editor'
+import { EditorFileWatcher, listEditorDir, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
+import type { EditorActionResult, EditorListDirRequest, EditorReadRequest, EditorSaveRequest, EditorWatchRequest } from '@shared/editor'
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { basename, isAbsolute, join, sep } from 'node:path'
@@ -474,6 +474,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     const error = await shell.openPath(resolved.realPath)
     return error ? { ok: false, code: 'IO_ERROR', message: error } : { ok: true }
   })
+  ipcMain.handle(IPC.editorListDir, (_e, req: EditorListDirRequest) => listEditorDir(req, editorOptions))
   ipcMain.handle(IPC.gitChanges, (_e, dir: unknown, split: unknown) => gitChanges(dir, split === true))
   ipcMain.handle(IPC.gitStatus, (_e, dir: unknown) => gitStatus(dir))
   ipcMain.handle(IPC.gitLog, (_e, dir: unknown, limit?: unknown) => gitLog(dir, limit))

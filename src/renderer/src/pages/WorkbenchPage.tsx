@@ -3,7 +3,7 @@ import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import type { OutputFileRef } from '@shared/chat'
 import { deriveRelativePath, extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, joinPosixRelative, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
-import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import type { FileChange, ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
 import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
 import { FileSearchMenu } from '../components/FileSearchMenu'
 import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
@@ -35,8 +35,8 @@ import { CheckpointUndo, useCheckpoints } from '../components/CheckpointUndo'
 import { CollapsibleBody } from '../components/CollapsibleBody'
 import { escLayers, useEscape } from '../lib/escStack'
 import { COMPOSER_MAX_HEIGHT, composerEscapeAction, nextComposerExpanded, showComposerExpand } from '../lib/composerExpand'
-import { applyFileReference, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
-import { attachmentRefLabel, COMPOSER_ATTACHMENT_LIMIT, mergeAttachments, removeFileReferences, scanFileReferences, type FileReferenceSpan } from '@shared/fileReferences'
+import { applyFileReference, insertFileReferenceAtCaret, matchFileTrigger, type FileTrigger } from '../lib/fileMention'
+import { attachmentRefLabel, COMPOSER_ATTACHMENT_LIMIT, formatLineRangeSuffix, mergeAttachments, removeFileReferences, scanFileReferences, type FileLineRange, type FileReferenceSpan } from '@shared/fileReferences'
 import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
@@ -486,6 +486,7 @@ export function WorkbenchPage() {
   }, [thread?.id])
 
   const [composerSeed, setComposerSeed] = useState<{ seq: number; text: string; atts: Attachment[]; quote: MessageQuote | null } | null>(null)
+  const [fileRefSeed, setFileRefSeed] = useState<FileRefSeed | null>(null)
   const [quoteSeed, setQuoteSeed] = useState<{ seq: number; quote: MessageQuote } | null>(null)
   const [rewindModal, setRewindModal] = useState<{
     threadId: string
@@ -552,6 +553,13 @@ export function WorkbenchPage() {
   const gitTools = showGitTools && git.status ? { status: git.status, disabled: git.disabled, run: git.run } : null
   const conflictLabel = gitTools ? gitConflictLabel(gitTools.status.inProgress, gitTools.status.conflicts) : null
   const nChanged = (fc.changes?.files.length ?? 0) + (fc.changes?.more ?? 0)
+  const gitStatusByRelPath = useMemo(() => {
+    const map = new Map<string, FileChange['status']>()
+    for (const file of fc.changes?.files ?? []) {
+      map.set(file.path, file.status)
+    }
+    return map
+  }, [fc.changes?.files])
 
   const openRewind = useCallback(
     async (msg: UserMessage) => {
@@ -825,6 +833,7 @@ export function WorkbenchPage() {
           suggestion={thread && !isThreadBusy(thread) ? thread.suggestedInput : null}
           history={inputHistory}
           seed={composerSeed}
+          fileRefSeed={fileRefSeed}
           quoteSeed={quoteSeed}
           footer={
             <ProjectBar
@@ -989,15 +998,25 @@ export function WorkbenchPage() {
           maximized={codeEditor.maximized}
           focusToken={codeEditor.focusToken}
           pendingClose={codeEditor.pendingClose}
+          gitStatusByRelPath={gitStatusByRelPath}
           onToggleMaximize={() => codeEditor.setMaximized((v) => !v)}
           onSelectTab={codeEditor.selectTab}
+          onSelectAdjacentTab={codeEditor.selectAdjacentTab}
+          onOpenFile={codeEditor.openFile}
           onCloseTab={codeEditor.requestCloseTab}
           onClosePanel={codeEditor.requestClosePanel}
           onChangeContent={codeEditor.updateContent}
           onSaveTab={(id, opts) => void codeEditor.saveTab(id, opts)}
           onReloadTab={codeEditor.reloadTab}
           onDismissExternalChange={codeEditor.dismissExternalChange}
+          onOpenConflictDiff={(id) => void codeEditor.openConflictDiff(id)}
+          onToggleUnsavedDiff={codeEditor.toggleUnsavedDiff}
+          onExitDiff={codeEditor.exitDiff}
           onResolvePendingClose={(action) => void codeEditor.resolvePendingClose(action)}
+          onReferenceToChat={({ path, realPath, lineRange }) => {
+            if (codeEditor.maximized) codeEditor.setMaximized(false)
+            setFileRefSeed((prior) => ({ seq: (prior?.seq ?? 0) + 1, path, realPath, lineRange }))
+          }}
         />
       )}
       {quickOpen && (
@@ -1246,12 +1265,12 @@ function MentionChip({ a }: { a: AgentRef }) {
 /** Replaces recognized references for display while retaining the editable message text. */
 function renderUserText({ text, mentions, attachments }: UserMessage, onOpen: (a: Attachment) => void): ReactNode[] {
   const refs = scanFileReferences(text, attachments)
-  const chips = refs.map(({ start, end, index }): { start: number; end: number; node: ReactNode } => {
+  const chips = refs.map(({ start, end, index, lineRange }): { start: number; end: number; node: ReactNode } => {
     const a = attachments[index]
     return { start, end, node: (
       <button key={start} type="button" spellCheck={false} title={attachmentTitle(a)} onClick={() => onOpen(a)}
         className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded bg-white/25 px-1.5 py-0.5 align-baseline leading-tight text-white hover:bg-white/35">
-        <IconFile size={12} className="shrink-0" aria-hidden="true" /> <span className="truncate">{a.refLabel || a.name}</span>
+        <IconFile size={12} className="shrink-0" aria-hidden="true" /> <span className="truncate">{(a.refLabel || a.name) + formatLineRangeSuffix(lineRange)}</span>
       </button>
     ) }
   })
@@ -1945,6 +1964,13 @@ function TaskSummaryBar({ thread }: { thread: Thread | null }) {
   )
 }
 
+interface FileRefSeed {
+  seq: number
+  path: string
+  realPath: string | null
+  lineRange: FileLineRange | null
+}
+
 function Composer({
   driver,
   driverModel,
@@ -1969,6 +1995,7 @@ function Composer({
   suggestion,
   history,
   seed,
+  fileRefSeed,
   quoteSeed,
   footer
 }: {
@@ -2000,6 +2027,7 @@ function Composer({
   history: string[]
   /** Populates composer after a P1-1 rewind / re-edit. */
   seed?: { seq: number; text: string; atts: Attachment[]; quote: MessageQuote | null } | null
+  fileRefSeed?: FileRefSeed | null
   /** Attaches a quoted message snippet to the composer. */
   quoteSeed?: { seq: number; quote: MessageQuote } | null
   /** Context line under the input card (project folder). */
@@ -2052,6 +2080,8 @@ function Composer({
   const editor = useRef<HTMLDivElement>(null)
   const composingRef = useRef(false)
   const dismissed = useRef<{ value: string; caret: number } | null>(null)
+  const pendingReferenceFocus = useRef<{ value: string; caret: number } | null>(null)
+  const appliedFileRefSeq = useRef(0)
   /** Active ↑/↓ history cursor (`idx` into `history`, plus the unsent draft to restore on ↓). */
   const histRef = useRef<HistoryCursor | null>(null)
   // per-conversation drafts: park the leaving chat's input, bring back the target's
@@ -2076,6 +2106,7 @@ function Composer({
     setViewing(null)
     setExtOpen(false)
     dismissed.current = null
+    pendingReferenceFocus.current = null
     changeExpansion('thread')
   }, [draftKey])
   useLayoutEffect(() => {
@@ -2369,18 +2400,65 @@ function Composer({
     })
   }
 
-  const applyReferenceEdit = (el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
+  const focusReference = useCallback((el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
+    dismissed.current = next
+    el.focus({ preventScroll: true })
+    el.setSelectionRange(next.caret, next.caret)
+  }, [])
+
+  useLayoutEffect(() => {
+    const next = pendingReferenceFocus.current
+    const el = ta.current
+    if (!next || !el) return
+    pendingReferenceFocus.current = null
+    if (el.value === next.value) focusReference(el, next)
+  }, [text, focusReference])
+
+  const applyReferenceEdit = useCallback((el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
     histRef.current = null
-    setText(next.value)
     setFile(null)
     setMention(null)
     setSlash(null)
-    requestAnimationFrame(() => {
-      if (ta.current !== el || el.value !== next.value) return
-      el.focus({ preventScroll: true })
-      el.setSelectionRange(next.caret, next.caret)
-    })
-  }
+    if (el.value === next.value) {
+      focusReference(el, next)
+    } else {
+      pendingReferenceFocus.current = next
+      setText(next.value)
+    }
+  }, [focusReference])
+
+  useEffect(() => {
+    const el = ta.current
+    if (!el || !fileRefSeed || appliedFileRefSeq.current === fileRefSeed.seq) return
+    appliedFileRefSeq.current = fileRefSeed.seq
+    let path = fileRefSeed.path
+    let relativePath = deriveRelativePath(path, projectDir)
+    if (!relativePath && fileRefSeed.realPath) {
+      relativePath = deriveRelativePath(fileRefSeed.realPath, projectDir)
+      if (relativePath) path = fileRefSeed.realPath
+    }
+    const name = path.split(path.startsWith('/') ? '/' : /[/\\]/).at(-1) || path
+    const merged = mergeAttachments(live.current.atts, [{
+      id: fileMenuId + ':' + path,
+      path,
+      name,
+      source: relativePath ? 'workspace-file' : 'chat-attachment',
+      relativePath: relativePath ?? undefined,
+      isImage: false,
+      size: 0,
+      thumb: null
+    }], projectDir)
+    const attachment = merged.resolved[0]
+    if (!attachment) {
+      toast({ kind: 'warn', title: t('att.limit', { n: COMPOSER_ATTACHMENT_LIMIT }) })
+      return
+    }
+    setAtts(merged.next)
+    setExtOpen(false)
+    const next = insertFileReferenceAtCaret(el.value, el.selectionStart, el.selectionEnd, attachmentRefLabel(attachment), fileRefSeed.lineRange)
+    if (/[^\S\r\n]/.test(next.value[next.caret] ?? '')) next.caret++
+    applyReferenceEdit(el, next)
+  }, [fileRefSeed, projectDir, fileMenuId, toast, applyReferenceEdit])
 
   const insertFile = (item: ComposerFileCandidate) => {
     const el = ta.current

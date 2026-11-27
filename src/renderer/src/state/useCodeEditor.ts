@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EditorEol, EditorErrorCode, EditorFileChangedEvent, EditorReadResult, EditorSaveResult } from '@shared/editor'
+import {
+  applyAcceptDiskVersion,
+  applyKeepMineSaved,
+  enterConflictDiff,
+  exitDiffState,
+  toggleUnsavedDiffState,
+  type EditorDiffMode
+} from '../lib/editorDiffState'
+import {
+  loadWorkspaceEditorState,
+  resolveRestoredWorkspaceTabs,
+  saveWorkspaceEditorState
+} from '../lib/editorPersistence'
 import { t } from '../state/i18n'
 import { useApp } from './AppContext'
 
@@ -20,6 +33,9 @@ export interface EditorTab {
   saving: boolean
   externalChange: 'modified' | 'deleted' | null
   conflictMtimeMs: number | null
+  diffMode: EditorDiffMode
+  diskContent: string | null
+  loadingDiff: boolean
   error?: {
     code: EditorErrorCode
     message: string
@@ -40,6 +56,30 @@ function fileNameOf(filePath: string): string {
   return parts[parts.length - 1] || filePath
 }
 
+function makeLoadingTab(path: string, workspaceDir: string | null): EditorTab {
+  return {
+    id: path,
+    path,
+    realPath: null,
+    workspaceDir,
+    name: fileNameOf(path),
+    status: 'loading',
+    content: '',
+    savedContent: '',
+    mtimeMs: 0,
+    size: 0,
+    eol: 'LF',
+    language: 'plaintext',
+    syncVersion: 0,
+    saving: false,
+    externalChange: null,
+    conflictMtimeMs: null,
+    diffMode: 'none',
+    diskContent: null,
+    loadingDiff: false
+  }
+}
+
 export function useCodeEditor(projectDir: string | null) {
   const { toast } = useApp()
   const [tabs, setTabs] = useState<EditorTab[]>([])
@@ -53,8 +93,12 @@ export function useCodeEditor(projectDir: string | null) {
   tabsRef.current = tabs
   const activeIdRef = useRef<string | null>(activeId)
   activeIdRef.current = activeId
+  const openRef = useRef<boolean>(open)
+  openRef.current = open
   const watchedPathsRef = useRef(new Set<string>())
-  const prevProjectDirRef = useRef<string | null>(projectDir)
+  const prevProjectDirRef = useRef<string | null | undefined>(undefined)
+  const restoredWorkspaceRef = useRef<string | null>(null)
+  const restoreSeqRef = useRef(0)
 
   const watchPath = useCallback((path: string, workspaceDir: string | null) => {
     if (watchedPathsRef.current.has(path)) return
@@ -105,7 +149,13 @@ export function useCodeEditor(projectDir: string | null) {
     }
   }, [unwatchPath])
 
-  const loadTabContent = useCallback(async (tabId: string, path: string, workspaceDir: string | null, silentReload = false) => {
+  const loadTabContent = useCallback(async (
+    tabId: string,
+    path: string,
+    workspaceDir: string | null,
+    silentReload = false,
+    skipIfMissing = false
+  ) => {
     const res: EditorReadResult = await window.agentswitch.editor.readFile({ path, workspaceDir }).catch((err: unknown): EditorReadResult => ({
       ok: false,
       code: 'IO_ERROR',
@@ -114,6 +164,10 @@ export function useCodeEditor(projectDir: string | null) {
 
     if (!res.ok) {
       unwatchPath(path)
+      if (skipIfMissing && (res.code === 'NOT_FOUND' || res.code === 'OUT_OF_BOUNDS')) {
+        removeTabsNow([tabId], true)
+        return
+      }
       setTabs((prev) => prev.map((tab) => {
         if (tab.id !== tabId) return tab
         return {
@@ -122,6 +176,9 @@ export function useCodeEditor(projectDir: string | null) {
           status: 'error',
           externalChange: null,
           conflictMtimeMs: null,
+          diffMode: 'none',
+          diskContent: null,
+          loadingDiff: false,
           error: { code: res.code, message: res.message, size: res.size }
         }
       }))
@@ -145,23 +202,20 @@ export function useCodeEditor(projectDir: string | null) {
         return { ...tab, externalChange: 'modified' }
       }
       return {
-        ...tab,
+        ...applyAcceptDiskVersion(tab, {
+          content: res.content,
+          mtimeMs: res.mtimeMs,
+          size: res.size
+        }),
         realPath: res.realPath,
-        status: 'ready',
-        content: res.content,
-        savedContent: res.content,
-        mtimeMs: res.mtimeMs,
-        size: res.size,
         eol: res.eol,
         language: res.language,
-        syncVersion: tab.syncVersion + 1,
-        externalChange: null,
-        conflictMtimeMs: null,
+        loadingDiff: false,
         error: undefined
       }
     }))
     watchPath(path, workspaceDir)
-  }, [unwatchPath, watchPath])
+  }, [removeTabsNow, unwatchPath, watchPath])
 
   const openFile = useCallback((path: string, workspaceOverride?: string | null) => {
     const trimmed = path.trim()
@@ -179,30 +233,12 @@ export function useCodeEditor(projectDir: string | null) {
       return
     }
 
-    const id = trimmed
-    const newTab: EditorTab = {
-      id,
-      path: trimmed,
-      realPath: null,
-      workspaceDir: ws,
-      name: fileNameOf(trimmed),
-      status: 'loading',
-      content: '',
-      savedContent: '',
-      mtimeMs: 0,
-      size: 0,
-      eol: 'LF',
-      language: 'plaintext',
-      syncVersion: 0,
-      saving: false,
-      externalChange: null,
-      conflictMtimeMs: null
-    }
+    const newTab = makeLoadingTab(trimmed, ws)
     setTabs((prev) => [...prev, newTab])
-    setActiveId(id)
+    setActiveId(newTab.id)
     setOpen(true)
     setFocusToken((n) => n + 1)
-    void loadTabContent(id, trimmed, ws)
+    void loadTabContent(newTab.id, trimmed, ws)
   }, [projectDir, loadTabContent])
 
   const updateContent = useCallback((tabId: string, nextContent: string) => {
@@ -250,13 +286,12 @@ export function useCodeEditor(projectDir: string | null) {
     setTabs((prev) => prev.map((item) => {
       if (item.id !== tabId) return item
       return {
-        ...item,
-        saving: false,
-        savedContent: contentToSave,
-        mtimeMs: res.mtimeMs,
-        size: res.size,
-        externalChange: null,
-        conflictMtimeMs: null
+        ...applyKeepMineSaved(item, {
+          content: contentToSave,
+          mtimeMs: res.mtimeMs,
+          size: res.size
+        }),
+        saving: false
       }
     }))
     return true
@@ -270,6 +305,54 @@ export function useCodeEditor(projectDir: string | null) {
 
   const dismissExternalChange = useCallback((tabId: string) => {
     setTabs((prev) => prev.map((item) => (item.id === tabId ? { ...item, externalChange: null } : item)))
+  }, [])
+
+  const openConflictDiff = useCallback(async (tabId: string) => {
+    const tab = tabsRef.current.find((item) => item.id === tabId)
+    if (!tab || tab.status !== 'ready' || tab.loadingDiff) return
+    setTabs((prev) => prev.map((item) => (item.id === tabId ? { ...item, loadingDiff: true } : item)))
+    const res: EditorReadResult = await window.agentswitch.editor.readFile({
+      path: tab.path,
+      workspaceDir: tab.workspaceDir
+    }).catch((err: unknown): EditorReadResult => ({
+      ok: false,
+      code: 'IO_ERROR',
+      message: err instanceof Error ? err.message : String(err)
+    }))
+
+    if (!res.ok) {
+      setTabs((prev) => prev.map((item) => (item.id === tabId ? { ...item, loadingDiff: false } : item)))
+      toast({ kind: 'error', title: t('editor.diffLoadFailed'), desc: res.message })
+      return
+    }
+    setTabs((prev) => prev.map((item) => {
+      if (item.id !== tabId) return item
+      return {
+        ...enterConflictDiff(item, res.content),
+        loadingDiff: false
+      }
+    }))
+  }, [toast])
+
+  const toggleUnsavedDiff = useCallback((tabId: string) => {
+    setTabs((prev) => prev.map((item) => (item.id === tabId ? toggleUnsavedDiffState(item) : item)))
+  }, [])
+
+  const exitDiff = useCallback((tabId: string) => {
+    setTabs((prev) => prev.map((item) => (item.id === tabId ? exitDiffState(item) : item)))
+    setFocusToken((n) => n + 1)
+  }, [])
+
+  const selectAdjacentTab = useCallback((delta: -1 | 1) => {
+    const list = tabsRef.current
+    if (list.length <= 1) return
+    const curIdx = list.findIndex((item) => item.id === activeIdRef.current)
+    const base = curIdx < 0 ? 0 : curIdx
+    const next = list[(base + delta + list.length) % list.length]
+    if (next) {
+      setActiveId(next.id)
+      setFocusToken((n) => n + 1)
+    }
   }, [])
 
   // Subscribe to main-process file watcher notifications.
@@ -288,29 +371,103 @@ export function useCodeEditor(projectDir: string | null) {
           void loadTabContent(tab.id, tab.path, tab.workspaceDir, true)
         } else {
           setTabs((prev) => prev.map((item) => (item.id === tab.id ? { ...item, externalChange: 'modified' } : item)))
+          // If the user already has conflict diff open, refresh diskContent live too.
+          if (tab.diffMode === 'conflict') {
+            void openConflictDiff(tab.id)
+          }
         }
       }
     })
-  }, [loadTabContent])
+  }, [loadTabContent, openConflictDiff])
 
-  // Handle project workspace switches cleanly without leaking fs.watch handles.
+  // Restore saved workspace tabs cleanly (skipping deleted files) and handle workspace switches.
   useEffect(() => {
     const prev = prevProjectDirRef.current
-    prevProjectDirRef.current = projectDir
     if (prev === projectDir) return
-    const stale = tabsRef.current.filter((tab) => tab.workspaceDir !== projectDir)
-    if (!stale.length) return
-    const cleanIds = stale.filter((tab) => !isTabDirty(tab)).map((tab) => tab.id)
-    const dirtyTabs = stale.filter(isTabDirty)
-    if (cleanIds.length) removeTabsNow(cleanIds, dirtyTabs.length === 0)
-    if (dirtyTabs.length) {
-      setPendingClose({
-        kind: 'workspace',
-        tabIds: dirtyTabs.map((tab) => tab.id),
-        names: dirtyTabs.map((tab) => tab.name)
+    prevProjectDirRef.current = projectDir
+
+    // Persist outgoing workspace before switching away.
+    if (prev && restoredWorkspaceRef.current === prev) {
+      const prevTabs = tabsRef.current.filter((tab) => tab.workspaceDir === prev)
+      const prevActive = prevTabs.find((tab) => tab.id === activeIdRef.current)
+      saveWorkspaceEditorState(prev, {
+        tabs: prevTabs.map((tab) => tab.path),
+        activePath: prevActive?.path ?? prevTabs[0]?.path ?? null,
+        open: openRef.current && prevTabs.length > 0
       })
     }
-  }, [projectDir, removeTabsNow])
+
+    // Close clean tabs from the previous workspace; prompt for dirty ones.
+    let hasDirtyStale = false
+    if (prev !== undefined) {
+      const stale = tabsRef.current.filter((tab) => tab.workspaceDir !== projectDir)
+      if (stale.length) {
+        const cleanIds = stale.filter((tab) => !isTabDirty(tab)).map((tab) => tab.id)
+        const dirtyTabs = stale.filter(isTabDirty)
+        hasDirtyStale = dirtyTabs.length > 0
+        if (cleanIds.length) removeTabsNow(cleanIds, !hasDirtyStale)
+        if (dirtyTabs.length) {
+          setPendingClose({
+            kind: 'workspace',
+            tabIds: dirtyTabs.map((tab) => tab.id),
+            names: dirtyTabs.map((tab) => tab.name)
+          })
+        }
+      }
+    }
+
+    restoredWorkspaceRef.current = null
+    const seq = ++restoreSeqRef.current
+    if (!projectDir) return
+
+    const saved = loadWorkspaceEditorState(projectDir)
+    if (!saved || !saved.tabs.length) {
+      restoredWorkspaceRef.current = projectDir
+      return
+    }
+
+    const restore = async () => {
+      const existingMap = await window.agentswitch.sys.pathsExist(saved.tabs).catch(() => {
+        const fallback: Record<string, boolean> = {}
+        for (const p of saved.tabs) fallback[p] = true
+        return fallback
+      })
+      if (restoreSeqRef.current !== seq) return
+      const resolved = resolveRestoredWorkspaceTabs(saved, existingMap)
+      restoredWorkspaceRef.current = projectDir
+      if (!resolved.tabs.length) {
+        saveWorkspaceEditorState(projectDir, { tabs: [], activePath: null, open: false })
+        return
+      }
+      const existingIds = new Set(tabsRef.current.map((tab) => tab.path))
+      const toCreate = resolved.tabs.filter((p) => !existingIds.has(p)).map((p) => makeLoadingTab(p, projectDir))
+      if (toCreate.length) {
+        setTabs((cur) => [...cur, ...toCreate])
+      }
+      if (!hasDirtyStale && resolved.activePath) {
+        setActiveId(resolved.activePath)
+      }
+      if (resolved.open) {
+        setOpen(true)
+      }
+      for (const tab of toCreate) {
+        void loadTabContent(tab.id, tab.path, projectDir, false, true)
+      }
+    }
+    void restore()
+  }, [projectDir, loadTabContent, removeTabsNow])
+
+  // Persist current workspace's tabs & open state whenever they change.
+  useEffect(() => {
+    if (!projectDir || restoredWorkspaceRef.current !== projectDir) return
+    const wsTabs = tabs.filter((tab) => tab.workspaceDir === projectDir)
+    const active = wsTabs.find((tab) => tab.id === activeId)
+    saveWorkspaceEditorState(projectDir, {
+      tabs: wsTabs.map((tab) => tab.path),
+      activePath: active?.path ?? wsTabs[0]?.path ?? null,
+      open: open && wsTabs.length > 0
+    })
+  }, [projectDir, tabs, activeId, open])
 
   const requestCloseTab = useCallback((tabId: string) => {
     const tab = tabsRef.current.find((item) => item.id === tabId)
@@ -380,11 +537,15 @@ export function useCodeEditor(projectDir: string | null) {
       setActiveId(tabId)
       setFocusToken((n) => n + 1)
     },
+    selectAdjacentTab,
     openFile,
     updateContent,
     saveTab,
     reloadTab,
     dismissExternalChange,
+    openConflictDiff,
+    toggleUnsavedDiff,
+    exitDiff,
     requestCloseTab,
     requestClosePanel,
     resolvePendingClose

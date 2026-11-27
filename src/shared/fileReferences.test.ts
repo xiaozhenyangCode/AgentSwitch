@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Attachment } from './chat'
 import {
-  attachmentDedupKey, attachmentRefLabel, formatComposerFileRef, formatInlineCodePath,
+  attachmentDedupKey, attachmentRefLabel, formatComposerFileRef, formatInlineCodePath, formatLineRangeSuffix,
   mergeAttachments, removeFileReferences, scanFileReferences, serializePromptWithAttachments
 } from './fileReferences'
 import { maskCode } from './mentions'
@@ -61,6 +61,49 @@ describe('attachment identity and file references', () => {
     expect(removeFileReferences(text, a)).toBe('See, then continue.\n\n`#readme.md` stays\n  unrelated  whitespace')
   })
 
+  it('formats and scans single lines, ranges, and quoted paths without consuming punctuation', () => {
+    const a = file('a', 'foo.ts', '/repo/src/foo.ts', { source: 'workspace-file', relativePath: 'src/foo.ts' })
+    const b = file('b', 'my @ file.ts', '/repo/my @ file.ts')
+    const range = { startLine: 12, endLine: 28 }
+    const single = { startLine: 12, endLine: 12 }
+    const refs = [
+      formatComposerFileRef(attachmentRefLabel(a), range),
+      formatComposerFileRef(attachmentRefLabel(a), single),
+      formatComposerFileRef(b.name, range)
+    ]
+    expect(refs).toEqual(['#src/foo.ts:12-28', '#src/foo.ts:12', '#`my @ file.ts`:12-28'])
+    const text = refs.join('， ') + '。后文'
+    const spans = scanFileReferences(text, [a, b])
+    expect(spans.map(({ start, end, index, lineRange }) => [text.slice(start, end), index, lineRange]))
+      .toEqual([[refs[0], 0, range], [refs[1], 0, single], [refs[2], 1, range]])
+    expect(removeFileReferences('See ' + refs[0] + ' ' + refs[1] + '， then ' + refs[2], a, [a, b]))
+      .toBe('See， then ' + refs[2])
+  })
+
+  it('preserves literal filenames and code, and ignores invalid or glued-on ranges', () => {
+    const a = file('a', 'foo.ts', '/tmp/foo.ts')
+    const b = file('b', 'foo.ts:12', '/tmp/foo.ts:12')
+    const c = file('c', 'my file.ts', '/tmp/my file.ts')
+    const text = [
+      '#foo.ts:12, #foo.ts:0 #foo.ts:20-10 #foo.ts:1.5 #foo.ts:9007199254740993',
+      '#`my file.ts`:12body #`my file.ts`:20-10 #`my file.ts`:0',
+      '#`"my file.ts"`:9!',
+      '`#foo.ts:4`',
+      '```ts', '#foo.ts:4', '```'
+    ].join('\n')
+    expect(scanFileReferences(text, [a, b, c]).map(({ raw, index, lineRange }) => [raw, index, lineRange]))
+      .toEqual([
+        ['#foo.ts:12', 1, undefined],
+        ['#`my file.ts`', 2, undefined],
+        ['#`my file.ts`', 2, undefined],
+        ['#`my file.ts`', 2, undefined],
+        ['#`"my file.ts"`:9', 2, { startLine: 9, endLine: 9 }]
+      ])
+    expect(formatLineRangeSuffix({ startLine: 1.5, endLine: 2 })).toBe('')
+    expect(formatLineRangeSuffix({ startLine: 2, endLine: 1 })).toBe('')
+    expect(formatComposerFileRef(a.name, { startLine: 0, endLine: 0 })).toBe('#foo.ts')
+  })
+
   it('serializes matched occurrences in place and lists remaining paths exactly once', () => {
     const workspace: ResolvedRunAttachment = {
       name: 'my @spec.md', absPath: '/workspace/docs/my @spec.md', promptPath: 'docs/my @spec.md',
@@ -77,5 +120,22 @@ describe('attachment identity and file references', () => {
       referencedCount: 2, unreferenced: [docs]
     })
     expect(serializePromptWithAttachments('', [docs]).text).toBe('附带文件：\n- `/tmp/notes.txt`')
+  })
+
+  it('serializes different ranges of the same attachment and deduplicates the file itself', () => {
+    const attachment: ResolvedRunAttachment = {
+      name: 'foo.ts', absPath: '/repo/src/foo.ts', promptPath: 'src/foo.ts',
+      relativePath: 'src/foo.ts', scope: 'workspace', refLabel: 'src/foo.ts', isImage: false
+    }
+    const external: ResolvedRunAttachment = {
+      name: 'my file.ts', absPath: '/tmp/my file.ts', promptPath: '/tmp/my file.ts',
+      scope: 'external', refLabel: 'my file.ts', isImage: false
+    }
+    const text = 'Compare #src/foo.ts:12-28 with #src/foo.ts:45 and #`my file.ts`:7。'
+    expect(serializePromptWithAttachments(text, [attachment, { ...attachment, refLabel: 'duplicate.ts' }, external])).toMatchObject({
+      text: 'Compare `src/foo.ts:12-28` with `src/foo.ts:45` and `/tmp/my file.ts:7`。',
+      referencedCount: 2,
+      unreferenced: []
+    })
   })
 })

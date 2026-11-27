@@ -676,6 +676,7 @@ export const IPC = {
   editorFileChanged: 'editor:fileChanged',
   editorRevealInFinder: 'editor:revealInFinder',
   editorOpenExternal: 'editor:openExternal',
+  editorListDir: 'editor:listDir',
   gitChanges: 'git:changes',
   gitStatus: 'git:status',
   gitLog: 'git:log',

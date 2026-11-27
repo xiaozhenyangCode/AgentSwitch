@@ -33,6 +33,22 @@ export type EditorSaveResult =
 export type EditorWatchRequest = { path: string; workspaceDir?: string | null }
 export type EditorActionResult = { ok: true } | EditorFailure
 
+export interface EditorDirEntry {
+  name: string
+  path: string
+  relPath: string
+  isDirectory: boolean
+}
+
+export type EditorListDirRequest = {
+  workspaceDir: string
+  dirPath?: string | null
+}
+
+export type EditorListDirResult =
+  | { ok: true; dirPath: string; entries: EditorDirEntry[]; truncated?: boolean }
+  | (EditorFailure & { realPath?: string })
+
 export type EditorFileChangedEvent = {
   path: string
   realPath: string

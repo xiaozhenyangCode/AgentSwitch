@@ -1,15 +1,19 @@
 import { randomBytes } from 'node:crypto'
 import { constants, lstatSync, watch, type FSWatcher, type Stats } from 'node:fs'
-import { lstat, open, realpath, rename, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, readFile, realpath, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import ignore from 'ignore'
 import {
   EDITOR_MAX_BYTES,
   detectEditorLanguage,
   isKnownBinaryPath,
   type EditorActionResult,
+  type EditorDirEntry,
   type EditorEol,
   type EditorErrorCode,
   type EditorFileChangedEvent,
+  type EditorListDirRequest,
+  type EditorListDirResult,
   type EditorReadRequest,
   type EditorReadResult,
   type EditorSaveRequest,
@@ -290,5 +294,116 @@ export class EditorFileWatcher {
     if (self && self.expiresAt > Date.now() && self.mtimeMs === st.mtimeMs) return
     entry.recentSelfWrite = undefined
     this.onChange({ path, realPath, mtimeMs: st.mtimeMs, size: st.size })
+  }
+}
+
+const TREE_PRUNED_NAMES = new Set([
+  '.git', '.svn', '.hg', 'node_modules', 'dist', 'build', 'out', '.next', '.nuxt',
+  '.cache', 'coverage', 'target', 'vendor', 'Pods', '.venv', 'venv', '__pycache__',
+  '.gradle', '.DS_Store', '.agentswitch'
+])
+
+const MAX_DIR_ENTRIES = 1000
+const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  if (candidate === root) return true
+  const rel = relative(root, candidate)
+  return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel)
+}
+
+function scopedIgnorePatterns(dir: string, text: string): string[] {
+  const prefix = '/' + dir.replace(/[\\*?[\]]/g, '\\$&') + '/'
+  const patterns: string[] = []
+  for (const line of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    if (!line || line[0] === '#') continue
+    const negation = line[0] === '!' ? '!' : ''
+    const pattern = line.slice(negation.length)
+    const trimmed = pattern.replace(/ +$/, '')
+    if (!trimmed || trimmed === '/') continue
+    const anywhere = !trimmed.replace(/\/$/, '').includes('/')
+    patterns.push(negation + prefix + (anywhere ? '**/' : '') + pattern.replace(/^\//, ''))
+  }
+  return patterns
+}
+
+async function buildDirIgnoreMatcher(root: string, realDir: string): Promise<ReturnType<typeof ignore> | null> {
+  const rel = relative(root, realDir)
+  const segments = rel ? rel.split(sep).filter(Boolean) : []
+  let matcher: ReturnType<typeof ignore> | null = null
+  let current = root
+  let relPosix = ''
+  for (let i = -1; i < segments.length; i++) {
+    if (i >= 0) {
+      current = join(current, segments[i])
+      relPosix = relPosix ? `${relPosix}/${segments[i]}` : segments[i]
+    }
+    const ignoreFile = join(current, '.gitignore')
+    const st = await lstat(ignoreFile).catch(() => null)
+    if (!st?.isFile()) continue
+    const rules = await readFile(ignoreFile, 'utf8').catch(() => null)
+    if (!rules) continue
+    matcher ??= ignore({ ignorecase: false })
+    matcher.add(relPosix ? scopedIgnorePatterns(relPosix, rules) : rules)
+  }
+  return matcher
+}
+
+export async function listEditorDir(req: EditorListDirRequest, opts: EditorFileOptions = {}): Promise<EditorListDirResult> {
+  if (!absolutePath(req?.workspaceDir)) return outside()
+  const target = req.dirPath ?? req.workspaceDir
+  if (!absolutePath(target)) return outside()
+  try {
+    const root = await realpath(req.workspaceDir)
+    if (opts.isWorkspaceAllowed && !opts.isWorkspaceAllowed(root)) return outside()
+    const rootStat = await lstat(root)
+    if (!rootStat.isDirectory()) return failure('NOT_A_FILE', 'Workspace is not a directory')
+
+    const realDir = await realpath(target)
+    if (!isWithinRoot(root, realDir)) return outside()
+    const dirStat = await lstat(realDir)
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return failure('NOT_A_FILE', 'Path is not a directory')
+
+    const [dirents, ig] = await Promise.all([
+      readdir(realDir, { withFileTypes: true }),
+      buildDirIgnoreMatcher(root, realDir)
+    ])
+
+    const entries: EditorDirEntry[] = []
+    for (const dirent of dirents) {
+      const name = dirent.name
+      if (!name || TREE_PRUNED_NAMES.has(name)) continue
+      const entryPath = join(realDir, name)
+      let isDirectory = false
+      if (dirent.isDirectory()) {
+        isDirectory = true
+      } else if (dirent.isFile()) {
+        isDirectory = false
+      } else if (dirent.isSymbolicLink()) {
+        const entryReal = await realpath(entryPath).catch(() => null)
+        if (!entryReal || !isWithinRoot(root, entryReal)) continue
+        const targetStat = await lstat(entryReal).catch(() => null)
+        if (!targetStat || (!targetStat.isDirectory() && !targetStat.isFile())) continue
+        isDirectory = targetStat.isDirectory()
+      } else {
+        continue
+      }
+
+      const relPath = relative(root, entryPath).split(sep).join('/')
+      if (!relPath) continue
+      if (ig && ig.ignores(isDirectory ? `${relPath}/` : relPath)) continue
+      entries.push({ name, path: entryPath, relPath, isDirectory })
+    }
+
+    entries.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || naturalCollator.compare(a.name, b.name))
+    const truncated = entries.length > MAX_DIR_ENTRIES
+    return {
+      ok: true,
+      dirPath: realDir,
+      entries: truncated ? entries.slice(0, MAX_DIR_ENTRIES) : entries,
+      ...(truncated && { truncated: true })
+    }
+  } catch (error) {
+    return fileError(error)
   }
 }
