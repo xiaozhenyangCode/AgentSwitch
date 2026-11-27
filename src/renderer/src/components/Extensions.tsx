@@ -1,114 +1,30 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
-import { popover } from '../lib/ui'
+import { isSignedIn } from '../lib/ui'
+import { useSortedAccounts } from '../state/AppContext'
+import { activeThread, useChat } from '../state/chat'
+import { pickDriver, useDraft } from '../state/draft'
+import type { groupQuickSkills } from '../lib/slashTrigger'
+import { isCliCompactCommand } from '../lib/compactCommand'
 import type { MsgKey } from '@shared/i18n'
 import type { ExtFileText, ExtOverview, ExtSource, McpServer, ProfileKind, ProfileState, RuleScope, SkillItem } from '@shared/types'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
-import { pinnedFirst, togglePin, usePins } from '../state/extensions'
+import { pinnedFirst, togglePin, useOverview, usePins } from '../state/extensions'
 import { t } from '../state/i18n'
-import { IconChevronDown, IconFile, IconFolder, IconPuzzle, IconRefresh, IconSearch, IconSlash, IconStar, IconX, Spinner } from './icons'
+import { IconChevronDown, IconFile, IconFolder, IconRefresh, IconSearch, IconSlash, IconStar, Spinner } from './icons'
 
 const SOURCE_KEY = { project: 'ext.src.project', global: 'ext.src.global', plugin: 'ext.src.plugin', builtin: 'ext.src.builtin' } as const
 export const sourceLabel = (s: ExtSource): string => t(SOURCE_KEY[s])
-const SOURCE_RANK: Record<ExtSource, number> = { project: 0, global: 1, plugin: 2, builtin: 3 }
-
-/**
- * Fuzzy match for the / menu: name prefix, then a word in the name (`-`, `:`, `_`), then
- * substring, then letters in order; the description is searched last. Project skills first.
- */
-export function filterSkills(items: SkillItem[], query: string, limit = 400): SkillItem[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return items.slice(0, limit)
-  const subseq = (s: string) => {
-    let i = 0
-    for (const ch of s) if (ch === q[i]) i++
-    return i === q.length
-  }
-  const score = (it: SkillItem): number => {
-    const n = it.name.toLowerCase()
-    if (n.startsWith(q)) return 0
-    if (n.split(/[-:_\s]/).some((w) => w.startsWith(q))) return 1
-    if (n.includes(q)) return 2
-    if (subseq(n)) return 3
-    if (it.description.toLowerCase().includes(q)) return 4
-    return -1
-  }
-  return items
-    .map((it) => ({ it, s: score(it) }))
-    .filter((x) => x.s >= 0)
-    .sort((a, b) => a.s - b.s || SOURCE_RANK[a.it.source] - SOURCE_RANK[b.it.source] || a.it.name.localeCompare(b.it.name))
-    .slice(0, limit)
-    .map((x) => x.it)
-}
-
 const Tag = ({ children, title }: { children: string; title?: string }) => (
   <span title={title} className="shrink-0 rounded-[5px] px-1.5 py-px text-[10.5px] leading-4 text-ink-3 shadow-[inset_0_0_0_1px_var(--ring)]">
     {children}
   </span>
 )
 
-/** The / menu above the composer. Keyboard handling lives in the composer. */
-export function SlashMenu({
-  account,
-  items,
-  total,
-  loading,
-  active,
-  pinned = [],
-  onPick,
-  onHover
-}: {
-  account: ProfileState | null
-  items: SkillItem[]
-  /** Pinned skill names (marked with a star; the caller puts them first). */
-  pinned?: string[]
-  /** Skills available before filtering (0 → empty state). */
-  total: number
-  loading: boolean
-  active: number
-  onPick: (it: SkillItem) => void
-  onHover: (i: number) => void
-}) {
-  const listRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>(`[data-i="${active}"]`)?.scrollIntoView({ block: 'nearest' })
-  }, [active, items])
-  return (
-    <div className={popover + ' flex max-h-[380px] w-[460px] flex-col'}>
-      <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">
-        <IconSlash size={13} /> <span className="min-w-0 flex-1 truncate">{account ? t('ext.skillsOf', { name: account.name }) : t('ext.skills')}</span>
-        {loading && <Spinner size={11} />}
-        {total > 0 && <span className="tabular-nums">{t('ext.count', { n: total })}</span>}
-      </div>
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-        {items.map((it, i) => (
-          <div
-            key={it.insert + it.source}
-            data-i={i}
-            onMouseDown={(e) => e.preventDefault() /* keep textarea focus */}
-            onMouseMove={() => i !== active && onHover(i)}
-            onClick={() => onPick(it)}
-            className={`flex cursor-default items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 ${i === active ? 'bg-accent/10' : ''}`}
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-mono text-[13px] leading-5 text-ink">{it.insert}</span>
-              {it.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{it.description}</span>}
-            </span>
-            {pinned.includes(it.name) && <IconStar size={12} filled className="shrink-0 text-warn" />}
-            <Tag title={it.plugin}>{sourceLabel(it.source)}</Tag>
-          </div>
-        ))}
-        {!items.length && <div className="px-2.5 py-2.5 text-[13px] text-ink-3">{loading && !total ? t('ext.loading') : total ? t('ext.noMatch') : t('ext.noSkills')}</div>}
-      </div>
-    </div>
-  )
-}
-
 const STATE_DOT: Record<McpServer['state'], string> = { on: 'bg-ok', off: 'bg-ink-3/40', pending: 'bg-warn' }
 
-function McpRow({ s, expanded, onToggle, onInsert }: { s: McpServer; expanded: boolean; onToggle: () => void; onInsert: (token: string) => void }) {
+function McpRow({ s, expanded, onToggle }: { s: McpServer; expanded: boolean; onToggle: () => void }) {
   const note = s.state === 'off' ? t('ext.mcpOff') : s.state === 'pending' ? t('ext.mcpPending') : s.local ? t('ext.mcpLocal') : s.managed ? t('ext.mcpManaged') : ''
-  const phrase = t('ext.mcpPhrase', { name: s.name })
   const rows: { label: string; value: string }[] = [
     ...(s.command ? [{ label: t('ext.mcpCmd'), value: s.command }] : []),
     ...(s.url ? [{ label: t('ext.mcpUrl'), value: s.url }] : []),
@@ -128,11 +44,6 @@ function McpRow({ s, expanded, onToggle, onInsert }: { s: McpServer; expanded: b
           <span className="shrink-0 font-mono text-[10.5px] text-ink-3">{s.transport}</span>
           <Chevron open={expanded} />
         </button>
-        {s.state !== 'off' && (
-          <button className={rowBtn} onClick={() => onInsert(phrase)} title={phrase}>
-            {t('ext.use')}
-          </button>
-        )}
       </div>
       {expanded && (
         <div className="mx-2.5 mt-0.5 mb-2 space-y-1 rounded-[10px] bg-black/[0.035] px-2.5 py-2 text-[12px] shadow-[inset_0_0_0_1px_var(--ring)]">
@@ -173,52 +84,6 @@ const SCOPE_KEY: Record<RuleScope, MsgKey> = {
   global: 'ext.src.global',
   project: 'ext.src.project',
   plugin: 'ext.src.plugin'
-}
-
-/** Counts behind the toolbar entry (what is in effect). */
-function counts(d: ExtOverview | null) {
-  if (!d) return null
-  return {
-    skills: d.skills.length,
-    agents: d.agents.length,
-    plugins: d.plugins.filter((p) => p.enabled).length,
-    mcp: d.mcp.filter((s) => s.state === 'on').length,
-    rules: d.rules.length,
-    hooks: d.hooks.filter((h) => !h.off).length
-  }
-}
-
-/**
- * Toolbar entry next to the model capsule: puzzle icon + total of what loads for this account and
- * project; the tooltip breaks it down. Clicking toggles the panel (rendered by the composer).
- */
-export function ExtensionsButton({ data, open, onToggle }: { data: ExtOverview | null; open: boolean; onToggle: () => void }) {
-  const c = counts(data)
-  const total = c ? c.skills + c.agents + c.mcp + c.rules + c.hooks : 0
-  const tip = c
-    ? t('ext.tip', {
-        skills: c.skills,
-        agents: c.agents,
-        plugins: c.plugins,
-        mcp: c.mcp,
-        rules: c.rules,
-        hooks: c.hooks
-      })
-    : t('ext.title')
-  return (
-    <button
-      // the panel ignores this button on outside mousedown (it toggles itself); the mousedown
-      // still propagates, so the composer's other popovers (model, account…) close as it opens
-      data-ext-toggle
-      onClick={onToggle}
-      className={`flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-ink-2 transition-colors hover:bg-black/[0.07] hover:text-ink ${open ? 'bg-black/[0.08] text-ink' : 'bg-black/[0.045]'}`}
-      title={tip}
-    >
-      <IconPuzzle size={13} className="text-ink-3" />
-      {t('ext.title')}
-      {total > 0 && <span className="text-ink-3">· {total}</span>}
-    </button>
-  )
 }
 
 /** Read-only text of a scanned file (main process whitelist, 64 KB). */
@@ -273,7 +138,7 @@ const Section = ({ children, n }: { children: string; n?: number }) => (
   </div>
 )
 
-function SkillsTab({ items, kind, q, onInsert }: { items: SkillItem[]; kind: ProfileKind | null; q: string; onInsert: (token: string) => void }) {
+function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind | null; q: string }) {
   const [filter, setFilter] = useState<SkillFilter>('all')
   const [open, setOpen] = useState<string | null>(null)
   const pins = usePins(kind)
@@ -313,9 +178,6 @@ function SkillsTab({ items, kind, q, onInsert }: { items: SkillItem[]; kind: Pro
                 <Tag title={it.plugin}>{it.plugin ? `${sourceLabel(it.source)} · ${it.plugin}` : sourceLabel(it.source)}</Tag>
                 {it.path && <Chevron open={expanded} />}
               </button>
-              <button className={rowBtn} onClick={() => onInsert(it.insert)} title={t('ext.insertHint', { token: it.insert })}>
-                {t('ext.insert')}
-              </button>
             </div>
             {expanded && it.path && <FilePreview path={it.path} />}
           </div>
@@ -326,10 +188,9 @@ function SkillsTab({ items, kind, q, onInsert }: { items: SkillItem[]; kind: Pro
   )
 }
 
-function AgentsTab({ data, kind, q, onInsert }: { data: ExtOverview; kind: ProfileKind | null; q: string; onInsert: (token: string) => void }) {
+function AgentsTab({ data, q }: { data: ExtOverview; q: string }) {
   const [open, setOpen] = useState<string | null>(null)
   const list = data.agents.filter((a) => has(q, a.name, a.description, a.path, a.plugin))
-  const phrase = (name: string) => t(kind && getProviderCapabilities(kind).usesStandaloneAgentTerm ? 'ext.agentPhraseCodex' : 'ext.agentPhrase', { name })
   return (
     <>
       {list.map((a) => {
@@ -346,9 +207,6 @@ function AgentsTab({ data, kind, q, onInsert }: { data: ExtOverview; kind: Profi
                 {a.model && <Tag>{a.model}</Tag>}
                 <Tag title={a.plugin}>{a.plugin ? `${sourceLabel(a.source)} · ${a.plugin}` : sourceLabel(a.source)}</Tag>
                 <Chevron open={expanded} />
-              </button>
-              <button className={rowBtn} onClick={() => onInsert(phrase(a.name))} title={phrase(a.name)}>
-                {t('ext.use')}
               </button>
             </div>
             {expanded && (
@@ -423,7 +281,7 @@ function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
   )
 }
 
-function McpTab({ data, q, onInsert }: { data: ExtOverview; q: string; onInsert: (token: string) => void }) {
+function McpTab({ data, q }: { data: ExtOverview; q: string }) {
   const [open, setOpen] = useState<string | null>(null)
   const servers = data.mcp.filter((s) => has(q, s.name, s.plugin, s.command, s.url, s.configPath))
   const groups = (['project', 'global', 'plugin', 'builtin'] as const).map((src) => ({ src, list: servers.filter((s) => s.source === src) })).filter((g) => g.list.length)
@@ -434,7 +292,7 @@ function McpTab({ data, q, onInsert }: { data: ExtOverview; q: string; onInsert:
           <Section n={g.list.length}>{sourceLabel(g.src)}</Section>
           {g.list.map((s) => {
             const id = g.src + s.name + (s.plugin ?? '') + (s.configPath ?? '')
-            return <McpRow key={id} s={s} expanded={open === id} onToggle={() => setOpen(open === id ? null : id)} onInsert={onInsert} />
+            return <McpRow key={id} s={s} expanded={open === id} onToggle={() => setOpen(open === id ? null : id)} />
           })}
         </div>
       ))}
@@ -729,116 +587,248 @@ function ContextTab({
   )
 }
 
-/**
- * Read-only panel over the composer: what the lead account loads in this project (skills,
- * agents, plugins, MCP, rule files, hooks). Reads local config only; no CLI run, no model call.
- */
-export function ExtensionsPanel({
-  account,
-  projectDir = null,
-  data,
+export function QuickSkillsButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      data-quick-skills-toggle
+      aria-expanded={open}
+      title={t('ext.quickSkillsTip')}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onToggle}
+      className={`flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium hover:bg-fill hover:text-ink ${open ? 'bg-accent/10 text-accent' : 'text-ink-2'}`}
+    >
+      <IconSlash size={13} />
+      {t('ext.quickSkills')}
+    </button>
+  )
+}
+
+export function QuickSkillsPopover({
+  mode,
+  query,
+  groups,
+  kind,
+  pins,
   loading,
-  onReload,
-  onInsert,
-  onClose
+  active,
+  onQuery,
+  onPick,
+  onHover,
+  onDismiss,
+  onCancel,
+  onManage
 }: {
-  account: ProfileState | null
-  projectDir?: string | null
-  data: ExtOverview | null
+  mode: 'inline' | 'picker'
+  query: string
+  groups: ReturnType<typeof groupQuickSkills>
+  kind: ProfileKind | undefined
+  pins: string[]
   loading: boolean
-  onReload: () => void
-  onInsert: (token: string) => void
-  onClose: () => void
+  active: number
+  onQuery: (query: string) => void
+  onPick: (skill: SkillItem) => void
+  onHover: (index: number) => void
+  onDismiss: () => void
+  onCancel: () => void
+  onManage: () => void
 }) {
-  const [tab, setTab] = useState<TabId>('skills')
-  const [query, setQuery] = useState('')
-  const ref = useRef<HTMLDivElement>(null)
-  const input = useRef<HTMLInputElement>(null)
-  const q = query.trim().toLowerCase()
+  const root = useRef<HTMLDivElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+  const picker = mode === 'picker'
+  const { pinned, all, flat } = groups
+  const searching = !!query.trim()
+  const showEmpty = searching ? !flat.length : !flat.some((item) => !isCliCompactCommand(item))
+  const emptyMessage = loading ? 'ext.quickLoading' : searching ? 'ext.noMatch' : 'ext.quickEmpty'
 
   useEffect(() => {
-    input.current?.focus()
-    const h = (e: MouseEvent) => {
-      const el = e.target as Element
-      if (!ref.current?.contains(el) && !el.closest?.('[data-ext-toggle]')) onClose()
+    list.current?.querySelector<HTMLElement>(`[data-skill-index="${active}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [active, flat])
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Element) || root.current?.contains(target) || target.closest('[data-quick-skills-toggle]')) return
+      onDismiss()
     }
-    window.addEventListener('mousedown', h)
-    return () => window.removeEventListener('mousedown', h)
-  }, [onClose])
-  useEscape(() => (input.current?.value ? setQuery('') : onClose()), true, onClose)
+    window.addEventListener('pointerdown', outside)
+    return () => window.removeEventListener('pointerdown', outside)
+  }, [onDismiss])
+  useEscape(() => query ? onQuery('') : onCancel(), picker, onCancel)
 
-  const c = counts(data)
-  const n: Record<TabId, number> = c
-    ? {
-        skills: c.skills,
-        agents: c.agents,
-        plugins: data!.plugins.length,
-        mcp: c.mcp,
-        context: c.rules + c.hooks
-      }
-    : { skills: 0, agents: 0, plugins: 0, mcp: 0, context: 0 }
-  const kind = account?.kind ?? null
-
-  return (
-    <div ref={ref} className={popover + ' flex h-[520px] w-[720px] max-w-[calc(100vw-64px)] flex-col p-0'}>
-      <div className="flex items-center gap-2 border-b border-hairline px-3.5 py-2.5">
-        <IconSearch size={14} className="shrink-0 text-ink-3" />
-        <input
-          ref={input}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t('ext.search')}
-          className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink outline-none placeholder:text-ink-3"
-        />
-        <span className="shrink-0 truncate text-[12px] text-ink-3">{account ? t('ext.panelOf', { name: account.name }) : ''}</span>
-        <button onClick={onClose} className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-black/[0.06] hover:text-ink" title={t('common.close')}>
-          <IconX size={13} />
+  const renderSkill = (skill: SkillItem, index: number) => {
+    const starred = pins.includes(skill.name)
+    const starLabel = t(starred ? 'ext.unpin' : 'ext.pin')
+    return (
+      <div
+        key={JSON.stringify([skill.insert, skill.source, skill.plugin, skill.path])}
+        data-skill-index={index}
+        className={`group relative rounded-[10px] ${index === active ? 'bg-accent/10' : ''}`}
+        onMouseEnter={() => onHover(index)}
+      >
+        <button
+          type="button"
+          className="block w-full min-w-0 rounded-[10px] px-2.5 py-1.5 text-left"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onPick(skill)}
+        >
+          <span className={`block truncate font-mono text-[13px] leading-5 text-ink ${kind ? 'pr-7' : ''}`}>{skill.insert}</span>
+          {skill.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{skill.description}</span>}
         </button>
-      </div>
-      <div className="flex gap-0.5 px-2 pt-1.5">
-        {TABS.map((id) => (
+        {kind && (
           <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[12.5px] transition-colors ${tab === id ? 'bg-black/[0.07] font-medium text-ink' : 'text-ink-2 hover:bg-black/[0.04]'}`}
+            type="button"
+            aria-label={starLabel}
+            aria-pressed={starred}
+            title={starLabel}
+            className={`absolute top-1.5 right-2 rounded-md p-1 hover:bg-fill ${starred ? 'text-warn' : 'text-ink-3 opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              event.stopPropagation()
+              togglePin(kind, skill.name)
+            }}
           >
-            {t(`ext.tab.${id}`)}
-            <span className="text-[11px] text-ink-3 tabular-nums">{n[id]}</span>
+            <IconStar size={13} filled={starred} />
           </button>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-        {!account ? (
-          <Empty>{t('ext.noAccount')}</Empty>
-        ) : !data ? (
-          <Empty>{t('ext.loading')}</Empty>
-        ) : tab === 'skills' ? (
-          <SkillsTab items={data.skills} kind={kind} q={q} onInsert={onInsert} />
-        ) : tab === 'agents' ? (
-          <AgentsTab data={data} kind={kind} q={q} onInsert={onInsert} />
-        ) : tab === 'plugins' ? (
-          <PluginsTab data={data} q={q} />
-        ) : tab === 'mcp' ? (
-          <McpTab data={data} q={q} onInsert={onInsert} />
-        ) : (
-          <ContextTab account={account} projectDir={projectDir} data={data} q={q} onReload={onReload} />
         )}
       </div>
-      <div className="flex items-center gap-2 border-t border-hairline px-3.5 py-2 text-[11px] text-ink-3">
-        <span className="min-w-0 flex-1 truncate" title={data ? [data.configDir, data.project].filter(Boolean).join('\n') : ''}>
-          {data ? t('ext.readFrom', { dir: data.configDir }) + (data.project ? ` · ${data.project.split('/').filter(Boolean).pop()}` : '') : ''}
-          {data && data.errors > 0 && <span className="text-warn"> · {t('ext.parseErrors', { n: data.errors })}</span>}
-        </span>
-        <span className="shrink-0">{t('ext.readOnly')}</span>
+    )
+  }
+
+  return (
+    <div ref={root} className="flex max-h-[min(380px,calc(100dvh-12rem))] w-[min(420px,100%)] flex-col rounded-2xl bg-surface p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)]">
+      {picker && (
+        <div className="mb-1 flex shrink-0 items-center gap-2 border-b border-hairline px-2.5 py-2">
+          <IconSearch size={14} className="shrink-0 text-ink-3" />
+          <input
+            autoFocus
+            value={query}
+            aria-label={t('ext.quickSearchPlaceholder')}
+            placeholder={t('ext.quickSearchPlaceholder')}
+            onChange={(event) => onQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || !flat.length) return
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                const delta = event.key === 'ArrowDown' ? 1 : -1
+                onHover((active + delta + flat.length) % flat.length)
+              } else if (event.key === 'Enter') {
+                event.preventDefault()
+                onPick(flat[active])
+              }
+            }}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3"
+          />
+        </div>
+      )}
+      <div ref={list} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        {!searching && pinned.length > 0 && <Section>{t('ext.groupPinned')}</Section>}
+        {pinned.map(renderSkill)}
+        {!searching && all.length > 0 && <Section>{t('ext.groupAll')}</Section>}
+        {all.map((skill, index) => renderSkill(skill, pinned.length + index))}
+        {showEmpty && <div className="px-2.5 py-3 text-[13px] text-ink-3">{t(emptyMessage)}</div>}
+      </div>
+      <div className="mt-1 flex shrink-0 flex-wrap items-center justify-between gap-x-3 border-t border-hairline px-2.5 pt-1 text-[11px] text-ink-3">
+        <span>{t('ext.quickNavHint')}</span>
         <button
-          onClick={onReload}
+          type="button"
+          className="rounded-md px-1 py-1 hover:text-ink"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onManage}
+        >
+          {t('ext.manageAll')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function ExtensionsSettingsView() {
+  const chat = useChat()
+  const draft = useDraft()
+  const accounts = useSortedAccounts()
+  const context = activeThread(chat) ?? draft
+  const projectDir = context.projectDir
+  const participants = context.participants.length ? context.participants : accounts.filter(isSignedIn).map((account) => account.id)
+  const [accountId, setAccountId] = useState('')
+  const account = accounts.find((item) => item.id === accountId) ?? pickDriver(context, accounts, participants)
+  const { data, loading, reload } = useOverview(account?.id ?? null, projectDir)
+  const [tab, setTab] = useState<TabId>('skills')
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-hairline bg-surface-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5">
+        <label className="flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
+          {t('ext.accountSelect')}
+          <select
+            value={account?.id ?? ''}
+            disabled={!accounts.length}
+            onChange={(event) => setAccountId(event.target.value)}
+            className="min-w-0 max-w-52 rounded-md bg-fill px-2 py-1.5 text-[13px] text-ink"
+          >
+            {!accounts.length && <option value="">{t('ext.noAccount')}</option>}
+            {accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
+        <button
+          onClick={() => void reload()}
           disabled={loading || !account}
-          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-black/[0.05] hover:text-ink disabled:opacity-60"
+          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[12px] text-ink-2 hover:bg-fill hover:text-ink disabled:opacity-60"
           title={t('ext.reload')}
         >
           {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
         </button>
       </div>
+      <div className="flex flex-wrap gap-0.5 px-2.5 pt-2.5">
+        {TABS.map((id) => (
+          <button
+            key={id}
+            aria-pressed={tab === id}
+            onClick={() => setTab(id)}
+            className={`rounded-lg px-2.5 py-1 text-[12.5px] transition-colors ${tab === id ? 'bg-accent/10 font-medium text-accent' : 'text-ink-2 hover:bg-fill'}`}
+          >
+            {t(`ext.tab.${id}`)}
+          </button>
+        ))}
+      </div>
+      <p className="px-3.5 pt-2 pb-2.5 text-[12px] text-ink-3">{t(`ext.desc.${tab}`)}</p>
+      <div className="mx-3.5 mb-2 flex items-center gap-2 rounded-lg bg-surface px-2.5 py-1.5 shadow-[0_0_0_1px_var(--ring)]">
+        <IconSearch size={14} className="shrink-0 text-ink-3" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label={t('ext.search')}
+          placeholder={t('ext.search')}
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3"
+        />
+      </div>
+      <div key={JSON.stringify([account?.id, projectDir])} className="px-1.5 py-1">
+        {!account ? (
+          <Empty>{t('ext.noAccount')}</Empty>
+        ) : !data ? (
+          <Empty>{t(loading ? 'ext.loading' : 'ext.previewFailed')}</Empty>
+        ) : tab === 'skills' ? (
+          <SkillsTab items={data.skills} kind={account.kind} q={q} />
+        ) : tab === 'agents' ? (
+          <AgentsTab data={data} q={q} />
+        ) : tab === 'plugins' ? (
+          <PluginsTab data={data} q={q} />
+        ) : tab === 'mcp' ? (
+          <McpTab data={data} q={q} />
+        ) : (
+          <ContextTab account={account} projectDir={projectDir} data={data} q={q} onReload={() => void reload()} />
+        )}
+      </div>
+      {data && (
+        <div className="border-t border-hairline px-3.5 py-2 text-[11px] text-ink-3">
+          <div className="truncate" title={[data.configDir, data.project].filter(Boolean).join('\n')}>
+            {t('ext.readFrom', { dir: data.configDir })}
+            {data.project ? ` · ${data.project.split('/').filter(Boolean).pop()}` : ''}
+            {data.errors > 0 && <span className="text-warn"> · {t('ext.parseErrors', { n: data.errors })}</span>}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

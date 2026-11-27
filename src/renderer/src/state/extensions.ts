@@ -12,36 +12,35 @@ const keyOf = (id: ProfileId, cwd: string | null): Key => `${id}|${cwd ?? ''}`
 
 function useLocalConfig<T>(fetcher: (id: ProfileId, cwd: string | null, refresh: boolean) => Promise<T>, store: Map<Key, T>, id: ProfileId | null, cwd: string | null, active: boolean) {
   const key = id ? keyOf(id, cwd) : null
-  const [data, setData] = useState<T | null>(key ? (store.get(key) ?? null) : null)
-  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<{ key: Key; data: T | null } | null>(null)
+  const [loadingKey, setLoadingKey] = useState<Key | null>(null)
   const latest = useRef(key)
   latest.current = key
 
   const load = useCallback(
     async (refresh = false) => {
       if (!id || !key) return
-      setLoading(true)
+      setLoadingKey(key)
       try {
         const r = await fetcher(id, cwd, refresh)
         store.set(key, r)
-        if (latest.current === key) setData(r)
+        if (latest.current === key) setResult({ key, data: r })
       } catch {
         // config unreadable: behave as "nothing configured"
-        if (latest.current === key) setData(store.get(key) ?? null)
+        if (latest.current === key) setResult({ key, data: store.get(key) ?? null })
       } finally {
-        if (latest.current === key) setLoading(false)
+        if (latest.current === key) setLoadingKey(null)
       }
     },
     [id, cwd, key, fetcher, store]
   )
 
   useEffect(() => {
-    setLoading(false)
-    setData(key ? (store.get(key) ?? null) : null)
     if (key && active) void load()
   }, [key, active, load, store])
 
-  return { data, loading, reload: () => load(true) }
+  const data = result && result.key === key ? result.data : key ? (store.get(key) ?? null) : null
+  return { data, loading: !!key && (loadingKey === key || (active && !data && result?.key !== key)), reload: () => load(true) }
 }
 
 const skillStore = new Map<Key, SkillList>()
@@ -52,7 +51,7 @@ export const useSkills = (id: ProfileId | null, cwd: string | null, active: bool
 
 const overviewStore = new Map<Key, ExtOverview>()
 const fetchOverview = (id: ProfileId, cwd: string | null, refresh: boolean) => window.agentswitch.ext.overview(id, cwd, refresh)
-/** Skills, agents, plugins, MCP, rules and hooks for the toolbar entry and its panel. */
+/** Skills, agents, plugins, MCP, rules and hooks for the extensions settings page. */
 export const useOverview = (id: ProfileId | null, cwd: string | null, active = true) => useLocalConfig(fetchOverview, overviewStore, id, cwd, active)
 
 // ---- pinned skills (per CLI kind, stored in userData) ------------------------------------------

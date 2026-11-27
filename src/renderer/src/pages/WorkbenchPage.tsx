@@ -4,12 +4,13 @@ import type { OutputFileRef } from '@shared/chat'
 import { deriveRelativePath, extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, joinPosixRelative, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
 import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
-import { ExtensionsButton, ExtensionsPanel, SlashMenu, filterSkills } from '../components/Extensions'
+import { QuickSkillsButton, QuickSkillsPopover } from '../components/Extensions'
 import { FileSearchMenu } from '../components/FileSearchMenu'
-import { pinnedFirst, useOverview, usePins, useSkills } from '../state/extensions'
+import { usePins, useSkills } from '../state/extensions'
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
-import { useApp } from '../state/AppContext'
+import { useApp, useSortedAccounts } from '../state/AppContext'
+import { groupQuickSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, isSignedIn, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
@@ -46,7 +47,6 @@ import {
   computeContextState,
   isCompactCommand,
   makeCompactSlashItem,
-  mergeSlashCommands,
   type ContextNoticeDismissal
 } from '../lib/compactCommand'
 import { useStartThread } from '../state/threads'
@@ -145,17 +145,6 @@ function useOutside<T extends HTMLElement>(open: boolean, close: () => void) {
     return () => window.removeEventListener('mousedown', h)
   }, [open, close])
   return ref
-}
-
-/** Accounts sorted: ready first, then kind order, then creation. */
-function useSortedAccounts(): ProfileState[] {
-  const { profiles } = useApp()
-  return useMemo(() => {
-    const order = { claude: 0, codex: 1, gemini: 2, reasonix: 3 } as const
-    return [...profiles].sort(
-      (a, b) => Number(isReady(b)) - Number(isReady(a)) || Number(isSignedIn(b)) - Number(isSignedIn(a)) || order[a.kind] - order[b.kind] || a.createdAt - b.createdAt
-    )
-  }, [profiles])
 }
 
 /** `@Name` or `@Name(model)` tokens for the given accounts, in text order (code blocks / inline code skipped). */
@@ -2034,7 +2023,7 @@ function Composer({
   /** Context line under the input card (project folder). */
   footer?: ReactNode
 }) {
-  const { toast, navigate } = useApp()
+  const { toast, navigate, openSettings } = useApp()
   const { sendKey } = useSettings()
   useModelsVersion()
   const accounts = useSortedAccounts()
@@ -2050,32 +2039,27 @@ function Composer({
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
   /** / menu: AgentSwitch built-in commands + skills/commands of the lead account in this project. */
-  const [slash, setSlash] = useState<{ start: number; query: string; index: number } | null>(null)
+  const [slash, setSlash] = useState<(
+    | ({ mode: 'inline' } & SlashTrigger)
+    | { mode: 'picker'; query: string }
+  ) & { index: number } | null>(null)
   const [file, setFile] = useState<{ trigger: FileTrigger; index: number } | null>(null)
   const fileMenuId = useId()
   const cliSkillsEnabled = !driver || !!getProviderCapabilities(driver.kind).skillTriggerPrefix
   const skills = useSkills(cliSkillsEnabled ? (driver?.id ?? null) : null, projectDir, !!slash && cliSkillsEnabled)
-  const skillItems = cliSkillsEnabled ? (skills.data?.items ?? []) : []
+  const skillItems = skills.data?.items
   const compactDesc = t('wb.compactSlashDesc')
   const builtinSlash = useMemo(() => [makeCompactSlashItem(compactDesc)], [compactDesc])
   const pins = usePins(driver?.kind)
-  // pinned skills lead the / menu while nothing is typed, followed by built-in /compact
-  const slashMatches = useMemo(() => {
-    if (!slash) return []
-    return mergeSlashCommands(skillItems, builtinSlash, slash.query, pins, filterSkills, pinnedFirst)
-  }, [slash, skillItems, builtinSlash, pins])
-  /** Extensions panel (skills, agents, plugins, MCP, rules & hooks), read-only. */
-  const [extOpen, setExtOpen] = useState(false)
-  const fileOpen = !extOpen && !mention && !slash && !!file
+  const slashQuery = slash?.query
+  const slashGroups = useMemo(
+    () => slashQuery === undefined ? null : groupQuickSkills(skillItems ?? [], builtinSlash, slashQuery, pins),
+    [skillItems, builtinSlash, slashQuery, pins]
+  )
+  const slashActive = Math.min(slash?.index ?? 0, Math.max(0, (slashGroups?.flat.length ?? 0) - 1))
+  const fileOpen = !mention && !slash && !!file
   const fileSearch = useFileSearch(projectDir, fileOpen ? file.trigger : null, atts)
   const fileActive = Math.min(file?.index ?? 0, Math.max(0, fileSearch.items.length - 1))
-  const overview = useOverview(driver?.id ?? null, projectDir, true)
-  const closeExt = useCallback(() => setExtOpen(false), [])
-  const reloadOverview = overview.reload
-  useEffect(() => {
-    if (extOpen) void reloadOverview()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extOpen])
   const ta = useRef<HTMLTextAreaElement>(null)
   const mirror = useRef<HTMLDivElement>(null)
   const editor = useRef<HTMLDivElement>(null)
@@ -2105,7 +2089,6 @@ function Composer({
     setSlash(null)
     setFile(null)
     setViewing(null)
-    setExtOpen(false)
     dismissed.current = null
     pendingReferenceFocus.current = null
     changeExpansion('thread')
@@ -2163,7 +2146,7 @@ function Composer({
   const editorPadding = ghost ? (showExpand ? 'pr-24' : 'pr-16') : showExpand ? 'pr-14' : 'pr-5'
   const editorText = `pt-4 pb-3 pl-5 text-[15px] leading-[22px] break-words whitespace-pre-wrap ${editorPadding}`
   useEffect(() => {
-    if (!ghost || extOpen) return
+    if (!ghost) return
     const onWinKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return
       const active = document.activeElement as HTMLElement | null
@@ -2182,7 +2165,7 @@ function Composer({
     }
     window.addEventListener('keydown', onWinKey)
     return () => window.removeEventListener('keydown', onWinKey)
-  }, [ghost, extOpen, suggestion])
+  }, [ghost, suggestion])
   const fileInput = useRef<HTMLInputElement>(null)
   const wrap = useRef<HTMLDivElement>(null)
 
@@ -2283,8 +2266,11 @@ function Composer({
    * space and right after Chinese text (`让@`). Same `@` and query -> the menu keeps its selection.
    */
   const syncCompletion = (value: string, caret: number | null) => {
+    if (slash?.mode === 'picker') return
     if (caret === null) {
       setFile(null)
+      setMention(null)
+      setSlash(null)
       return
     }
     // closed with Esc: stay closed until the text or the caret changes
@@ -2303,12 +2289,12 @@ function Composer({
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
       setMention(null)
-      // `/` (or full-width `／`) opens the command/skill menu (always includes built-in `/compact`)
-      const sl = /(?:^|\s)[/／]([^\s/／]{0,48})$/.exec(before)
-      if (!sl) return setSlash(null)
-      // no account at all: the menu still opens, showing built-in commands
-      const at = caret - sl[1].length - 1
-      return setSlash((cur) => (cur && cur.start === at && cur.query === sl[1] ? cur : { start: at, query: sl[1], index: 0 }))
+      const trigger = matchSlashTrigger(value, caret)
+      return setSlash((current) => {
+        if (!trigger) return null
+        if (current?.mode === 'inline' && current.start === trigger.start && current.query === trigger.query) return current
+        return { mode: 'inline', ...trigger, index: 0 }
+      })
     }
     setSlash(null)
     const start = caret - m[1].length - 1
@@ -2323,7 +2309,7 @@ function Composer({
       if (event.target instanceof Element && event.target.closest('.xterm, [data-editor-panel]')) return
       const action = composerEscapeAction({
         expanded, composing: composingRef.current || event.isComposing || event.keyCode === 229,
-        higherLayer: escLayers() > 0, extensionsOpen: extOpen, mention: !!mention, slash: !!slash, file: fileOpen, ghost
+        higherLayer: escLayers() > 0, extensionsOpen: slash?.mode === 'picker', mention: !!mention, slash: !!slash, file: fileOpen, ghost
       })
       if (!action) return
       event.preventDefault()
@@ -2341,7 +2327,7 @@ function Composer({
     }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
-  }, [expanded, extOpen, fileOpen, ghost, mention, slash, threadId])
+  }, [expanded, fileOpen, ghost, mention, slash, threadId])
 
   const runCompact = () => {
     changeExpansion('send')
@@ -2368,38 +2354,40 @@ function Composer({
     })
   }
 
-  /** Replaces `/query` with the skill's trigger (`/name` or `$name`), or runs built-in `/compact` immediately. */
+  const dismissQuickSkills = useCallback(() => {
+    const el = ta.current
+    if (el) dismissed.current = { value: el.value, caret: el.selectionStart }
+    setSlash(null)
+  }, [])
+
+  /** Inserts a skill using its provider's trigger, or runs the standalone built-in command. */
   const insertSkill = (it: SkillItem, trigger: 'click' | 'enter' | 'tab' = 'click') => {
-    if (!slash) return
-    const caret = ta.current?.selectionStart ?? text.length
-    const isStandalone = !text.slice(0, slash.start).trim() && !text.slice(caret).trim()
-    if (it.source === 'builtin' && it.insert === COMPACT_COMMAND_INSERT && isStandalone) {
-      setSlash(null)
+    const el = ta.current
+    if (!slash || !el) return
+    const picker = slash.mode === 'picker'
+    const start = picker ? el.selectionStart : slash.start
+    const end = picker ? el.selectionEnd : el.selectionStart
+    const before = el.value.slice(0, start)
+    const after = el.value.slice(end)
+    const standalone = picker ? !el.value.trim() : !before.trim() && !after.trim()
+
+    if (it.source === 'builtin' && it.insert === COMPACT_COMMAND_INSERT && standalone) {
       if (trigger === 'tab') {
-        setText(COMPACT_COMMAND_INSERT)
-        requestAnimationFrame(() => {
-          const el = ta.current
-          if (!el) return
-          el.focus()
-          el.setSelectionRange(COMPACT_COMMAND_INSERT.length, COMPACT_COMMAND_INSERT.length)
-        })
+        applyReferenceEdit(el, { value: COMPACT_COMMAND_INSERT, caret: COMPACT_COMMAND_INSERT.length })
         return
       }
+      setSlash(null)
       setText('')
       if (!atts.length && !quote) clearComposerDraft(draftKey)
+      if (picker) el.focus({ preventScroll: true })
       runCompact()
       return
     }
-    const token = `${it.insert} `
-    setText(text.slice(0, slash.start) + token + text.slice(caret))
-    setSlash(null)
-    requestAnimationFrame(() => {
-      const el = ta.current
-      if (!el) return
-      const pos = slash.start + token.length
-      el.focus()
-      el.setSelectionRange(pos, pos)
-    })
+
+    const prefix = picker && before && !/\s$/u.test(before) ? ' ' : ''
+    const suffix = picker && /^\s/u.test(after) ? '' : ' '
+    const token = prefix + it.insert + suffix
+    applyReferenceEdit(el, { value: before + token + after, caret: start + token.length })
   }
 
   const focusReference = useCallback((el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
@@ -2456,7 +2444,6 @@ function Composer({
       return
     }
     setAtts(merged.next)
-    setExtOpen(false)
     const next = insertFileReferenceAtCaret(el.value, el.selectionStart, el.selectionEnd, attachmentRefLabel(attachment), fileRefSeed.lineRange)
     if (/[^\S\r\n]/.test(next.value[next.caret] ?? '')) next.caret++
     applyReferenceEdit(el, next)
@@ -2489,25 +2476,6 @@ function Composer({
     setText((value) => removeFileReferences(value, a, atts))
     setFile(null)
     histRef.current = null
-  }
-
-  /** Inserts a token at the caret (space-separated from what is around it) and focuses the box. */
-  const insertAtCaret = (token: string) => {
-    const el = ta.current
-    const start = el?.selectionStart ?? text.length
-    const end = el?.selectionEnd ?? start
-    const before = text.slice(0, start)
-    const lead = before && !/\s$/.test(before) ? ' ' : ''
-    const piece = lead + token + (/[\s：:]$/.test(token) ? '' : ' ')
-    setText(before + piece + text.slice(end))
-    setExtOpen(false)
-    requestAnimationFrame(() => {
-      const box = ta.current
-      if (!box) return
-      const pos = start + piece.length
-      box.focus()
-      box.setSelectionRange(pos, pos)
-    })
   }
 
   const addFiles = async (files: File[]) => {
@@ -2597,16 +2565,16 @@ function Composer({
         return insertMention(p, inSub ? opts[mention.subIndex] : null)
       }
     }
-    if (slash && !mention && !composing) {
-      const n = slashMatches.length
+    if (slash?.mode === 'inline' && slashGroups && !composing) {
+      const n = slashGroups.flat.length
       if (n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault()
         const d = e.key === 'ArrowDown' ? 1 : -1
-        return setSlash((x) => x && { ...x, index: (x.index + d + n) % n })
+        return setSlash((x) => x && { ...x, index: (slashActive + d + n) % n })
       }
       if (n && (e.key === 'Enter' || e.key === 'Tab')) {
         e.preventDefault()
-        return insertSkill(slashMatches[Math.min(slash.index, n - 1)], e.key === 'Tab' ? 'tab' : 'enter')
+        return insertSkill(slashGroups.flat[slashActive], e.key === 'Tab' ? 'tab' : 'enter')
       }
     }
     if (fileOpen && !composing && fileSearch.items.length && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -2680,22 +2648,28 @@ function Composer({
       <div className="pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[820px] flex-1 flex-col">
         {notice}
         {queue}
-        {extOpen && (
-          <div className={`absolute left-0 z-30 ${expanded ? 'pointer-events-none top-0 right-0 bottom-12 flex items-end [&>div]:pointer-events-auto [&>div]:max-h-full [&>div]:max-w-full' : 'bottom-full mb-2'}`}>
-            <ExtensionsPanel account={driver} projectDir={projectDir} data={overview.data} loading={overview.loading} onReload={() => void overview.reload()} onInsert={insertAtCaret} onClose={closeExt} />
-          </div>
-        )}
-        {!extOpen && !mention && slash && (
-          <div className={completionPopover}>
-            <SlashMenu
-              account={driver}
-              items={slashMatches}
-              total={skillItems.length + builtinSlash.length}
+        {slash && slashGroups && (
+          <div className={completionPopover + ' right-0 pointer-events-none [&>div]:pointer-events-auto'}>
+            <QuickSkillsPopover
+              mode={slash.mode}
+              query={slash.query}
+              groups={slashGroups}
+              kind={driver?.kind}
+              pins={pins}
               loading={skills.loading}
-              active={Math.min(slash.index, Math.max(0, slashMatches.length - 1))}
-              pinned={pins}
-              onPick={(it) => insertSkill(it, 'click')}
-              onHover={(i) => setSlash((x) => x && { ...x, index: i })}
+              active={slashActive}
+              onQuery={(query) => setSlash((current) => current?.mode === 'picker' ? { ...current, query, index: 0 } : current)}
+              onPick={insertSkill}
+              onHover={(index) => setSlash((current) => current && { ...current, index })}
+              onDismiss={dismissQuickSkills}
+              onCancel={() => {
+                dismissQuickSkills()
+                ta.current?.focus({ preventScroll: true })
+              }}
+              onManage={() => {
+                dismissQuickSkills()
+                openSettings('extensions')
+              }}
             />
           </div>
         )}
@@ -2877,6 +2851,7 @@ function Composer({
               onCompositionStart={() => {
                 composingRef.current = true
                 setFile(null)
+                setSlash(null)
               }}
               onCompositionEnd={(e) => {
                 composingRef.current = false
@@ -2889,7 +2864,7 @@ function Composer({
               }}
               onBlur={() => {
                 setMention(null)
-                setSlash(null)
+                setSlash((current) => current?.mode === 'inline' ? null : current)
                 setFile(null)
               }}
               onKeyDown={onKey}
@@ -2909,7 +2884,19 @@ function Composer({
             <DriverPicker driver={driver} onPick={(id) => onDriver(id, null)} />
             <QuotaDot driver={driver} model={driverModel} onSwitch={(id) => onDriver(id, null)} />
             {driver && <ModelCapsule account={driver} model={driverModel} onPick={(m) => onDriver(driver.id, m)} />}
-            {driver && <ExtensionsButton data={overview.data} open={extOpen} onToggle={() => setExtOpen((o) => !o)} />}
+            <QuickSkillsButton
+              open={!!slash}
+              onToggle={() => {
+                if (slash?.mode === 'picker') {
+                  dismissQuickSkills()
+                  ta.current?.focus({ preventScroll: true })
+                  return
+                }
+                setMention(null)
+                setFile(null)
+                setSlash({ mode: 'picker', query: '', index: 0 })
+              }}
+            />
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
             <button
               onClick={() => fileInput.current?.click()}

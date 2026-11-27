@@ -8,6 +8,7 @@ import { openOnboarding } from '../state/onboarding'
 import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settings'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
+import { ExtensionsSettingsView } from './Extensions'
 import { ExportThreadsDialog, ImportThreadsDialog, todayStamp } from './ThreadTransferDialog'
 import { TransferProgressModal } from './TransferProgressModal'
 import { SheetCloseButton, WorkspaceSheetModal } from './WorkspaceSheetModal'
@@ -24,6 +25,7 @@ import {
   IconInfo,
   IconKeyboard,
   IconMoon,
+  IconPuzzle,
   IconRefresh,
   IconSearch,
   IconSliders,
@@ -41,6 +43,7 @@ const SECTIONS: { id: SettingsSection; Icon: (p: { size?: number }) => ReactElem
   { id: 'general', Icon: IconSliders },
   { id: 'appearance', Icon: IconSun },
   { id: 'usage', Icon: IconGauge },
+  { id: 'extensions', Icon: IconPuzzle },
   { id: 'data', Icon: IconDatabase },
   { id: 'developer', Icon: IconTerminal },
   { id: 'shortcuts', Icon: IconKeyboard },
@@ -65,10 +68,24 @@ interface Item {
   words?: string
   /** Title shown above the card (blocks whose card has no title row of its own). */
   heading?: boolean
-  Body: (p: { title: ReactNode }) => ReactElement
+  Body: (p: { title: ReactNode; onOpen?: () => void }) => ReactElement
 }
 
 const ITEMS: Item[] = [
+  {
+    id: 'extensions',
+    section: 'extensions',
+    title: 'set.extensions',
+    hint: 'set.extensionsHint',
+    keys: ['ext.tab.skills', 'ext.tab.agents', 'ext.tab.plugins', 'ext.tab.mcp', 'ext.tab.context'],
+    words: 'skills agents plugins mcp rules hooks 技能 拓展 扩展 擴充 能力 插件 外掛 规则 規則 钩子 掛鉤 スキル エージェント プラグイン ルール フック',
+    Body: ({ title, onOpen }) => (
+      <button type="button" className="w-full px-4 py-3 text-left hover:bg-fill" onClick={onOpen}>
+        <span className="block text-[13.5px] text-ink">{title}</span>
+        <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-3">{t('set.extensionsHint')}</span>
+      </button>
+    )
+  },
   {
     id: 'language',
     section: 'general',
@@ -202,7 +219,7 @@ const ITEMS: Item[] = [
 ]
 
 /** Cards per section: ids that share one card. */
-const LAYOUT: Record<Exclude<SettingsSection, 'about'>, string[][]> = {
+const LAYOUT: Record<Exclude<SettingsSection, 'about' | 'extensions'>, string[][]> = {
   general: [['language'], ['sendKey', 'defaultDriver'], ['onboarding']],
   appearance: [['theme']],
   usage: [['probe', 'threshold']],
@@ -212,7 +229,7 @@ const LAYOUT: Record<Exclude<SettingsSection, 'about'>, string[][]> = {
 }
 
 const byId = new Map(ITEMS.map((i) => [i.id, i]))
-const SECTION_KEY = { general: 'set.general', appearance: 'set.appearance', usage: 'set.usage', data: 'set.data', developer: 'set.developer', shortcuts: 'set.shortcuts', about: 'set.about' } as const
+const SECTION_KEY = { general: 'set.general', appearance: 'set.appearance', usage: 'set.usage', extensions: 'set.extensions', data: 'set.data', developer: 'set.developer', shortcuts: 'set.shortcuts', about: 'set.about' } as const
 
 let index: Map<string, string> | null = null
 /** Lower-cased search text per item, in every language (built once). */
@@ -377,6 +394,7 @@ export function SettingsDialog() {
 
 function Section({ id }: { id: SettingsSection }) {
   if (id === 'about') return <About />
+  if (id === 'extensions') return <ExtensionsSettingsView />
   return (
     <>
       {LAYOUT[id].map((ids) => {
@@ -424,7 +442,7 @@ function Results({ hits, query, onClear, onOpen }: { hits: Item[]; query: string
               <div key={it.id}>
                 {it.heading && <div className="mb-1.5 px-1 text-[12px] text-ink-2">{highlight(t(it.title), query)}</div>}
                 <Group>
-                  <it.Body title={highlight(t(it.title), query)} />
+                  <it.Body title={highlight(t(it.title), query)} onOpen={() => onOpen(id)} />
                 </Group>
               </div>
             ))}

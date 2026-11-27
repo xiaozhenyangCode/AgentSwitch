@@ -9,13 +9,13 @@ import {
   type SessionId,
   type Snapshot
 } from '@shared/types'
-import { KIND_META } from '../lib/ui'
+import { KIND_META, isReady, isSignedIn } from '../lib/ui'
 import { canUseOAuthLogin } from '@shared/providerCapabilities'
 import { t } from './i18n'
 import { forgetAccountModels, loadModels, reloadAccountModels } from './models'
 
 export type Page = 'workbench' | 'engines' | 'usage'
-export type SettingsSection = 'general' | 'appearance' | 'usage' | 'data' | 'developer' | 'shortcuts' | 'about'
+export type SettingsSection = 'general' | 'appearance' | 'usage' | 'extensions' | 'data' | 'developer' | 'shortcuts' | 'about'
 
 export interface Toast {
   id: number
@@ -367,4 +367,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+/** Accounts sorted: ready first, then kind order, then creation. */
+export function useSortedAccounts(): ProfileState[] {
+  const { profiles } = useApp()
+  return useMemo(() => {
+    const order = { claude: 0, codex: 1, gemini: 2, reasonix: 3 } as const
+    return [...profiles].sort(
+      (a, b) => Number(isReady(b)) - Number(isReady(a)) || Number(isSignedIn(b)) - Number(isSignedIn(a)) || order[a.kind] - order[b.kind] || a.createdAt - b.createdAt
+    )
+  }, [profiles])
 }
