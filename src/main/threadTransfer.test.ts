@@ -3,13 +3,18 @@ import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { setImmediate as yieldTurn } from 'node:timers/promises'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRef, AssistantMessage, Attachment, Message, Thread, UserMessage } from '@shared/chat'
 import { findMatchingOutputFile, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { EXPORT_MAX_FILE_BYTES, LEGACY_BUNDLE_FORMAT, type ThreadBundle } from '@shared/transfer'
 import { allowRoot, attachmentsDir, handleFileProtocol, isAllowedPath } from './fileProtocol'
-import { commitThreadsImport, exportThreadsArchive, inspectThreadsImport } from './threadTransfer'
+import {
+  commitThreadsImport, commitThreadsImportAsync, exportThreadsArchive, exportThreadsArchiveAsync,
+  getActiveTransferType, inspectThreadsImport, inspectThreadsImportAsync, isThreadTransferring, runTransferExclusive
+} from './threadTransfer'
+import type { TransferUpdate } from './threadTransferCore'
 import { createZipBuffer, extractZipEntry, readZipEntries } from './zipArchive'
 
 let root: string
@@ -270,5 +275,82 @@ describe('import boundaries', () => {
     const data = bundle(thread('a', null, [user([attachment(allowed), attachment(unapproved), attachment(pickedFile)])]))
     const manifest = exportThreadsArchive(data, dest, { userData: appData, appVersion: 'test', canReadFile: isAllowedPath })
     expect(manifest.attachments).toMatchObject({ packedCount: 2, skipped: [{ name: 'unapproved.txt', reason: 'unreadable' }] })
+  })
+})
+
+describe('asynchronous thread transfers', () => {
+  const batchEnds = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 220]
+
+  it('exports 220 chats with interleaved progress and a complete ZIP', async () => {
+    const path = join(root, 'many.zip')
+    const asset = write(join(appData, 'asset.txt'), 'portable attachment')
+    const data = bundle(...Array.from({ length: 220 }, (_, i) => thread('chat-' + i, null, [user([attachment(asset)])])))
+    const events: TransferUpdate[] = []
+    let otherWorkRan = false
+    const manifest = await exportThreadsArchiveAsync(data, path, {
+      userData: appData, appVersion: 'test',
+      onProgress: (progress) => {
+        if (progress.phase === 'preparing') void yieldTurn().then(() => { otherWorkRan = true })
+        if (progress.phase === 'processing' && progress.current > 0) expect(otherWorkRan).toBe(true)
+        events.push(progress)
+      }
+    })
+    expect(events[0]).toMatchObject({ phase: 'preparing', total: 220 })
+    expect(events.filter((event) => event.phase === 'processing').map((event) => event.current)).toEqual(batchEnds)
+    expect(events.at(-1)).toMatchObject({ phase: 'finalizing', current: 220, total: 220, percent: 100 })
+    expect(manifest.attachments.packedCount).toBe(1)
+    expect(inspectThreadsImport(path).bundle.threads.map(({ thread }) => thread.id)).toEqual(data.threads.map(({ thread }) => thread.id))
+  })
+
+  it('validates and unpacks 220 chats in batches', async () => {
+    const source = write(join(appData, 'asset.txt'), 'portable attachment')
+    const ids = Array.from({ length: 220 }, (_, i) => 'chat-' + i)
+    const data = bundle(...ids.map((id) => thread(id, null, [user([attachment(source)])])))
+    const filePath = join(root, 'many.zip')
+    exportBundle(data, filePath)
+    const validating: TransferUpdate[] = []
+    const preview = await inspectThreadsImportAsync(filePath, { onProgress: (progress) => validating.push(progress) })
+    expect(validating[0]).toMatchObject({ phase: 'validating', total: 0 })
+    expect(validating.slice(1).map((event) => event.current)).toEqual(batchEnds)
+    expect(preview.bundle.threads).toHaveLength(220)
+    expect(existsSync(attachmentsDir())).toBe(false)
+    const events: TransferUpdate[] = []
+    const { threads } = await commitThreadsImportAsync({ filePath, selectedThreadIds: ids, projectMap: {} }, {
+      userData: appData, onProgress: (progress) => events.push(progress)
+    })
+    expect(events[0].phase).toBe('validating')
+    expect(events.filter(({ phase }) => phase === 'importing').map(({ current }) => current)).toEqual(batchEnds)
+    expect(events.at(-1)).toMatchObject({ phase: 'refreshing', current: 220, total: 220, percent: 100 })
+    expect(threads.map(({ thread }) => thread.id)).toEqual(ids)
+    const restored = (threads[219].thread.messages[0] as UserMessage).attachments[0].path!
+    expect(readFileSync(restored, 'utf8')).toBe('portable attachment')
+  })
+
+  it('excludes a second transfer and releases the lock on success and failure', async () => {
+    let finish!: () => void
+    const running = runTransferExclusive('export', () => new Promise<void>((resolve) => { finish = resolve }))
+    expect(isThreadTransferring()).toBe(true)
+    expect(getActiveTransferType()).toBe('export')
+    const other = vi.fn(async () => undefined)
+    await expect(runTransferExclusive('import', other)).rejects.toThrow()
+    expect(other).not.toHaveBeenCalled()
+    finish()
+    await running
+    expect(isThreadTransferring()).toBe(false)
+
+    const path = write(join(root, 'invalid.json'), '{')
+    await expect(runTransferExclusive('import', () => inspectThreadsImportAsync(path))).rejects.toThrow(SyntaxError)
+    expect(isThreadTransferring()).toBe(false)
+    expect(getActiveTransferType()).toBeNull()
+  })
+
+  it('cleans its temporary file when atomic rename fails, leaving the destination intact', async () => {
+    const path = join(root, 'existing.zip')
+    write(join(path, 'existing.txt'), 'keep')
+    await expect(exportThreadsArchiveAsync(bundle(thread('a', null, [])), path, {
+      userData: appData, appVersion: 'test'
+    })).rejects.toThrow()
+    expect(readFileSync(join(path, 'existing.txt'), 'utf8')).toBe('keep')
+    expect(readdirSync(root).sort()).toEqual(['existing.zip', 'sender'])
   })
 })

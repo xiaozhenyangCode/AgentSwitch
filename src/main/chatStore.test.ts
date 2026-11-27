@@ -47,6 +47,22 @@ describe('ChatStore', () => {
     expect(existsSync(join(userData, 'threads'))).toBe(false)
   })
 
+  it('keeps a newer synchronous flush when a staged import batch overlaps it', async () => {
+    const { session } = store.open(null, false)
+    const staged = store.saveImportBatch(session, 1, { upserts: [thread('a', 'Imported')], deletes: [] }, () => true)
+    expect(store.save(session, 2, { upserts: [thread('a', 'Newer')], deletes: [] })).toBe(true)
+    await expect(staged).resolves.toBe(true)
+    expect(store.load().threads[0].title).toBe('Newer')
+    expect(readdirSync(chats)).toEqual(['a.json'])
+  })
+
+  it('discards staged import histories after the transfer has ended', async () => {
+    const { session } = store.open(null, false)
+    await expect(store.saveImportBatch(session, 1, { upserts: [thread('a')], deletes: [] }, () => false)).resolves.toBe(false)
+    expect(store.load().threads).toEqual([])
+    expect(readdirSync(chats)).toEqual([])
+  })
+
   it('rejects malformed save requests before writing or consuming a revision', () => {
     const { session } = store.open(null, false)
     const changes = { upserts: [thread('good')], deletes: [] }

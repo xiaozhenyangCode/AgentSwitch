@@ -94,8 +94,19 @@ export class ChatWrites {
 
   snapshot(): { changes: ChatChanges; acknowledge: () => void } | null {
     if (!this.hasChanges) return null
-    const pending = new Map(this.pending)
+    return this.makeBatch([...this.pending], this.index)
+  }
+
+  *snapshotBatches(size: number) {
+    const pending = [...this.pending]
     const index = this.index
+    for (let start = 0; start < pending.length; start += size) {
+      yield this.makeBatch(pending.slice(start, start + size), undefined)
+    }
+    if (index) yield this.makeBatch([], index)
+  }
+
+  private makeBatch(pending: [string, StoredThread | null][], index: ChatIndex | undefined) {
     const changes: ChatChanges = { upserts: [], deletes: [], index }
     for (const [id, thread] of pending) {
       if (thread) changes.upserts.push(thread)

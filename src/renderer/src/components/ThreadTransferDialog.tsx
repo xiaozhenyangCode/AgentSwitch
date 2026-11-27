@@ -1,14 +1,11 @@
 import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { ImportPreviewResult } from '@shared/transfer'
+import type { CommitImportRequest, ImportPreviewResult } from '@shared/transfer'
 import type { ProfileKind } from '@shared/types'
 import { useEscape } from '../lib/escStack'
 import { useApp } from '../state/AppContext'
 import {
-  applyThreadImport,
-  buildThreadBundle,
   localProjectsByName,
-  threadMessages,
   useChat,
   type ExportedThread,
   type ImportConflictMode,
@@ -23,7 +20,7 @@ const fmtDate = (ts: number) => {
   const d = new Date(ts)
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-const todayStamp = () => {
+export const todayStamp = () => {
   const d = new Date()
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
@@ -37,7 +34,7 @@ type DiffKind = 'new' | 'newer' | 'older' | 'same'
 function diffOf(item: ExportedThread, local: Thread | undefined): DiffKind {
   if (!local) return 'new'
   const impCount = item.thread.messages.length
-  const locCount = threadMessages(local).length
+  const locCount = local.messages.length + (local.history?.length ?? 0)
   if (item.thread.updatedAt > local.updatedAt) return 'newer'
   if (item.thread.updatedAt < local.updatedAt) return 'older'
   if (impCount > locCount) return 'newer'
@@ -45,17 +42,21 @@ function diffOf(item: ExportedThread, local: Thread | undefined): DiffKind {
   return 'same'
 }
 
-export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
-  const { profiles, byId, toast } = useApp()
+export function ExportThreadsDialog({ onClose, onExport, busy }: {
+  onClose: () => void
+  onExport: (selected: Set<string>) => void
+  busy: boolean
+}) {
+  const { byId } = useApp()
   const chat = useChat()
-  useEscape(onClose)
+  const close = () => { if (!busy) onClose() }
+  useEscape(close)
 
   const threads = useMemo(
     () => chat.threads.filter((th) => !th.preview).sort((a, b) => b.updatedAt - a.updatedAt),
     [chat.threads]
   )
   const [selected, setSelected] = useState<Set<string>>(() => new Set(threads.map((th) => th.id)))
-  const [busy, setBusy] = useState(false)
 
   const groups = useMemo(() => {
     const map = new Map<string, { name: string | null; dir: string | null; items: Thread[] }>()
@@ -88,30 +89,6 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
       return next
     })
 
-  const runExport = async () => {
-    if (!selected.size || busy) return
-    setBusy(true)
-    try {
-      const bundle = buildThreadBundle(selected, profiles)
-      const res = await window.agentswitch.sys.exportThreadsFile(
-        `AgentSwitch-chats-${todayStamp()}.zip`,
-        bundle
-      )
-      if (!res) return
-      const skipped = res.manifest.attachments.skippedCount
-      toast({
-        kind: 'success',
-        title: t('xfer.exportDone', { n: bundle.threads.length }),
-        desc: skipped > 0 ? `${res.path} · ${t('xfer.exportSkipped', { n: skipped })}` : res.path
-      })
-      onClose()
-    } catch (e) {
-      toast({ kind: 'error', title: t('xfer.exportFailed'), desc: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const kindOf = (th: Thread): ProfileKind | null =>
     (th.driver.profileId ? byId(th.driver.profileId)?.kind : undefined) ??
     th.imported?.kind ??
@@ -121,7 +98,7 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
   return createPortal(
     <div
       className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) scrim-in"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
       <div className="sheet-in flex h-[560px] max-h-[85vh] w-[660px] max-w-[92vw] flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)]">
         <div className="flex items-center gap-3 border-b border-hairline px-5 py-3.5">
@@ -129,7 +106,7 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
             <h3 className="text-[15px] font-semibold text-ink">{t('xfer.exportTitle')}</h3>
             <p className="mt-0.5 text-[12px] text-ink-3">{t('xfer.exportDesc')}</p>
           </div>
-          <button onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.06] hover:text-ink" title={t('common.close')}>
+          <button onClick={close} disabled={busy} className="grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.06] hover:text-ink" title={t('common.close')}>
             <IconX size={14} />
           </button>
         </div>
@@ -168,7 +145,7 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
                 <div className="divide-y divide-hairline">
                   {g.items.map((th) => {
                     const k = kindOf(th)
-                    const count = threadMessages(th).length
+                    const count = th.messages.length + (th.history?.length ?? 0)
                     return (
                       <label key={th.id} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 hover:bg-black/[0.02] select-none">
                         <input type="checkbox" checked={selected.has(th.id)} onChange={() => toggleOne(th.id)} className="h-3.5 w-3.5 accent-accent" />
@@ -186,11 +163,11 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-hairline px-5 py-3">
-          <button onClick={onClose} className="h-8 rounded-lg px-3.5 text-[13px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
+          <button onClick={close} disabled={busy} className="h-8 rounded-lg px-3.5 text-[13px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
             {t('common.cancel')}
           </button>
           <button
-            onClick={() => void runExport()}
+            onClick={() => onExport(selected)}
             disabled={!selected.size || busy}
             className="h-8 rounded-lg bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-45"
           >
@@ -203,13 +180,14 @@ export function ExportThreadsDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPreviewResult; onClose: () => void }) {
+export function ImportThreadsDialog({ preview, onClose, onImport }: {
+  preview: ImportPreviewResult
+  onClose: () => void
+  onImport: (request: CommitImportRequest, conflictMode: ImportConflictMode, selectedCount: number) => void
+}) {
   const { bundle, filePath, kind, manifest } = preview
-  const { profiles, toast } = useApp()
   const chat = useChat()
-  const [busy, setBusy] = useState(false)
-  const close = () => { if (!busy) onClose() }
-  useEscape(close)
+  useEscape(onClose)
 
   const localById = useMemo(() => new Map(chat.threads.filter((th) => !th.preview).map((th) => [th.id, th])), [chat.threads])
 
@@ -277,23 +255,6 @@ export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPrevi
   const existingSelected = selectedEntries.filter((a) => a.diff !== 'new')
   const olderSelectedCount = selectedEntries.filter((a) => a.diff === 'older').length
 
-  const runImport = async () => {
-    if (!selectedEntries.length || busy) return
-    setBusy(true)
-    try {
-      const { threads } = await window.agentswitch.sys.commitThreadsImport({
-        filePath, selectedThreadIds: [...selected], projectMap
-      })
-      const res = applyThreadImport(threads, profiles, conflictMode)
-      toast({ kind: 'success', title: t('xfer.importDone', { added: res.added, replaced: res.replaced }) })
-      onClose()
-    } catch (error) {
-      toast({ kind: 'error', title: t('xfer.invalidFile'), desc: error instanceof Error ? error.message : String(error) })
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const badge = (diff: DiffKind) => {
     if (diff === 'new') return <span className="shrink-0 rounded bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok">{t('xfer.statusNew')}</span>
     if (diff === 'newer') return <span className="shrink-0 rounded bg-accent/12 px-1.5 py-px text-[11px] font-medium text-accent">{t('xfer.statusNewer')}</span>
@@ -304,7 +265,7 @@ export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPrevi
   return createPortal(
     <div
       className="no-drag fixed inset-0 z-[60] flex items-center justify-center bg-(--scrim-soft) scrim-in"
-      onMouseDown={(e) => e.target === e.currentTarget && close()}
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="sheet-in flex h-[600px] max-h-[88vh] w-[720px] max-w-[94vw] flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)]">
         <div className="flex items-center gap-3 border-b border-hairline px-5 py-3.5">
@@ -314,7 +275,7 @@ export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPrevi
               {filePath} · {fmtDate(bundle.exportedAt)} · {kind === 'zip' && manifest ? t('xfer.archiveAttachments', { n: manifest.attachments.packedCount }) : t('xfer.legacyJson')}
             </p>
           </div>
-          <button onClick={close} disabled={busy} className="grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.06] hover:text-ink" title={t('common.close')}>
+          <button onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.06] hover:text-ink" title={t('common.close')}>
             <IconX size={14} />
           </button>
         </div>
@@ -386,7 +347,7 @@ export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPrevi
                           <span className="block truncate text-[13px] text-ink">{th.title}</span>
                           <span className="block truncate text-[11px] text-ink-3 tabular-nums">
                             {t('xfer.importMeta', { n: th.messages.length, time: fmtDate(th.updatedAt) })}
-                            {local ? ` · ${t('xfer.localMeta', { n: threadMessages(local).length, time: fmtDate(local.updatedAt) })}` : ''}
+                            {local ? ` · ${t('xfer.localMeta', { n: local.messages.length + (local.history?.length ?? 0), time: fmtDate(local.updatedAt) })}` : ''}
                           </span>
                         </span>
                         {badge(diff)}
@@ -418,12 +379,12 @@ export function ImportThreadsDialog({ preview, onClose }: { preview: ImportPrevi
               <span className="min-w-0 flex-1 text-[11.5px] font-medium text-warn">{t('xfer.olderWarn', { n: olderSelectedCount })}</span>
             )}
             {!(olderSelectedCount > 0 && conflictMode === 'replace') && <span className="flex-1" />}
-            <button onClick={close} disabled={busy} className="h-8 rounded-lg px-3.5 text-[13px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
+            <button onClick={onClose} className="h-8 rounded-lg px-3.5 text-[13px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
               {t('common.cancel')}
             </button>
             <button
-              onClick={runImport}
-              disabled={!selectedEntries.length || busy}
+              onClick={() => onImport({ filePath, selectedThreadIds: [...selected], projectMap }, conflictMode, selectedEntries.length)}
+              disabled={!selectedEntries.length}
               className="h-8 rounded-lg bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-45"
             >
               {t('xfer.importBtn', { n: selectedEntries.length })}

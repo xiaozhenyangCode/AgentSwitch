@@ -103,18 +103,22 @@ import { forgetModels, forgetModelsByKind, listModels, refreshModelsByKind } fro
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
 import { invalidateFileIndex, searchProjectFiles } from './fileSearch'
-import { allowFile, allowRoot, attachmentsDir, isAllowedEditorAttachment, isAllowedEditorWorkspace, isAllowedPath } from './fileProtocol'
+import { allowFile, allowRoot, attachmentsDir, fileAccessSnapshot, isAllowedEditorAttachment, isAllowedEditorWorkspace, isAllowedPath } from './fileProtocol'
 import { EditorFileWatcher, readEditorFile, resolveAuthorizedEditorPath, saveEditorFile } from './editorFiles'
 import type { EditorActionResult, EditorReadRequest, EditorSaveRequest, EditorWatchRequest } from '@shared/editor'
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { basename, isAbsolute, join, sep } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import type { AttachmentText, FileSearchRequest, OnboardingState, RunRequest } from '@shared/types'
 import { findOnPath, getBaseEnv, realHome, refreshRuntimePaths, shellEnvStatus } from './shellEnv'
 import { cliNodeRuntime } from './runtime'
 import { isTranscriptEntry } from '@shared/transcript'
-import type { CommitImportRequest, ThreadBundle } from '@shared/transfer'
-import { commitThreadsImport, exportThreadsArchive, inspectThreadsImport } from './threadTransfer'
+import type {
+  CommitImportRequest, CommitImportResult, ThreadBundle, TransferExportResult, TransferImportResult, TransferProgressEvent, TransferType
+} from '@shared/transfer'
+import { describeTransferError, isThreadTransferring, runTransferExclusive, runTransferWorker } from './threadTransfer'
+import type { TransferUpdate } from './threadTransferCore'
 
 const assertId = (x: unknown): ProfileId => {
   if (!hasProfile(x)) throw new Error(`unknown account: ${String(x)}`)
@@ -511,6 +515,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     return opened
   })
   ipcMain.handle(IPC.chatStoreSave, (_e, session: unknown, revision: unknown, changes: unknown) => chatStore.save(session, revision, changes))
+  ipcMain.handle(IPC.chatStoreSaveImportBatch, async (e, session: unknown, revision: unknown, changes: unknown) => {
+    const active = finishingImport
+    if (active?.sender !== e.sender) throw new Error(t('xfer.rendererStopped'))
+    active.keepAlive()
+    try {
+      return await chatStore.saveImportBatch(session, revision, changes, () => finishingImport === active)
+    } catch (error) {
+      throw new Error(describeTransferError(error))
+    }
+  })
   ipcMain.on(IPC.chatStoreFlush, (e, session: unknown, revision: unknown, changes: unknown) => {
     e.returnValue = chatStore.save(session, revision, changes)
   })
@@ -804,7 +818,93 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.onboardingSet, (_e, done: unknown) => writeSettings({ onboardingCompleted: done === true }))
 
   ipcMain.handle(IPC.showDataDir, () => shell.showItemInFolder(app.getPath('userData')))
-  ipcMain.handle(IPC.exportThreadsFile, async (_e, defaultName: unknown, bundle: ThreadBundle) => {
+  const assertTransferIdle = () => {
+    if (isThreadTransferring()) throw new Error(t('xfer.alreadyRunning'))
+  }
+  async function reportTransfer<T>(
+    type: TransferType,
+    task: (id: string, update: (progress: TransferUpdate) => void) => Promise<{ value: T; result?: TransferProgressEvent['result'] }>
+  ): Promise<T> {
+    const transferId = randomUUID()
+    let progress: TransferUpdate = { phase: type === 'export' ? 'preparing' : 'validating', current: 0, total: 0, percent: 0 }
+    const emit = (update: TransferUpdate, terminal?: { result?: TransferProgressEvent['result']; error?: string }) => {
+      const event: TransferProgressEvent = { ...update, transferId, type, ...terminal }
+      const window = getWindow()
+      if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
+      try {
+        window.webContents.send(IPC.threadTransferProgress, event)
+      } catch (error) {
+        console.warn('[threadTransfer] could not send progress', error)
+      }
+    }
+    let started = false
+    try {
+      const { value, result } = await runTransferExclusive(type, async () => {
+        started = true
+        emit(progress)
+        return task(transferId, (update) => {
+          if (progress.phase === update.phase && progress.current === update.current && progress.total === update.total) return
+          progress = update
+          emit(update)
+        })
+      })
+      if (result) emit({ ...progress, phase: 'success', current: progress.total, percent: 100 }, { result })
+      return value
+    } catch (error) {
+      const reason = describeTransferError(error)
+      if (started) emit({ ...progress, phase: 'error' }, { error: reason })
+      throw new Error(reason)
+    }
+  }
+
+  function waitForTransferRenderer<T>(
+    sender: Electron.WebContents, register: (respond: (reply: T) => void, keepAlive: () => void) => void
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      if (sender.isDestroyed() || sender.isCrashed()) {
+        reject(new Error(t('xfer.rendererStopped')))
+        return
+      }
+      const timer = setTimeout(() => stop('xfer.rendererTimeout'), 120_000)
+      const cleanup = () => {
+        clearTimeout(timer)
+        sender.off('render-process-gone', interrupted)
+        sender.off('destroyed', interrupted)
+        sender.off('did-start-navigation', navigation)
+      }
+      const stop = (key: 'xfer.rendererStopped' | 'xfer.rendererTimeout') => {
+        cleanup()
+        reject(new Error(t(key)))
+      }
+      const interrupted = () => stop('xfer.rendererStopped')
+      const navigation = (_event: Electron.Event, _url: string, isInPlace: boolean, isMainFrame: boolean) => {
+        if (isMainFrame && !isInPlace) interrupted()
+      }
+      sender.once('render-process-gone', interrupted)
+      sender.once('destroyed', interrupted)
+      sender.on('did-start-navigation', navigation)
+      register((reply) => {
+        cleanup()
+        resolve(reply)
+      }, () => timer.refresh())
+    })
+  }
+
+  type ExportInput = { bundle: ThreadBundle } | { error: string }
+  let pendingExport: { id: string; sender: Electron.WebContents; submit: (input: ExportInput) => void } | null = null
+
+  ipcMain.handle(IPC.provideThreadExportBundle, (e, id: string, input: ExportInput) => {
+    const pending = pendingExport
+    if (!pending || pending.id !== id || pending.sender !== e.sender) throw new Error(t('xfer.rendererStopped'))
+    if (!input || typeof input !== 'object' || (!('error' in input) && !('bundle' in input))) {
+      pending.submit({ error: t('xfer.invalidFormat') })
+    } else {
+      pending.submit(input)
+    }
+  })
+
+  ipcMain.handle(IPC.exportThreadsFile, async (e, defaultName: unknown) => {
+    assertTransferIdle()
     const w = getWindow()
     const name = typeof defaultName === 'string' && defaultName.trim()
       ? basename(defaultName.trim()).replace(/\.(?:json|zip)$/i, '') + '.zip'
@@ -815,51 +915,92 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     }
     const r = w ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts)
     if (r.canceled || !r.filePath) return null
-    const userData = app.getPath('userData')
-    const exportRoots: string[] = []
-    for (const candidate of [
-      attachmentsDir(userData),
-      stageDir,
-      join(userData, 'workspaces'),
-      ...chatStore.load().threads.flatMap((th) => [th.projectDir, th.workdir])
-    ]) {
-      if (typeof candidate !== 'string' || !isAbsolute(candidate)) continue
+    const path = r.filePath
+    return reportTransfer('export', async (id, update) => {
+      const input = await waitForTransferRenderer<ExportInput>(e.sender, (submit) => {
+        pendingExport = { id, sender: e.sender, submit }
+      }).finally(() => { pendingExport = null })
+      if ('error' in input) throw new Error(input.error)
+      const { bundle } = input
       try {
-        exportRoots.push(realpathSync(candidate))
-      } catch { /* folder may not exist */ }
-    }
-    const canExportFile = (real: string): boolean =>
-      isAllowedPath(real) || exportRoots.some((root) => real === root || real.startsWith(root.endsWith(sep) ? root : root + sep))
-    const manifest = exportThreadsArchive(bundle, r.filePath, {
-      userData, appVersion: app.getVersion(), canReadFile: canExportFile
+        const manifest = await runTransferWorker({
+          job: 'export', bundle, path, userData: app.getPath('userData'), stageDir, appVersion: app.getVersion(),
+          access: fileAccessSnapshot(), tempSuffix: id
+        }, update)
+        const result: TransferExportResult = { path, manifest, exportedCount: bundle.threads.length }
+        return { value: result, result }
+      } finally {
+        await rm(path + '.' + id + '.tmp', { force: true }).catch(() => undefined)
+      }
     })
-    return { path: r.filePath, manifest }
   })
-  let previewedImportPath: string | null = null
-  ipcMain.handle(IPC.importThreadsFile, async () => {
+  let previewedImport: { path: string; sender: Electron.WebContents } | null = null
+  ipcMain.handle(IPC.importThreadsFile, async (e) => {
+    assertTransferIdle()
     const w = getWindow()
     const opts: Electron.OpenDialogOptions = {
       properties: ['openFile'],
       filters: [{ name: 'AgentSwitch Chats', extensions: ['zip', 'json'] }]
     }
     const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
-    if (r.canceled || !r.filePaths[0]) return null
-    const preview = inspectThreadsImport(r.filePaths[0])
-    previewedImportPath = preview.filePath
-    return preview
+    const path = r.filePaths[0]
+    if (r.canceled || !path) return null
+    return reportTransfer('import', async (_id, update) => {
+      previewedImport = null
+      const preview = await runTransferWorker({ job: 'preview', path }, update)
+      previewedImport = { path: preview.filePath, sender: e.sender }
+      return { value: preview }
+    })
   })
-  ipcMain.handle(IPC.commitThreadsImport, (_e, request: CommitImportRequest) => {
-    if (!request || typeof request.filePath !== 'string' || request.filePath !== previewedImportPath ||
+
+  // Keep close protection until the renderer has persisted the merged histories and index.
+  type ImportOutcome = { result: TransferImportResult } | { error: string }
+  let finishingImport: {
+    id: string
+    sender: Electron.WebContents
+    settle: (outcome: ImportOutcome) => void
+    keepAlive: () => void
+    completed: Promise<void>
+  } | null = null
+
+  ipcMain.handle(IPC.commitThreadsImport, (e, request: CommitImportRequest) => {
+    assertTransferIdle()
+    if (!request || typeof request.filePath !== 'string' || request.filePath !== previewedImport?.path ||
+        e.sender !== previewedImport.sender ||
         !Array.isArray(request.selectedThreadIds) || !request.selectedThreadIds.every((id) => typeof id === 'string') ||
         !request.projectMap || typeof request.projectMap !== 'object' || Array.isArray(request.projectMap)) {
-      throw new Error('Invalid thread import request')
+      throw new Error(t('xfer.invalidFile'))
     }
-    const knownProjects = new Set(chatStore.load().threads.map((thread) => thread.projectDir))
-    const projectMap = Object.fromEntries(Object.entries(request.projectMap).filter(([, path]) =>
-      typeof path === 'string' && (knownProjects.has(path) || isAllowedPath(path))))
-    const result = commitThreadsImport({ ...request, projectMap }, { userData: app.getPath('userData') })
-    previewedImportPath = null
-    return result
+    previewedImport = null
+    type ReadyImport = CommitImportResult & { transferId: string }
+    return new Promise<ReadyImport>((resolve, reject) => {
+      const completed = reportTransfer('import', async (id, update) => {
+        const { threads, roots } = await runTransferWorker({
+          job: 'import', request, userData: app.getPath('userData'), access: fileAccessSnapshot()
+        }, update)
+        for (const root of roots) allowRoot(root)
+        const sender = e.sender
+        if (sender.isDestroyed() || sender.isCrashed() || !e.senderFrame) throw new Error(t('xfer.rendererStopped'))
+        const outcome = await waitForTransferRenderer<ImportOutcome>(sender, (settle, keepAlive) => {
+          finishingImport = { id, sender, settle, keepAlive, completed }
+          resolve({ threads, transferId: id })
+        }).finally(() => { finishingImport = null })
+        if ('error' in outcome) throw new Error(outcome.error)
+        return { value: undefined, result: outcome.result }
+      })
+      void completed.catch(reject)
+    })
+  })
+
+  ipcMain.handle(IPC.finishThreadImport, async (e, id: string, outcome: ImportOutcome) => {
+    const active = finishingImport
+    if (!active || active.id !== id || active.sender !== e.sender) throw new Error(t('xfer.rendererStopped'))
+    if (!outcome || typeof outcome !== 'object' || (!('error' in outcome) && !('result' in outcome))) {
+      active.settle({ error: t('xfer.invalidFile') })
+    } else {
+      active.settle(outcome)
+    }
+    await active.completed
   })
   ipcMain.handle(IPC.pathsExist, (_e, paths: unknown): Record<string, boolean> => {
     if (!Array.isArray(paths)) return {}

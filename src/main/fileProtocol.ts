@@ -1,7 +1,8 @@
 import { app, protocol } from 'electron'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, parse, sep } from 'node:path'
+import { attachmentStoragePath, ensureAttachmentStorage } from './attachmentStorage'
 
 /**
  * `agentswitch-file://f/<base64url(absolute path)>` — read-only access to images inside
@@ -30,13 +31,12 @@ const filesFile = (): string => join(app.getPath('userData'), 'allowed-files.jso
 let files: string[] = []
 const FILES_MAX = 2000
 
-export const attachmentsDir = (userData = app.getPath('userData')): string => join(userData, 'attachments')
+export const attachmentsDir = (userData = app.getPath('userData')): string => attachmentStoragePath(userData)
 
-export function ensureAttachmentsDir(userData?: string): string {
-  const dir = attachmentsDir(userData)
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  if (!lstatSync(dir).isDirectory()) throw new Error('Invalid attachment directory')
-  return dir
+export const ensureAttachmentsDir = (userData = app.getPath('userData')): string => ensureAttachmentStorage(userData)
+
+export function fileAccessSnapshot(): { roots: string[]; files: string[] } {
+  return { roots: [...roots], files: [...files] }
 }
 
 /** Must run before app 'ready'. */

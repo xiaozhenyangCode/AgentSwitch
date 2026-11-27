@@ -7,6 +7,35 @@ export const TRANSFER_ARCHIVE_FORMAT = 'agentswitch-threads-archive'
 export const LEGACY_BUNDLE_FORMAT = 'agentswitch-threads'
 export const EXPORT_MAX_FILE_BYTES = 20 * 1024 * 1024
 
+export type TransferType = 'export' | 'import'
+export type TransferPhase = 'preparing' | 'processing' | 'finalizing' | 'validating' | 'importing' | 'refreshing' | 'success' | 'error'
+
+export interface TransferExportResult {
+  path: string
+  exportedCount: number
+  manifest: TransferManifest
+}
+
+export interface TransferImportResult {
+  filePath: string
+  importedCount: number
+  addedCount?: number
+  replacedCount?: number
+  skippedCount?: number
+}
+
+export interface TransferProgressEvent {
+  transferId: string
+  type: TransferType
+  phase: TransferPhase
+  current: number
+  total: number
+  percent: number
+  message?: string
+  result?: TransferExportResult | TransferImportResult
+  error?: string
+}
+
 export interface TransferProjectMeta {
   name: string | null
   sourceProjectDir: string | null

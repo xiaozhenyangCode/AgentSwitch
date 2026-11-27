@@ -15,6 +15,7 @@ import { buildMenu } from './menu'
 import { agyAcpPool } from './acp/pool'
 import { permissions } from './acp/permissions'
 import { cleanupAllPersistentThreadHistory } from './threadHistoryConfig'
+import { getActiveTransferType } from './threadTransfer'
 
 registerFileScheme()
 
@@ -95,11 +96,31 @@ function trackWindowBounds(win: BrowserWindow): void {
 let mainWindow: BrowserWindow | null = null
 let quitRequested = false
 
+let showingTransferWarning = false
+
+function blockCloseForTransfer(win: BrowserWindow | null): boolean {
+  const type = getActiveTransferType()
+  if (!type) return false
+  quitRequested = false
+  if (!showingTransferWarning) {
+    showingTransferWarning = true
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      message: t(type === 'export' ? 'xfer.blockCloseExport' : 'xfer.blockCloseImport')
+    }
+    const warning = win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+    void warning.catch((error) => console.warn('[threadTransfer] close warning failed', error)).finally(() => {
+      showingTransferWarning = false
+    })
+  }
+  return true
+}
+
 function trackChatClose(win: BrowserWindow): void {
   let checking = false
   win.on('close', (event) => {
     event.preventDefault()
-    if (checking) return
+    if (blockCloseForTransfer(win) || checking) return
     checking = true
     void finishClose(win).catch((error) => console.error('[chatStore] close check failed', error)).finally(() => {
       checking = false
@@ -126,7 +147,7 @@ async function finishClose(win: BrowserWindow): Promise<void> {
       cancelId: 0,
       noLink: true
     })
-    if (response !== 1 || win.isDestroyed()) return
+    if (response !== 1 || win.isDestroyed() || blockCloseForTransfer(win)) return
     win.destroy()
     app.quit()
     return
@@ -153,6 +174,7 @@ async function finishClose(win: BrowserWindow): Promise<void> {
     decision = 'discarded'
   }
 
+  if (blockCloseForTransfer(win)) return
   // Skip a second unload check after the write or explicit confirmation.
   win.destroy()
   if (quitRequested || decision === 'discarded') app.quit()
@@ -250,6 +272,10 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', (event) => {
+  if (blockCloseForTransfer(mainWindow)) {
+    event.preventDefault()
+    return
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return
   event.preventDefault()
   quitRequested = true

@@ -117,8 +117,12 @@ function checkName(name: string, names: Set<string>): void {
 }
 
 export function createZipBuffer(entries: readonly ZipInputEntry[]): Buffer {
+  return Buffer.concat([...zipArchiveChunks(entries)])
+}
+
+/** Emits each ZIP record without assembling a second copy of the entire archive. */
+export function* zipArchiveChunks(entries: readonly ZipInputEntry[]): Generator<Buffer> {
   if (entries.length > DEFAULT_ZIP_LIMITS.maxEntries) throw new Error('ZIP archive exceeds entry limit')
-  const locals: Buffer[] = []
   const central: Buffer[] = []
   const names = new Set<string>()
   let offset = 0
@@ -147,7 +151,9 @@ export function createZipBuffer(entries: readonly ZipInputEntry[]): Buffer {
     local.writeUInt32LE(data.length, 18)
     local.writeUInt32LE(size, 22)
     local.writeUInt16LE(name.length, 26)
-    locals.push(local, name, data)
+    yield local
+    yield name
+    yield data
 
     const header = Buffer.alloc(CENTRAL_BYTES)
     header.writeUInt32LE(CENTRAL_HEADER, 0)
@@ -173,7 +179,8 @@ export function createZipBuffer(entries: readonly ZipInputEntry[]): Buffer {
   end.writeUInt16LE(entries.length, 10)
   end.writeUInt32LE(directorySize, 12)
   end.writeUInt32LE(offset, 16)
-  return Buffer.concat([...locals, ...central, end])
+  yield* central
+  yield end
 }
 
 function findDirectoryEnd(buf: Buffer): number {

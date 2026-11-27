@@ -10,7 +10,11 @@ export default defineConfig({
     build: {
       rollupOptions: {
         external: ['node-pty'],
-        input: { index: resolve('src/main/index.ts'), threadHistoryServer: resolve('src/main/threadHistoryServer.ts') }
+        input: {
+          index: resolve('src/main/index.ts'),
+          threadHistoryServer: resolve('src/main/threadHistoryServer.ts'),
+          threadTransferWorker: resolve('src/main/threadTransferWorker.ts')
+        }
       }
     }
   },

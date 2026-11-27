@@ -34,7 +34,7 @@ const nativeTitleTurns = new Set<string>()
 const writes = new ChatWrites()
 let session = 0
 let revision = 0
-let saving = false
+let saving: Promise<void> | null = null
 let pendingClose: ((decision: ChatCloseDecision) => void) | null = null
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let permissionEventsDuringRestore: Map<string, PermissionResolution | null> | null = new Map()
@@ -71,15 +71,45 @@ function persist() {
   const batch = writes.snapshot()
   if (!batch) return
   const attempt = ++revision
-  saving = true
-  void window.agentswitch.chat.save(session, attempt, batch.changes).catch(() => false).then((saved) => {
-    saving = false
+  saving = window.agentswitch.chat.save(session, attempt, batch.changes).catch(() => false).then((saved) => {
     if (attempt === revision) {
       if (saved) batch.acknowledge()
       setStatus(saved ? 'ready' : 'saveFailed')
     }
+  }).finally(() => {
+    saving = null
     schedulePersist(status === 'saveFailed' ? 1500 : 400)
   })
+}
+
+/** Save a fixed snapshot in bounded batches so the import can wait for disk without a sync flush. */
+export async function persistThreadImport(): Promise<void> {
+  if (!session) throw new Error(tr('xfer.saveFailed'))
+  while (saving) await saving
+  clearPersistTimer()
+  const job = (async () => {
+    for (const batch of writes.snapshotBatches(15)) {
+      const attempt = ++revision
+      const saved = await window.agentswitch.chat.saveImportBatch(session, attempt, batch.changes)
+      if (revision !== attempt) {
+        if (status === 'ready') return // A synchronous flush saved the full pending snapshot.
+        throw new Error(tr('xfer.saveFailed'))
+      }
+      if (!saved) throw new Error(tr('xfer.saveFailed'))
+      batch.acknowledge()
+    }
+  })()
+  saving = job
+  try {
+    await job
+    setStatus('ready')
+  } catch (error) {
+    setStatus('saveFailed')
+    throw error
+  } finally {
+    saving = null
+    schedulePersist(status === 'saveFailed' ? 1500 : 400)
+  }
 }
 
 function flushPendingChats(): boolean {
@@ -984,18 +1014,17 @@ const folderBase = (p: string | null | undefined): string | null => {
 }
 
 /** Collects conversations and their source locations for the main process to archive. */
-export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]): ThreadBundle {
+function* exportItems(ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]): Generator<ExportedThread> {
   const kindOf = new Map(profiles.map((p) => [p.id, p.kind]))
-  const threads: ExportedThread[] = []
   for (const th of state.threads) {
     if (th.preview || !ids.has(th.id)) continue
     // Bake imported history messages into `messages` so nothing is lost on another machine.
     const merged = threadMessages(th)
-    const driverKind: ProfileKind | null =
-      (th.driver.profileId ? kindOf.get(th.driver.profileId) : undefined) ??
-      th.imported?.kind ??
-      [...merged].reverse().find((m) => m.role === 'assistant')?.agent.kind ??
-      null
+    let driverKind = (th.driver.profileId ? kindOf.get(th.driver.profileId) : undefined) ?? th.imported?.kind ?? null
+    for (let i = merged.length - 1; !driverKind && i >= 0; i--) {
+      const message = merged[i]
+      if (message.role === 'assistant') driverKind = message.agent.kind
+    }
     const cleaned: Thread = {
       id: th.id,
       title: th.title,
@@ -1016,15 +1045,29 @@ export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; k
       ...(th.taskSummary ? { taskSummary: th.taskSummary } : {}),
       ...(th.pinned ? { pinned: true } : {})
     }
-    threads.push({
+    yield {
       thread: cleaned,
       projectName: folderBase(th.projectDir),
       sourceProjectDir: th.projectDir,
       sourceWorkdir: th.workdir ?? th.projectDir,
       driverKind
-    })
+    }
   }
-  return { format: LEGACY_BUNDLE_FORMAT, version: 1, exportedAt: Date.now(), threads }
+}
+
+export function buildThreadBundle(ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]): ThreadBundle {
+  return { format: LEGACY_BUNDLE_FORMAT, version: 1, exportedAt: Date.now(), threads: [...exportItems(ids, profiles)] }
+}
+
+export async function buildThreadBundleAsync(
+  ids: Set<string>, profiles: { id: ProfileId; kind: ProfileKind }[]
+): Promise<ThreadBundle> {
+  const bundle: ThreadBundle = { format: LEGACY_BUNDLE_FORMAT, version: 1, exportedAt: Date.now(), threads: [] }
+  for (const item of exportItems(ids, profiles)) {
+    bundle.threads.push(item)
+    if (bundle.threads.length % 15 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+  return bundle
 }
 
 /** Map of known local project directories keyed by folder basename (most recently updated wins). */
@@ -1064,18 +1107,21 @@ export function applyThreadImport(
     return healthy[0]?.id ?? ready[0]?.id ?? profiles[0]?.id ?? null
   }
 
-  let threads = [...state.threads]
+  const threads = [...state.threads]
+  const originalCount = threads.length
   const byIdMap = new Map(threads.map((t, i) => [t.id, i]))
-  let added = 0
+  const mappedParticipants = readyIds.length ? readyIds : profiles.map((p) => p.id)
   let replaced = 0
 
   for (const item of items) {
     const src = item.thread
     const mappedDriverId = pickAccount(src.driver?.profileId ?? null, item.driverKind)
-    const mappedParticipants = readyIds.length ? readyIds : profiles.map((p) => p.id)
     const existingIdx = byIdMap.get(src.id)
     const makeCopy = existingIdx !== undefined && conflictMode === 'duplicate'
-    const id = makeCopy ? `${src.id}-${uid().slice(0, 4)}` : src.id
+    let id = src.id
+    if (makeCopy) {
+      do { id = `${src.id}-${uid().slice(0, 4)}` } while (byIdMap.has(id))
+    }
 
     const nextThread: Thread = {
       ...src,
@@ -1098,16 +1144,14 @@ export function applyThreadImport(
       threads[existingIdx] = nextThread
       replaced++
     } else {
-      threads = [nextThread, ...threads]
-      // rebuild index map for subsequent items
-      byIdMap.clear()
-      threads.forEach((t, i) => byIdMap.set(t.id, i))
-      added++
+      byIdMap.set(id, threads.length)
+      threads.push(nextThread)
     }
   }
 
-  set({ ...state, threads })
-  return { added, replaced }
+  const added = threads.splice(originalCount).reverse()
+  set({ ...state, threads: [...added, ...threads] })
+  return { added: added.length, replaced }
 }
 
 /** Reassociate an idle chat and force its next turn to start a session in the selected folder. */

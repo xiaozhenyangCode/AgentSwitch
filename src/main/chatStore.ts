@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, open, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { storedThread, type ChatChanges, type ChatIndex, type ChatState, type Message, type OpenChats, type OutputFileRef, type QueuedMessage, type StoredThread } from '@shared/chat'
 
@@ -256,25 +257,77 @@ export class ChatStore {
         if (thread.preview) continue
         atomicWrite(join(this.dir, threadFile(thread.id)), JSON.stringify(storedThread(thread)))
       }
-      const indexPath = join(this.dir, INDEX)
-      if (this.migrationPending && changes.deletes.some((id) => !this.legacyDeleted.has(id))) {
-        // Remember deletions before unlinking so a later migration attempt cannot restore them.
-        const index = readIndex(indexPath) ?? { activeId: null, order: [] }
-        const deleted = new Set([...this.legacyDeleted, ...changes.deletes])
-        atomicWrite(indexPath, JSON.stringify({ ...index, legacyDeleted: [...deleted] }))
-        this.legacyDeleted = deleted
-      }
-      for (const id of changes.deletes) rmSync(join(this.dir, threadFile(id)), { force: true })
-      if (changes.index) {
-        const index: DiskIndex = { ...changes.index }
-        if (this.legacyDeleted.size) index.legacyDeleted = [...this.legacyDeleted]
-        atomicWrite(indexPath, JSON.stringify(index))
-      }
+      this.applyDeletions(changes.deletes)
+      if (changes.index) atomicWrite(join(this.dir, INDEX), this.serializeIndex(changes.index))
       return true
     } catch (error) {
       console.error('[chatStore] chat save failed', (error as ChatFault).code ?? (error as ChatFault).name)
       return false
     }
+  }
+
+  /** Stage imported data asynchronously, then publish only if a newer flush has not superseded it. */
+  async saveImportBatch(
+    session: unknown, revision: unknown, changes: unknown, isCurrent: () => boolean
+  ): Promise<boolean> {
+    if (session !== this.session || !session || typeof revision !== 'number' ||
+        !Number.isSafeInteger(revision) || revision <= 0 || !isChatChanges(changes)) return false
+    if (revision <= this.revision) return true
+
+    const indexPath = join(this.dir, INDEX)
+    const staged: { temp: string; target: string }[] = []
+    const stage = async (target: string, data: string) => {
+      const temp = target + '.' + randomUUID() + '.tmp'
+      const file = await open(temp, 'wx', 0o600)
+      staged.push({ temp, target })
+      try {
+        await file.writeFile(data, 'utf8')
+        await file.sync()
+      } finally {
+        await file.close()
+      }
+    }
+
+    try {
+      await mkdir(this.dir, { recursive: true })
+      for (const thread of changes.upserts) {
+        if (!thread.preview) await stage(join(this.dir, threadFile(thread.id)), JSON.stringify(storedThread(thread)))
+      }
+      // The transfer writes the index in its own batch after all history entries.
+      if (changes.index) {
+        const legacyDeleted = this.migrationPending
+          ? new Set([...this.legacyDeleted, ...changes.deletes]) : this.legacyDeleted
+        await stage(indexPath, this.serializeIndex(changes.index, legacyDeleted))
+      }
+      if (session !== this.session || !isCurrent()) return false
+      if (revision <= this.revision) return true
+      this.revision = revision
+      for (const { temp, target } of staged) {
+        if (target !== indexPath) renameSync(temp, target)
+      }
+      this.applyDeletions(changes.deletes)
+      const index = staged.find(({ target }) => target === indexPath)
+      if (index) renameSync(index.temp, index.target)
+      return true
+    } finally {
+      await Promise.allSettled(staged.map(({ temp }) => rm(temp, { force: true })))
+    }
+  }
+
+  private serializeIndex(index: ChatIndex, legacyDeleted = this.legacyDeleted): string {
+    return JSON.stringify(legacyDeleted.size ? { ...index, legacyDeleted: [...legacyDeleted] } : index)
+  }
+
+  private applyDeletions(ids: string[]): void {
+    if (this.migrationPending && ids.some((id) => !this.legacyDeleted.has(id))) {
+      // Remember deletions before unlinking so a later migration attempt cannot restore them.
+      const indexPath = join(this.dir, INDEX)
+      const index = readIndex(indexPath) ?? { activeId: null, order: [] }
+      const deleted = new Set([...this.legacyDeleted, ...ids])
+      atomicWrite(indexPath, this.serializeIndex(index, deleted))
+      this.legacyDeleted = deleted
+    }
+    for (const id of ids) rmSync(join(this.dir, threadFile(id)), { force: true })
   }
 
   private migrate(raw: string): boolean {

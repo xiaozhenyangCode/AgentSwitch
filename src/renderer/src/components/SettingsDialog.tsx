@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { KINDS, type HistoryEntry, type ProfileKind, type ThemeMode } from '@shared/types'
 import { LOCALES, LOCALE_NAMES, translate, type LanguagePref, type MsgKey } from '@shared/i18n'
 import { useApp, type SettingsSection } from '../state/AppContext'
@@ -8,10 +8,11 @@ import { openOnboarding } from '../state/onboarding'
 import { sendKeys, setSetting, useSettings, type SendKey } from '../state/settings'
 import { KIND_META, accountBadge, isReady } from '../lib/ui'
 import { BrandMark, KindAvatar, Segmented } from './common'
-import { ExportThreadsDialog, ImportThreadsDialog } from './ThreadTransferDialog'
+import { ExportThreadsDialog, ImportThreadsDialog, todayStamp } from './ThreadTransferDialog'
+import { TransferProgressModal } from './TransferProgressModal'
 import { SheetCloseButton, WorkspaceSheetModal } from './WorkspaceSheetModal'
-import { useChatStatus } from '../state/chat'
-import type { ImportPreviewResult } from '@shared/transfer'
+import { applyThreadImport, buildThreadBundleAsync, persistThreadImport, useChatStatus, type ImportConflictMode } from '../state/chat'
+import type { CommitImportRequest, ImportPreviewResult, TransferImportResult, TransferProgressEvent, TransferType } from '@shared/transfer'
 import {
   IconAuto,
   IconCheck,
@@ -305,6 +306,7 @@ export function SettingsDialog() {
   }
 
   return (
+    <SettingsTransfer>
     <WorkspaceSheetModal
       open={settingsOpen}
       onClose={closeSettings}
@@ -369,6 +371,7 @@ export function SettingsDialog() {
         </div>
       </section>
     </WorkspaceSheetModal>
+    </SettingsTransfer>
   )
 }
 
@@ -631,38 +634,143 @@ function ThresholdRow({ title }: { title: ReactNode }) {
   )
 }
 
-function TransferBlock({ title }: { title: ReactNode }) {
-  const { toast } = useApp()
-  const chatStatus = useChatStatus()
-  const disabled = chatStatus === 'loading' || chatStatus === 'loadFailed'
-  const [exportOpen, setExportOpen] = useState(false)
-  const [importState, setImportState] = useState<ImportPreviewResult | null>(null)
+const TransferActions = createContext<{ openExport: () => void; openImport: () => void; busy: boolean } | null>(null)
 
-  const openImport = async () => {
+function TransferBlock({ title }: { title: ReactNode }) {
+  const actions = useContext(TransferActions)
+  const chatStatus = useChatStatus()
+  const disabled = !actions || actions.busy || chatStatus === 'loading' || chatStatus === 'loadFailed'
+  return (
+    <Row label={title} hint={t('set.transferHint')}>
+      <div className="flex items-center gap-2">
+        <button className={btn} disabled={disabled} onClick={actions?.openExport}>
+          {t('set.exportChats')}
+        </button>
+        <button className={btn} disabled={disabled} onClick={actions?.openImport}>
+          {t('set.importChats')}
+        </button>
+      </div>
+    </Row>
+  )
+}
+
+type TransferRequest = {
+  type: TransferType
+  id?: string
+  onPreparing?: (id: string) => Promise<void>
+}
+
+const transferError = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+
+function SettingsTransfer({ children }: { children: ReactNode }) {
+  const { profiles } = useApp()
+  const [exportOpen, setExportOpen] = useState(false)
+  const [preview, setPreview] = useState<ImportPreviewResult | null>(null)
+  const [progress, setProgress] = useState<TransferProgressEvent | null>(null)
+  const [busy, setBusy] = useState(false)
+  const request = useRef<TransferRequest | null>(null)
+
+  const fail = (active: TransferRequest, error: unknown) => {
+    setProgress((previous) => ({
+      transferId: active.id ?? '', type: active.type, phase: 'error',
+      current: previous?.current ?? 0, total: previous?.total ?? 0, percent: previous?.percent ?? 0,
+      error: previous?.phase === 'error' ? previous.error : transferError(error)
+    }))
+  }
+
+  useEffect(() => window.agentswitch.sys.onTransferProgress((event) => {
+    const active = request.current
+    if (!active || active.type !== event.type || (active.id && active.id !== event.transferId)) return
+    active.id = event.transferId
+    if (active.type === 'export') setExportOpen(false)
+    setProgress(event)
+    if (event.phase === 'preparing' && active.onPreparing) {
+      const prepare = active.onPreparing
+      active.onPreparing = undefined
+      void prepare(event.transferId).catch((error) => {
+        if (request.current === active) fail(active, error)
+      })
+    }
+  }), [])
+
+  const runTransfer = async (active: TransferRequest, work: () => Promise<void>) => {
+    if (request.current) return
+    request.current = active
+    setBusy(true)
     try {
-      const picked = await window.agentswitch.sys.importThreadsFile()
-      if (!picked) return
-      setImportState(picked)
-    } catch (e) {
-      toast({ kind: 'error', title: t('xfer.invalidFile'), desc: e instanceof Error ? e.message : String(e) })
+      await work()
+    } catch (error) {
+      if (active.type === 'export') setExportOpen(false)
+      fail(active, error)
+    } finally {
+      request.current = null
+      setBusy(false)
     }
   }
 
+  const runExport = (selected: Set<string>) => {
+    const active: TransferRequest = {
+      type: 'export',
+      onPreparing: async (id) => {
+        try {
+          const bundle = await buildThreadBundleAsync(selected, profiles)
+          await window.agentswitch.sys.provideThreadExportBundle(id, { bundle })
+        } catch (error) {
+          await window.agentswitch.sys.provideThreadExportBundle(id, { error: transferError(error) })
+        }
+      }
+    }
+    return runTransfer(active, async () => {
+      const result = await window.agentswitch.sys.exportThreadsFile(`AgentSwitch-chats-${todayStamp()}.zip`)
+      if (!result) return
+      setExportOpen(false)
+      setProgress({
+        transferId: active.id ?? '', type: 'export', phase: 'success',
+        current: result.exportedCount, total: result.exportedCount, percent: 100, result
+      })
+    })
+  }
+
+  const openImport = () => runTransfer({ type: 'import' }, async () => {
+    const picked = await window.agentswitch.sys.importThreadsFile()
+    if (!picked) return
+    setProgress(null)
+    setPreview(picked)
+  })
+
+  const runImport = (input: CommitImportRequest, conflictMode: ImportConflictMode, selectedCount: number) => {
+    const total = preview?.bundle.threads.length ?? selectedCount
+    return runTransfer({ type: 'import' }, async () => {
+      setPreview(null)
+      setProgress({ transferId: '', type: 'import', phase: 'validating', current: 0, total: selectedCount, percent: 0 })
+      const { threads, transferId } = await window.agentswitch.sys.commitThreadsImport(input)
+      let result: TransferImportResult
+      try {
+        const { added, replaced } = applyThreadImport(threads, profiles, conflictMode)
+        await persistThreadImport()
+        result = {
+          filePath: input.filePath, importedCount: threads.length, addedCount: added,
+          replacedCount: replaced, skippedCount: total - selectedCount
+        }
+      } catch (error) {
+        await window.agentswitch.sys.finishThreadImport(transferId, { error: transferError(error) }).catch(() => undefined)
+        throw error
+      }
+      await window.agentswitch.sys.finishThreadImport(transferId, { result })
+      setProgress({
+        transferId, type: 'import', phase: 'success', current: threads.length, total: threads.length, percent: 100, result
+      })
+    })
+  }
+
   return (
-    <>
-      <Row label={title} hint={t('set.transferHint')}>
-        <div className="flex items-center gap-2">
-          <button className={btn} disabled={disabled} onClick={() => setExportOpen(true)}>
-            {t('set.exportChats')}
-          </button>
-          <button className={btn} disabled={disabled} onClick={() => void openImport()}>
-            {t('set.importChats')}
-          </button>
-        </div>
-      </Row>
-      {exportOpen && <ExportThreadsDialog onClose={() => setExportOpen(false)} />}
-      {importState && <ImportThreadsDialog preview={importState} onClose={() => setImportState(null)} />}
-    </>
+    <TransferActions.Provider value={{ openExport: () => setExportOpen(true), openImport, busy }}>
+      {children}
+      {exportOpen && <ExportThreadsDialog busy={busy} onClose={() => setExportOpen(false)} onExport={runExport} />}
+      {preview && <ImportThreadsDialog preview={preview} onClose={() => setPreview(null)} onImport={runImport} />}
+      {progress && <TransferProgressModal progress={progress} onClose={() => setProgress(null)} />}
+    </TransferActions.Provider>
   )
 }
 

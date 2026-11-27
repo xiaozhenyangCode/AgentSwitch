@@ -492,3 +492,19 @@ label {
 @media (prefers-reduced-motion: reduce) {
   .cb-reveal, .sheet-in, .sheet-out, .scrim-in, .scrim-out { animation-duration: 1ms; }
 }
+
+@keyframes xfer-indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.xfer-indeterminate {
+  animation: xfer-indeterminate 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xfer-indeterminate {
+    animation: none;
+    transform: translateX(100%);
+  }
+}
