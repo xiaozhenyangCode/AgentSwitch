@@ -43,7 +43,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
     setElapsed(0)
     try {
       await window.agentswitch.pty.start({ profileId, mode: 'login', ...dims(profileId) })
-      setPhase('waiting')
+      setPhase((current) => (current === 'starting' ? 'waiting' : current))
     } catch (e) {
       toast({ kind: 'error', title: t('login.startFailed'), desc: String(e) })
       setPhase('exited')
@@ -100,7 +100,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   }, [phase])
 
   const cancel = () => {
-    if (phaseRef.current !== 'success' && profile?.sessionMode === 'login') void window.agentswitch.pty.kill(profileId)
+    if (phaseRef.current !== 'success' && (!profile?.sessionMode || profile.sessionMode === 'login')) void window.agentswitch.pty.kill(profileId)
     closeLogin()
   }
   // Esc is ignored (prevent accidental cancel during OAuth), while ⌘W closes this sheet instead of the app.
