@@ -47,6 +47,8 @@ import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
 import {
+  CACHE_COLD_GAP_MS,
+  CACHE_COLD_MIN_TOKENS,
   computeContextNotice,
   computeContextState,
   isCompactCommand,
@@ -96,7 +98,7 @@ import {
   composerDraft,
   saveComposerDraft
 } from '../state/chat'
-import { fmtDuration, t, tNode, useI18n } from '../state/i18n'
+import { fmtAgo, fmtDuration, t, tNode, useI18n } from '../state/i18n'
 import { isPendingPermission } from '../state/permissionState'
 import { stripLatest } from '@shared/i18n'
 import { patchDraft, pickDriver, useDraft, type DraftCtx } from '../state/draft'
@@ -424,6 +426,16 @@ export function WorkbenchPage() {
     const window = state.reportedWindow || (driverP ? contextWindow(driverP.kind, driverModel ?? state.model) : 0)
     return { ...state, window }
   }, [messages, driverP, driverModel, thread?.carriedMessageCount, thread?.imported, thread?.preview])
+  // Wall clock for the cold-cache warning: only ticks while the lead session is large enough to warn about.
+  const coldLimit = driverP ? CACHE_COLD_GAP_MS[driverP.kind] : undefined
+  const coldCandidate = !!coldLimit && contextStats.lastEndedAt > 0 && contextStats.lastTokens >= CACHE_COLD_MIN_TOKENS
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!coldCandidate) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [coldCandidate, contextStats.lastEndedAt])
   const canShowContextNotice =
     !!thread &&
     !!driverP &&
@@ -439,9 +451,13 @@ export function WorkbenchPage() {
         window: contextStats.window,
         userTurns: contextStats.userTurns,
         dismissed: ctxDismissed,
-        compactedMessageId: thread.contextCostDismissed?.compacted ? thread.contextCostDismissed.messageId : null
+        compactedMessageId: thread.contextCostDismissed?.compacted ? thread.contextCostDismissed.messageId : null,
+        kind: driverP.kind,
+        lastEndedAt: contextStats.lastEndedAt,
+        now: coldCandidate ? Math.max(now, Date.now()) : undefined
       })
     : null
+  const contextCold = contextNotice === 'cold'
   const contextLong = contextNotice === 'long'
   const contextCostly = contextNotice === 'costly'
   const dismissWarn = () => {
@@ -449,6 +465,13 @@ export function WorkbenchPage() {
     setCtxDismissed((prev) => ({
       ...(prev?.threadId === thread.id ? prev : { threadId: thread.id }),
       warnAt: contextStats.userTurns
+    }))
+  }
+  const dismissCold = () => {
+    if (!thread) return
+    setCtxDismissed((prev) => ({
+      ...(prev?.threadId === thread.id ? prev : { threadId: thread.id }),
+      cold: contextStats.lastId
     }))
   }
   const dismissCost = () => {
@@ -829,7 +852,7 @@ export function WorkbenchPage() {
           className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center transition-all duration-200 ease-out ${
             !atBottom && messages.length > 0 ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-90 opacity-0'
           }`}
-          style={{ bottom: composerH + (thread?.pause || (!!driverP && (handoffNeeded || handoffReady || contextLong || contextCostly)) ? 54 : 8) }}
+          style={{ bottom: composerH + (thread?.pause || (!!driverP && (handoffNeeded || handoffReady || contextLong || contextCostly || contextCold)) ? 54 : 8) }}
         >
           <button
             type="button"
@@ -928,6 +951,45 @@ export function WorkbenchPage() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+        {contextCold && thread && driverP && (
+          <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-xl bg-warn-soft px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_rgba(255,159,10,0.35),0_8px_24px_rgba(0,0,0,0.08)]">
+              <button
+                onClick={dismissCold}
+                className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+                title={t('common.close')}
+                aria-label={t('common.close')}
+              >
+                <IconX size={14} />
+              </button>
+              <IconClock size={15} className="shrink-0 text-warn" />
+              <span className="min-w-40 flex-1">
+                {t('wb.ctxCold', { name: driverP.name, ago: fmtAgo(contextStats.lastEndedAt), tokens: fmtTokens(contextStats.lastTokens) })}
+                <span className="block text-[12px] text-ink-2">{t('wb.ctxColdHint')}</span>
+                {handoffFailed && (
+                  <span className="block text-[12px] text-warn">
+                    {t('wb.handoffFailed', { name: ctxHandoffSrc?.name ?? t('wb.origAccount'), suffix: thread.handoffFailed!.error === 'rate_limited' ? t('wb.rateLimitedSuffix') : '' })}
+                  </span>
+                )}
+              </span>
+              <button disabled={compacting} className="h-7 shrink-0 rounded-full bg-accent px-3 font-medium text-white hover:bg-accent/90 disabled:opacity-60" onClick={startCompact} title={t('wb.ctxCompactHint')}>
+                {t('wb.ctxCompact')}
+              </button>
+              {ctxHandoffSrc && !handoffFailed ? (
+                <button className="h-7 shrink-0 rounded-full border border-accent/30 px-3 font-medium text-accent hover:bg-accent/10" onClick={startHandoffToNew}>
+                  {t('wb.ctxHandoffNew', { name: ctxHandoffSrc.name })}
+                </button>
+              ) : (
+                <button disabled={exporting} className="h-7 shrink-0 rounded-full border border-accent/30 px-3 font-medium text-accent hover:bg-accent/10 disabled:opacity-60" onClick={() => void doExport(true)}>
+                  {exporting ? t('wb.exporting') : t('wb.ctxExportNew')}
+                </button>
+              )}
+              <button className="h-7 shrink-0 rounded-full px-3 font-medium text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]" onClick={dismissCold}>
+                {t('wb.ctxColdContinue')}
+              </button>
+            </div>
           </div>
         )}
         {contextLong && thread && driverP && (

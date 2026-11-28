@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { AssistantMessage, Message, SystemMessage, UserMessage } from '@shared/chat'
 import type { SkillItem } from '@shared/types'
 import {
+  CACHE_COLD_GAP_MS,
+  CACHE_COLD_MIN_TOKENS,
+  cacheColdGap,
   COMPACT_COMMAND_INSERT,
   CTX_COST_REDISPLAY_TURNS,
   CTX_REDISPLAY_TURNS,
@@ -178,5 +181,39 @@ describe('compactCommand helpers', () => {
     expect(computeContextNotice({ ...longBase, userTurns: 8 + CTX_REDISPLAY_TURNS, dismissed: dismissedLong })).toBe('long')
     // Switching back to t1 shows long notice again
     expect(computeContextNotice({ ...longBase, dismissed: { threadId: 't2', warnAt: 8 } })).toBe('long')
+  })
+
+  it('warns about a cold prompt cache only for large, long-idle sessions of measured kinds', () => {
+    const gap = CACHE_COLD_GAP_MS.gemini!
+    const base = { kind: 'gemini' as const, lastEndedAt: 1_000_000, lastTokens: CACHE_COLD_MIN_TOKENS }
+    expect(cacheColdGap({ ...base, now: base.lastEndedAt + gap - 1 })).toBe(null)
+    expect(cacheColdGap({ ...base, now: base.lastEndedAt + gap })).toBe(gap)
+    expect(cacheColdGap({ ...base, lastTokens: CACHE_COLD_MIN_TOKENS - 1, now: base.lastEndedAt + gap })).toBe(null)
+    expect(cacheColdGap({ ...base, lastEndedAt: 0, now: gap * 10 })).toBe(null)
+    expect(cacheColdGap({ ...base, kind: 'claude', now: base.lastEndedAt + gap })).toBe(null)
+    expect(cacheColdGap({ ...base, kind: null, now: base.lastEndedAt + gap })).toBe(null)
+  })
+
+  it('ranks the cold notice above long/costly, dismisses it per reply, and skips compacted sessions', () => {
+    const gap = CACHE_COLD_GAP_MS.gemini!
+    const cold = { threadId: 't1', lastTokens: 400_000, lastId: 'm1', window: 512_000, userTurns: 9, kind: 'gemini' as const, lastEndedAt: 1_000, now: 1_000 + gap }
+    expect(computeContextNotice({ ...cold, dismissed: null })).toBe('cold')
+    // Still warm: falls back to the long notice (400k >= 70% of 512k)
+    expect(computeContextNotice({ ...cold, now: 1_000 + gap - 1, dismissed: null })).toBe('long')
+    // Without a clock the cold check is off (e.g. session below threshold)
+    expect(computeContextNotice({ ...cold, now: undefined, dismissed: null })).toBe('long')
+    // Dismissing hides it for this reply only and shows the remaining notice
+    expect(computeContextNotice({ ...cold, dismissed: { threadId: 't1', cold: 'm1' } })).toBe('long')
+    expect(computeContextNotice({ ...cold, lastId: 'm2', dismissed: { threadId: 't1', cold: 'm1' } })).toBe('cold')
+    expect(computeContextNotice({ ...cold, dismissed: { threadId: 't2', cold: 'm1' } })).toBe('cold')
+    // A compacted session no longer resumes the cold context
+    expect(computeContextNotice({ ...cold, dismissed: null, compactedMessageId: 'm1' })).toBe('long')
+  })
+
+  it('reports when the lead reply with context finished', () => {
+    const a = { ...replyMsg('r1', 'a', 200_000), endedAt: 42 }
+    const b = { ...replyMsg('r2', 'b', 300_000), endedAt: 99 }
+    expect(computeContextState([userMsg('u1'), a, b], 'a').lastEndedAt).toBe(42)
+    expect(computeContextState([userMsg('u1'), b], 'a').lastEndedAt).toBe(0)
   })
 })
