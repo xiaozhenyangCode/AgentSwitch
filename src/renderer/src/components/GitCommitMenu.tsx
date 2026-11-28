@@ -77,7 +77,7 @@ export function GitCommitMenu({ dir, tools, selection, host, onClose, onBranchFo
   )
   return createPortal(
     <div role="menu" aria-label={t('git.commitActions', { hash: commit.shortHash })} ref={menu}
-      className="fixed z-10 max-h-[calc(100vh-16px)] w-max max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-hairline bg-surface p-1 shadow-lg"
+      className="fixed z-10 max-h-[calc(100vh-16px)] w-max max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-editor-hairline bg-elevated p-1 shadow-lg"
       onContextMenu={(event) => event.preventDefault()}
       onKeyDown={(event) => {
         if (event.key === 'Tab') {

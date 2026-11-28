@@ -286,7 +286,7 @@ export function LoginModal({ profileId }: { profileId: ProfileId }) {
   if (drawer.open) {
     return (
       <div
-        className="fixed right-5 z-50 w-[440px] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.22)]"
+        className="fixed right-5 z-50 w-[440px] overflow-y-auto rounded-xl border border-editor-hairline bg-elevated shadow-[0_24px_64px_rgba(0,0,0,0.18)]"
         style={{ bottom: drawerHeight + 20, maxHeight: `calc(100vh - ${drawerHeight + 40}px)` }}
       >
         {body}

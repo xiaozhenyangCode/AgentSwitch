@@ -11,7 +11,8 @@ import { gitBranchLabel, gitInput } from './GitBranchMenu'
 import { GitCommandLogDrawer } from './GitCommandLogDrawer'
 import { GitConflictBar, GitConflictList, GitConflictModal } from './GitConflicts'
 import { GitRepositoryDialog } from './GitRepositoryDialog'
-import { Segmented } from './common'
+import { desktopToolbarButton, gitFileStatusTone, underlineTab } from '../lib/ui'
+import { EditorResizeHandle } from './EditorResizeHandle'
 import { DiffView } from './Process'
 import { IconBranch, IconChevronDown, IconEdit, IconExternal, IconFile, IconFolder, IconMinus, IconPlus, IconRefresh, IconUndo, IconX, Spinner } from './icons'
 
@@ -116,15 +117,6 @@ export function useFileChanges(thread: Thread | null, dir: string | null, busy: 
   return { changes, loading, refresh, readFailed: failedDir !== null && failedDir === dir }
 }
 
-const STATUS_CLS: Record<FileChange['status'], string> = {
-  M: 'text-info bg-info-soft',
-  A: 'text-ok bg-ok-soft',
-  U: 'text-ok bg-ok-soft',
-  D: 'text-danger bg-danger-soft',
-  R: 'text-warn bg-warn-soft',
-  C: 'text-danger bg-danger-soft'
-}
-
 export function Counts({ added, removed, className = '' }: { added: number; removed: number; className?: string }) {
   return (
     <span className={`shrink-0 font-mono tabular-nums ${className}`}>
@@ -168,24 +160,10 @@ export function ChangesPanel({
   const [repository, setRepository] = useState<'tags' | 'remotes' | null>(null)
   const [conflictPath, setConflictPath] = useState<string | null>(null)
   const [width, setWidth] = useState(() => Math.min(MAX_W, Math.max(CHANGES_PANEL_MIN_W, Number(localStorage.getItem(WIDTH_KEY)) || 400)))
-  const startDrag = (e: React.PointerEvent) => {
-    e.preventDefault()
-    const x0 = e.clientX
-    const w0 = e.currentTarget.parentElement?.clientWidth ?? width
-    let w = w0
-    const move = (ev: PointerEvent) => {
-      w = Math.min(MAX_W, Math.max(CHANGES_PANEL_MIN_W, w0 + (x0 - ev.clientX)))
-      setWidth(w)
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      document.body.style.cursor = ''
-      localStorage.setItem(WIDTH_KEY, String(w))
-    }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+  const resize = (next: number) => {
+    const bounded = Math.min(MAX_W, Math.max(CHANGES_PANEL_MIN_W, next))
+    setWidth(bounded)
+    localStorage.setItem(WIDTH_KEY, String(bounded))
   }
 
   const files = changes?.files ?? []
@@ -193,55 +171,51 @@ export function ChangesPanel({
   const canShowHistory = !!dir && (!!gitTools || !!changes?.repo)
   return (
     <aside
-      className={`flex min-h-0 shrink-0 flex-col border-l border-hairline ${overlay
-        ? 'absolute top-[52px] right-0 bottom-0 z-20 bg-surface shadow-lg'
-        : 'relative h-full bg-surface/60'}`}
+      className={`flex min-h-0 shrink-0 flex-col border-editor-hairline ${overlay
+        ? 'absolute top-[52px] right-0 bottom-0 z-20 border bg-editor-elevated shadow-[-10px_8px_28px_rgba(0,0,0,0.13)]'
+        : 'relative h-full border-l bg-editor-chrome'}`}
       style={{ width, maxWidth: overlay ? '100%' : `calc(100% - ${EDITOR_CHAT_MIN_W}px)` }}
     >
-      <div
-        className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize transition-colors hover:bg-accent/20"
-        onPointerDown={startDrag}
-        onDoubleClick={() => {
-          setWidth(400)
-          localStorage.setItem(WIDTH_KEY, '400')
-        }}
-        title={t('chg.resize')}
-      />
-      <div className="drag flex h-[52px] shrink-0 items-center gap-2 border-b border-hairline px-4">
+      <EditorResizeHandle edge="left" onResize={resize} onReset={() => resize(400)} />
+      <div className="drag flex h-[52px] shrink-0 items-center gap-2 border-b border-editor-hairline px-3">
         <span className="text-[14px] font-semibold text-ink">{t('chg.title')}</span>
         {files.length > 0 && (
-          <span className="text-[12px] text-ink-3">
+          <span className="min-w-0 truncate text-[12px] text-ink-3 tabular-nums">
             {t('chg.nFiles', { n: files.length + (changes?.more ?? 0) })} · <Counts added={changes!.added} removed={changes!.removed} />
           </span>
         )}
         <div className="flex-1" />
         {changes && !changes.repo && files.length > 0 && <span className="text-[11px] text-ink-3">{t('chg.fromChat')}</span>}
         <button
-          className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink"
+          className={`${desktopToolbarButton} w-7 justify-center`}
           onClick={onRefresh}
           disabled={!dir}
           title={t('common.refresh')}
         >
           {loading ? <Spinner size={13} /> : <IconRefresh size={14} />}
         </button>
-        <button className="no-drag grid h-7 w-7 place-items-center rounded-lg text-ink-3 hover:bg-black/[0.05] hover:text-ink" onClick={onClose} title={t('common.close')}>
+        <button className={`${desktopToolbarButton} w-7 justify-center`} onClick={onClose} title={t('common.close')}>
           <IconX size={14} />
         </button>
       </div>
 
       {(canShowHistory || tools) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-hairline px-3 py-1.5">
-          {tools && <Segmented size="sm" value={tab} onChange={setTab} options={[
-            { value: 'changes', label: t('chg.short') },
-            { value: 'stashes', label: t('git.stashesTab', { n: tools.status.stashCount }) }
-          ]} />}
+        <div className="flex shrink-0 flex-wrap items-center gap-x-2 border-b border-editor-hairline px-3">
+          {tools && (
+            <div className="flex h-8 items-stretch gap-2.5">
+              <button type="button" className={underlineTab(tab === 'changes')} aria-pressed={tab === 'changes'}
+                onClick={() => setTab('changes')}>{t('chg.short')}</button>
+              <button type="button" className={`${underlineTab(tab === 'stashes')} tabular-nums`} aria-pressed={tab === 'stashes'}
+                onClick={() => setTab('stashes')}>{t('git.stashesTab', { n: tools.status.stashCount })}</button>
+            </div>
+          )}
           {tools && <div className="flex items-center gap-0.5">
             <button type="button" className={gitButton} onClick={() => setRepository('tags')}>{t('git.tags')}</button>
             <button type="button" className={gitButton} onClick={() => setRepository('remotes')}>{t('git.remotes')}</button>
           </div>}
           {canShowHistory && (
             <button type="button" onClick={onViewHistory}
-              className="ml-auto flex h-7 shrink-0 items-center gap-2 rounded-lg px-2 text-[12px] font-medium text-ink-2 hover:bg-black/[0.05] hover:text-ink">
+              className={`${desktopToolbarButton} ml-auto gap-1 px-1.5`}>
               <IconBranch size={13} aria-hidden="true" />
               {t('git.historyTab')}
             </button>
@@ -396,7 +370,7 @@ export function FileRow({ f, children, menu, onEditFile }: { f: FileChange | Git
       <div className="group flex h-8 min-w-0 items-center gap-1 rounded-lg px-2 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]" onContextMenu={openMenu}>
         <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => setOpen(!open)} aria-expanded={open} title={pathTitle}>
           <IconChevronDown size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? '' : '-rotate-90'}`} />
-          <span className={`grid h-[18px] w-[18px] shrink-0 place-items-center rounded font-mono text-[10.5px] font-semibold ${STATUS_CLS[f.status]}`}
+          <span className={`grid size-[18px] shrink-0 place-items-center font-mono text-[11px] font-medium tabular-nums ${gitFileStatusTone[f.status]}`}
             title={t(`chg.st.${f.status}`)}>{f.status}</span>
           {'conflicted' in f && f.conflicted && <span className="shrink-0 text-[10.5px] font-medium text-danger">{t('git.conflictTag')}</span>}
           <span className="min-w-0 flex-1 truncate text-[12.5px]">
@@ -447,7 +421,7 @@ function FileContextMenu({ actions, point, close }: {
   useEscape(close, true)
   return createPortal(
     <div className="fixed inset-0 z-40" onMouseDown={close} onContextMenu={(e) => { e.preventDefault(); close() }}>
-      <div className="absolute w-60 rounded-xl border border-hairline bg-surface p-1 shadow-lg"
+      <div className="absolute w-60 rounded-lg border border-editor-hairline bg-elevated p-1 shadow-lg"
         style={{ left: point.x, top: point.y }} onMouseDown={(e) => e.stopPropagation()}>
         {actions.map(({ label, run, destructive }, index) => (
           <button key={label} type="button" autoFocus={index === 0}

@@ -31,7 +31,7 @@ export function Toasts() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto flex items-start gap-3 rounded-2xl bg-surface/95 px-4 py-3.5 shadow-[0_0_0_1px_var(--ring),0_10px_30px_rgba(0,0,0,0.12)] backdrop-blur-xl"
+          className="pointer-events-auto flex items-start gap-3 rounded-xl border border-editor-hairline bg-elevated px-4 py-3.5 shadow-[0_10px_30px_rgba(0,0,0,0.12)]"
         >
           {ICON[t.kind]}
           <div className="min-w-0 flex-1 pt-0.5">

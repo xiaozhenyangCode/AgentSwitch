@@ -117,7 +117,7 @@ export function WorkspaceSheetModal({
           inert={inert}
           tabIndex={-1}
           onKeyDown={cycleFocus}
-          className={`workspace-sheet-panel pointer-events-auto flex h-[calc(100vh*2/3)] min-h-[min(460px,calc(100%-32px))] max-h-[min(1040px,calc(100%-32px))] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[min(1600px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)] outline-none ${open ? 'sheet-in' : 'sheet-out'} ${panelClassName}`}
+          className={`workspace-sheet-panel pointer-events-auto flex h-[calc(100vh*2/3)] min-h-[min(460px,calc(100%-32px))] max-h-[min(1040px,calc(100%-32px))] w-[calc(100vw*2/3)] min-w-[min(720px,calc(100vw-32px))] max-w-[min(1600px,calc(100vw-32px))] flex-col overflow-hidden rounded-xl border border-editor-hairline text-ink shadow-[0_24px_64px_rgba(0,0,0,0.18)] outline-none ${open ? 'sheet-in' : 'sheet-out'} ${panelClassName}`}
         >
           {header && <div className="shrink-0">{header}</div>}
           <div className={`flex min-h-0 flex-1 ${bodyClassName}`}>{children}</div>

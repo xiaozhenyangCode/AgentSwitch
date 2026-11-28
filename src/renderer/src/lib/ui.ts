@@ -1,7 +1,23 @@
-import type { ProfileKind, ProfileState } from '@shared/types'
+import type { FileChange, ProfileKind, ProfileState } from '@shared/types'
 import { t } from '../state/i18n'
 
-export const popover = 'rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl'
+export const popover = 'rounded-xl border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]'
+
+export const desktopToolbarButton =
+  'no-drag flex h-7 shrink-0 items-center gap-1.5 rounded-md text-[12.5px] font-medium text-ink-2 transition-colors hover:bg-black/[0.05] hover:text-ink dark:hover:bg-white/[0.07] aria-pressed:bg-black/[0.07] aria-expanded:bg-black/[0.07] dark:aria-pressed:bg-white/[0.10] dark:aria-expanded:bg-white/[0.10]'
+
+export const underlineTab = (active: boolean) =>
+  `no-drag flex h-full items-center gap-1 border-b-[1.5px] whitespace-nowrap text-[12px] ${active
+    ? 'border-ink-2 font-medium text-ink' : 'border-transparent text-ink-2 hover:text-ink'}`
+
+export const gitFileStatusTone: Record<FileChange['status'], string> = {
+  M: 'text-[#896221] dark:text-[#d4a853]',
+  A: 'text-[#2f7d57] dark:text-[#63b286]',
+  U: 'text-[#2f7d57] dark:text-[#63b286]',
+  R: 'text-[#4a74a8] dark:text-[#7da5d4]',
+  C: 'text-[#4a74a8] dark:text-[#7da5d4]',
+  D: 'text-[#b54c4c] dark:text-[#d67a7a]'
+}
 
 export interface BadgeMeta {
   label: string

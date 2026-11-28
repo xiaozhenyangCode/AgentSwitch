@@ -16,7 +16,7 @@ import {
   EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
   type EditorDockPosition, type EditorFileTreePosition
 } from '../lib/editorLayout'
-import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, isSignedIn, popover } from '../lib/ui'
+import { KIND_META, accountBadge, btnPrimary, btnSecondary, desktopToolbarButton, isReady, isSignedIn, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
 import { AttachmentViewer } from '../components/AttachmentViewer'
@@ -137,9 +137,6 @@ function makeQuote(msg: UserMessage | AssistantMessage): MessageQuote | null {
     excerpt: capped
   }
 }
-
-const pill =
-  'flex h-9 items-center gap-2 rounded-full bg-surface px-4 text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:bg-surface-2 active:scale-[0.98]'
 
 function useOutside<T extends HTMLElement>(open: boolean, close: () => void) {
   const ref = useRef<T>(null)
@@ -657,7 +654,7 @@ export function WorkbenchPage() {
 
   const chatPanel = (
       <div className="@container relative flex min-h-0 min-w-0 flex-1 flex-col overflow-clip">
-        <div className="drag flex h-[52px] shrink-0 items-center gap-1 px-3 @min-[520px]:gap-2.5 @min-[520px]:pr-8"
+        <div className="drag relative z-30 flex h-[52px] shrink-0 items-center gap-1 border-b border-editor-hairline bg-sidebar px-3 @min-[520px]:gap-2.5"
           style={trafficLightOwner === 'chat' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
           {!sidebarOpen && !editorOnLeft && (
             <button
@@ -676,13 +673,13 @@ export function WorkbenchPage() {
           {synced && (
             <div key={synced.seq} className="pointer-events-none absolute inset-x-0 top-3.5 z-20 flex justify-center px-3"
               style={trafficLightOwner === 'chat' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
-              <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
+              <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-editor-hairline bg-elevated px-3 py-1 text-[12px] text-ink-2 shadow-[0_4px_16px_rgba(0,0,0,0.10)]">
                 <IconRefresh size={12} className="shrink-0 text-accent" />
                 <span className="truncate">{t('wb.extSynced', { n: synced.n })}</span>
               </div>
             </div>
           )}
-          <div className="no-drag flex items-center gap-0.5 @min-[520px]:gap-1.5">
+          <div className="no-drag flex items-center gap-0.5 @min-[520px]:min-w-0 @min-[520px]:gap-1.5">
             {showGitTools && git.status && <GitSyncBar key={ctx.projectDir} status={git.status} disabled={git.disabled}
               pending={git.pending} run={git.run} compact />}
             {!changesOpen && conflictLabel && <button type="button" onClick={() => setChangesVisible(true)}
@@ -692,7 +689,8 @@ export function WorkbenchPage() {
             {showDebugTerminal && (
               <button
                 onClick={() => (drawer.open ? closeDrawer() : openDrawer())}
-                className={pill.replace('px-4', 'px-0') + ` relative w-9 justify-center ${drawer.open ? 'bg-surface-2 text-accent' : ''}`}
+                className={`${desktopToolbarButton} relative w-7 justify-center`}
+                aria-pressed={drawer.open}
                 title={
                   t('nav.debugLog') +
                   (info
@@ -707,7 +705,8 @@ export function WorkbenchPage() {
             )}
             <button
               onClick={toggleChanges}
-              className={pill.replace('px-4', '') + ` shrink-0 gap-1.5 px-1.5 @min-[520px]:px-3 ${changesOpen ? 'bg-surface-2 text-accent' : ''}`}
+              aria-pressed={changesOpen}
+              className={`${desktopToolbarButton} px-1.5 @min-[520px]:px-2`}
               title={nChanged ? t('chg.btnHint', { n: nChanged }) : t('chg.title')}
             >
               <IconFile size={15} className={changesOpen ? 'text-accent' : 'text-ink-2'} />
@@ -721,9 +720,9 @@ export function WorkbenchPage() {
               )}
             </button>
             <button type="button" onClick={codeEditor.togglePanel}
-              className={pill.replace('px-4', '') + ` shrink-0 gap-1.5 px-1.5 @min-[520px]:px-3 ${codeEditor.open ? 'bg-surface-2 text-accent' : ''}`}
+              className={`${desktopToolbarButton} px-1.5 @min-[520px]:px-2`}
               title={t('editor.togglePanel')} aria-label={t('editor.togglePanel')} aria-pressed={codeEditor.open}>
-              <IconFolderTree size={15} />
+              <IconFolderTree size={15} className={codeEditor.open ? 'text-accent' : undefined} />
               <span className="hidden text-[13px] @min-[520px]:inline">{t('editor.panelShort')}</span>
             </button>
           </div>
@@ -839,7 +838,7 @@ export function WorkbenchPage() {
             tabIndex={!atBottom && messages.length > 0 ? 0 : -1}
             aria-label={t('wb.scrollToBottom')}
             title={t('wb.scrollToBottom')}
-            className={`flex h-8 w-8 items-center justify-center rounded-full bg-surface/95 text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_14px_rgba(0,0,0,0.12)] backdrop-blur-md transition-all duration-150 hover:bg-surface hover:text-ink active:scale-95 ${
+            className={`flex h-8 w-8 items-center justify-center rounded-lg border border-editor-hairline bg-elevated text-ink-2 shadow-[0_4px_14px_rgba(0,0,0,0.12)] transition-all duration-150 hover:bg-fill hover:text-ink active:scale-95 ${
               !atBottom && messages.length > 0 ? 'pointer-events-auto' : 'pointer-events-none'
             }`}
           >
@@ -902,7 +901,7 @@ export function WorkbenchPage() {
                 </button>
               </div>
             ) : (
-              <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+              <div className="pointer-events-auto mx-auto flex max-w-[820px] items-center gap-2.5 rounded-xl border border-editor-hairline bg-elevated px-4 py-2.5 text-[13px] text-ink shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
                 <button
                   onClick={() => skipHandoff(thread!.id, driverP.id)}
                   className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
@@ -934,7 +933,7 @@ export function WorkbenchPage() {
         )}
         {contextLong && thread && driverP && (
           <div className="pointer-events-none absolute inset-x-0 z-20 px-8" style={{ bottom: composerH - 8 }}>
-            <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-2xl bg-surface px-4 py-2.5 text-[13px] text-ink shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.08)]">
+            <div className="pointer-events-auto mx-auto flex max-w-[820px] flex-wrap items-center gap-2.5 rounded-xl border border-editor-hairline bg-elevated px-4 py-2.5 text-[13px] text-ink shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
               <button
                 onClick={dismissWarn}
                 className="-ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
@@ -1224,24 +1223,25 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
   const { navigate } = useApp()
   const accounts = useSortedAccounts()
   const [open, setOpen] = useState(false)
+  useEscape(() => setOpen(false), open)
   const ref = useOutside<HTMLDivElement>(open, () => setOpen(false))
   const active = accounts.filter((p) => participants.includes(p.id))
 
   return (
-    <div ref={ref} className="no-drag relative">
-      <button onClick={() => setOpen((o) => !o)} className={pill.replace('px-4', '') + ' gap-1.5 px-1 @min-[420px]:pr-2.5 @min-[420px]:pl-1.5'} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
+    <div ref={ref} className="no-drag shrink-0 @min-[520px]:relative">
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} className={`${desktopToolbarButton} px-1 @min-[420px]:px-1.5`} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
         {active[0] ? (
           <span className="relative">
-            <ProfileAvatar profile={active.find((p) => p.id === driverId) ?? active[0]} size={22} />
+            <ProfileAvatar profile={active.find((p) => p.id === driverId) ?? active[0]} size={18} />
           </span>
         ) : (
-          <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20 dark:border-white/25" />
+          <span className="size-[18px] rounded-md border border-dashed border-black/20 dark:border-white/25" />
         )}
         <span className="hidden text-[13px] text-ink-2 tabular-nums @min-[420px]:inline">{active.length}</span>
         <IconChevronDown size={13} className="hidden text-ink-3 @min-[420px]:block" />
       </button>
       {open && (
-        <div className={popover + ' absolute top-11 right-0 z-30 w-72'}>
+        <div className={popover + ' absolute top-full right-1 z-30 mt-1 w-72 @min-[520px]:right-0'}>
           <div className="px-2.5 pt-1 pb-1.5 text-[12px] text-ink-3">{t('wb.participantsTitle')}</div>
           {accounts.map((p) => {
             const signedIn = isSignedIn(p)
@@ -2726,7 +2726,7 @@ function Composer({
   const completionPopover = `absolute bottom-full left-0 z-30 mb-2 ${expanded ? '[&>div]:max-h-[min(380px,calc(50dvh-4.5rem))]' : ''}`
   return (
     <div ref={wrap} className={`pointer-events-none absolute inset-x-0 bottom-0 flex flex-col px-8 pt-8 pb-6 [interpolate-size:allow-keywords] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
-      expanded ? 'z-30 h-[clamp(260px,50%,calc(100%-3.5rem))] bg-[linear-gradient(to_bottom,transparent,var(--canvas)_48px)]' : 'h-auto bg-[linear-gradient(to_bottom,transparent,var(--canvas)_42%)]'
+      expanded ? 'z-30 h-[clamp(260px,50%,calc(100%-3.5rem))] bg-[linear-gradient(to_bottom,transparent,var(--chat-canvas)_48px)]' : 'h-auto bg-[linear-gradient(to_bottom,transparent,var(--chat-canvas)_42%)]'
     }`}>
       <div className="pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[820px] flex-1 flex-col">
         {notice}
@@ -2835,7 +2835,7 @@ function Composer({
         )}
 
         <div
-          className={`relative flex min-h-0 flex-1 flex-col rounded-[24px] bg-surface shadow-[0_0_0_1px_var(--ring),0_4px_12px_rgba(0,0,0,0.05),0_16px_40px_rgba(0,0,0,0.08)] transition-shadow ${
+          className={`relative flex min-h-0 flex-1 flex-col rounded-[24px] border border-editor-hairline bg-elevated shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-shadow ${
             drag ? 'shadow-[0_0_0_2px_rgba(0,122,255,0.6),0_16px_40px_rgba(0,0,0,0.08)]' : ''
           }`}
           onDragOver={(e) => {

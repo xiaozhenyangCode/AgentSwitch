@@ -85,7 +85,7 @@ export function ProjectBar({
         </button>
 
         {open && (
-          <div className="absolute bottom-full left-0 z-30 mb-1.5 w-[340px] rounded-2xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+          <div className="absolute bottom-full left-0 z-30 mb-1.5 w-[340px] rounded-xl border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
             {locked ? (
               <>
                 <div className="px-2.5 pt-1 pb-1.5 text-[11.5px] leading-relaxed text-ink-3">{dir ? t('proj.lockedHint') : t('proj.lockedNone')}</div>

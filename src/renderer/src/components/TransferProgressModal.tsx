@@ -51,7 +51,7 @@ export function TransferProgressModal({ progress, onClose }: { progress: Transfe
               event.clientY < rect.top || event.clientY > rect.bottom) onClose()
         }
       }}
-      className="no-drag sheet-in fixed inset-0 z-[70] m-auto w-[440px] max-w-[92vw] rounded-2xl bg-surface p-0 text-ink shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)] backdrop:bg-(--scrim-soft)"
+      className="no-drag sheet-in fixed inset-0 z-[70] m-auto w-[440px] max-w-[92vw] rounded-xl border border-editor-hairline bg-elevated p-0 text-ink shadow-[0_24px_64px_rgba(0,0,0,0.18)] backdrop:bg-(--scrim-soft)"
     >
       <div className="space-y-4 p-5">
         <div className="flex items-start justify-between gap-3">

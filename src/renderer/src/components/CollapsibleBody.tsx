@@ -72,7 +72,7 @@ export function CollapsibleBody({
     }
   }
 
-  const color = tone === 'bubble' ? 'var(--accent)' : 'var(--canvas)'
+  const color = tone === 'bubble' ? 'var(--accent)' : 'var(--chat-canvas)'
   const link = tone === 'bubble' ? 'text-white/90 hover:text-white' : 'text-accent hover:text-accent-hover'
 
   return (

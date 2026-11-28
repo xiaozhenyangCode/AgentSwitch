@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GitBranch, GitCommit, GitMergeMode, GitMutation, GitPullStrategy, GitStatus } from '@shared/types'
 import { useEscape } from '../lib/escStack'
-import { btnPrimary, btnSecondary } from '../lib/ui'
+import { btnPrimary, btnSecondary, desktopToolbarButton } from '../lib/ui'
 import { useApp } from '../state/AppContext'
 import { fmtAgo, t } from '../state/i18n'
 import { setSetting, useSettings } from '../state/settings'
@@ -47,7 +47,9 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
   const { gitPullStrategy, gitFetchPrune } = useSettings()
   const [options, setOptions] = useState(false)
   useEscape(() => setOptions(false), options)
-  const syncItem = compact ? itemBase.replace('px-2.5', '') : itemBase
+  const syncItem = compact
+    ? desktopToolbarButton.replace('gap-1.5', 'gap-1') + ' disabled:opacity-45 @min-[520px]:min-w-[22px] @min-[520px]:shrink'
+    : itemBase
 
   const sync = (kind: 'fetch' | 'pull' | 'push') => {
     if (kind === 'fetch') return run({ kind, prune: gitFetchPrune })
@@ -65,7 +67,7 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
   }
 
   return (
-    <div className={compact ? 'flex shrink-0 items-center gap-0.5' : 'flex items-center gap-1'}>
+    <div className={compact ? 'flex shrink-0 items-center gap-0.5 @min-[520px]:min-w-0 @min-[520px]:shrink' : 'flex items-center gap-1'}>
       {syncActions.map(({ kind, Icon, progress }) => {
         const active = kind === pending
         const label = t(kind === 'push' && !status.upstream ? 'git.publish' : `git.${kind}`)
@@ -75,16 +77,16 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
         const blocked = kind === 'fetch' ? undefined : gitOperationReason(status.inProgress)
         return (
           <button type="button" key={kind}
-            className={syncItem + (compact ? ' gap-1 px-1 @min-[520px]:px-1.5' : ' flex-1 justify-center gap-1 px-1.5') + (active ? ' disabled:opacity-100!' : '')}
+            className={syncItem + (compact ? ' px-1 @min-[520px]:px-1.5' : ' flex-1 justify-center gap-1 px-1.5') + (active ? ' disabled:opacity-100!' : '')}
             disabled={disabled || unavailable || !!blocked} aria-label={active ? t(progress) : label}
             title={active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')} onClick={() => void sync(kind)}>
             {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
-            <span className={compact ? 'hidden @min-[520px]:inline' : 'truncate'}>{active ? t(progress) : label}</span>
+            <span className={compact ? 'hidden min-w-0 truncate @min-[520px]:inline' : 'truncate'}>{active ? t(progress) : label}</span>
             {!compact && !active && count && <span className="shrink-0 text-[10px] tabular-nums text-ink-3">{count}</span>}
           </button>
         )
       })}
-      <div className={compact ? 'relative shrink-0' : 'shrink-0'} onBlur={(e) => {
+      <div className={compact ? 'shrink-0 @min-[520px]:relative' : 'shrink-0'} onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget)) setOptions(false)
       }}>
         <button type="button" className={syncItem + (compact ? ' px-1 @min-[520px]:px-1.5' : ' px-1.5')} aria-expanded={options}
@@ -92,7 +94,7 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
           <IconGear size={14} />
         </button>
         {options && (
-          <div className={`absolute right-0 z-40 w-56 space-y-2 rounded-xl border border-hairline bg-surface p-2.5 text-[12px] shadow-lg ${compact ? 'top-full mt-1' : 'bottom-12 mr-2'}`}>
+          <div className={`absolute right-0 z-40 w-56 space-y-2 rounded-xl border border-editor-hairline bg-elevated p-2.5 text-[12px] shadow-[0_12px_32px_rgba(0,0,0,0.14)] ${compact ? 'top-full right-1 mt-1 @min-[520px]:right-0' : 'bottom-12 mr-2'}`}>
             <label className="flex items-center gap-2 px-1 text-ink">
               <input type="checkbox" checked={gitFetchPrune} onChange={(e) => setSetting('gitFetchPrune', e.target.checked)} />
               {t('git.fetchPrune')}
@@ -367,7 +369,7 @@ export function GitBranchMenu({ dir, status, disabled, pending, run, onViewChang
       </button>
       <span className="sr-only" role="status">{progressLabel}</span>
       {open && (
-        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-[360px] max-w-full rounded-2xl bg-surface p-2 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)]">
+        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-[360px] max-w-full rounded-xl border border-editor-hairline bg-elevated p-2 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
           <Segmented size="sm" value={view} onChange={selectView} options={[
             { value: 'branches', label: t('git.branchesTab') },
             { value: 'commits', label: t('git.commitsTab') }

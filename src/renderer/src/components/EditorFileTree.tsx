@@ -4,6 +4,7 @@ import type { EditorDirEntry } from '@shared/editor'
 import type { FileChange } from '@shared/types'
 import { normalizedFilePathKey } from '@shared/fileResolve'
 import { useEscape } from '../lib/escStack'
+import { gitFileStatusTone } from '../lib/ui'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
@@ -11,15 +12,6 @@ import { EDITOR_TREE_MIN_W, TRAFFIC_LIGHT_SAFE_LEFT_PX, type EditorFileTreePosit
 import { EditorResizeHandle } from './EditorResizeHandle'
 import { FileTypeIcon } from './AttachmentBar'
 import { IconChevronRight, IconCopy, IconExternal, IconFolder, IconFolderTree, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
-
-const GIT_STATUS_STYLE: Partial<Record<FileChange['status'], { label: string; cls: string }>> = {
-  M: { label: 'M', cls: 'text-[#896221] dark:text-[#d4a853]' },
-  A: { label: 'A', cls: 'text-[#2f7d57] dark:text-[#63b286]' },
-  U: { label: 'U', cls: 'text-[#2f7d57] dark:text-[#63b286]' },
-  R: { label: 'R', cls: 'text-[#4a74a8] dark:text-[#7da5d4]' },
-  C: { label: 'C', cls: 'text-[#4a74a8] dark:text-[#7da5d4]' },
-  D: { label: 'D', cls: 'text-[#b54c4c] dark:text-[#d67a7a]' }
-}
 
 export interface EditorFileTreeProps {
   projectDir: string | null
@@ -266,7 +258,6 @@ export function EditorFileTree({
     const normEntry = normalizedFilePathKey(entry.path)
     const isActive = normEntry === normActive || normEntry === normActiveReal
     const meta = resolveFileTypeMeta(entry.name)
-    const badge = gitStatus && GIT_STATUS_STYLE[gitStatus]
     return (
       <div key={entry.relPath} className={`${rowGroup} ${isActive ? 'bg-black/[0.07] font-medium text-ink dark:bg-white/[0.10]' : rowHover}`} onContextMenu={(event) => openContextMenu(event, entry)}>
         <button
@@ -282,7 +273,7 @@ export function EditorFileTree({
           {normalizedDirty.has(normEntry) && (
             <span className="size-[5px] shrink-0 rounded-full bg-muted-dot" title={t('editor.unsaved')} />
           )}
-          {badge && <span className={`shrink-0 font-mono text-[11px] font-medium tabular-nums ${badge.cls}`}>{badge.label}</span>}
+          {gitStatus && <span className={`shrink-0 font-mono text-[11px] font-medium tabular-nums ${gitFileStatusTone[gitStatus]}`}>{gitStatus}</span>}
         </button>
         {menuButton(entry)}
       </div>

@@ -154,7 +154,7 @@ function Shell({ chatStatus }: { chatStatus: ReturnType<typeof useChatStatus> })
         <>
           <NavRail chatsAvailable={chatsAvailable} hiddenByMaximize={editorMaximized}
             needsTrafficLightSafeArea={trafficLightOwner === 'sidebar'} />
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas"
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-chat-canvas"
             style={bottomEditor ? { containerType: 'size' } : undefined}>
             <div
               className={`min-h-0 flex-1 overflow-clip ${

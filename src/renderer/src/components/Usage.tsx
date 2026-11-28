@@ -366,7 +366,7 @@ function BankedResetsPopover({ resets, now }: { resets: BankedResets; now: numbe
           ref={panel}
           role="region"
           aria-labelledby={`${id}-title`}
-          className="fixed z-[70] w-[288px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl bg-surface px-3 py-2.5 text-[12px] shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] dark:shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.45)]"
+          className="fixed z-[70] w-[288px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-editor-hairline bg-elevated px-3 py-2.5 text-[12px] shadow-[0_12px_32px_rgba(0,0,0,0.16)]"
           style={position}
         >
           <div className="flex items-baseline justify-between gap-2">
@@ -1215,7 +1215,7 @@ export function QuotaDot({ driver, model, onSwitch }: { driver: ProfileState | n
         <span className={`h-2 w-2 rounded-full ${dot}`} />
       </button>
       {open && (
-        <div className="absolute bottom-10 left-0 z-30 w-64 rounded-2xl bg-surface/95 p-3 text-[12.5px] shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+        <div className="absolute bottom-10 left-0 z-30 w-64 rounded-xl border border-editor-hairline bg-elevated p-3 text-[12.5px] shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
           <div className={`font-medium ${level === 'danger' ? 'text-danger' : level === 'warn' ? 'text-warn' : known ? 'text-ok' : 'text-ink-2'}`}>
             {driver.name} · {status}
           </div>

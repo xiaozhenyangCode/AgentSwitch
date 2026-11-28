@@ -3,7 +3,7 @@ import { t } from '../state/i18n'
 
 export function EditorResizeHandle({ edge, size, onResize, onReset }: {
   edge: 'left' | 'right' | 'top'
-  size: number
+  size?: number
   onResize: (size: number) => void
   onReset: () => void
 }) {
@@ -32,6 +32,8 @@ export function EditorResizeHandle({ edge, size, onResize, onReset }: {
         event.preventDefault()
         const { currentTarget: handle, pointerId } = event
         const start = vertical ? event.clientY : event.clientX
+        const pane = handle.parentElement
+        const startSize = size ?? (vertical ? pane?.offsetHeight : pane?.offsetWidth) ?? 0
         const body = document.body.style
         const previousCursor = body.cursor
         const previousUserSelect = body.userSelect
@@ -41,7 +43,7 @@ export function EditorResizeHandle({ edge, size, onResize, onReset }: {
         const move = (pointer: PointerEvent) => {
           if (pointer.pointerId !== pointerId || !(pointer.buttons & 1)) return
           const delta = (vertical ? pointer.clientY : pointer.clientX) - start
-          resize.current(size + (edge === 'right' ? delta : -delta))
+          resize.current(startSize + (edge === 'right' ? delta : -delta))
         }
         const finish = () => {
           finishDrag.current = null

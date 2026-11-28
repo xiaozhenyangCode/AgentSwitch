@@ -700,7 +700,7 @@ export function RequestLogView({
             <IconChevronDown size={11} />
           </button>
           {colMenuOpen && (
-            <div className="absolute top-full right-0 z-40 mt-1.5 w-52 rounded-xl border border-black/[0.1] bg-surface p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.16)] dark:border-white/[0.12]">
+            <div className="absolute top-full right-0 z-40 mt-1.5 w-52 rounded-xl border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
               <div className="flex items-center justify-between px-2 py-1 text-[11px] font-medium text-ink-3">
                 <span>{t('reqLog.columnsTitle')}</span>
                 <button type="button" onClick={resetColumns} className="text-accent hover:underline">

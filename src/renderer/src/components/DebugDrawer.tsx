@@ -179,7 +179,7 @@ export function DebugDrawer({ visibleHeight }: { visibleHeight: string | number 
   return (
     <div
       aria-hidden={!drawer.open}
-      className={`dark:dark-scroll absolute inset-x-3 bottom-0 flex flex-col overflow-hidden rounded-t-[14px] bg-surface shadow-[0_0_0_1px_var(--ring),0_-12px_40px_rgba(0,0,0,0.08)] dark:bg-[#1C1C1E] dark:shadow-[0_-1px_0_rgba(255,255,255,0.06),0_-16px_48px_rgba(0,0,0,0.28)] ${
+      className={`dark:dark-scroll absolute inset-x-3 bottom-0 flex flex-col overflow-hidden rounded-t-xl border border-editor-hairline bg-elevated shadow-[0_-12px_40px_rgba(0,0,0,0.14)] ${
         dragging ? '' : 'transition-[transform,opacity] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
       } ${drawer.open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'} ${
         // above the 用量 / 模型引擎 scrim (z-40) so the terminal stays usable; below LoginModal (z-50)
@@ -198,7 +198,7 @@ export function DebugDrawer({ visibleHeight }: { visibleHeight: string | number 
       >
         <div className="mx-auto h-[2px] w-full bg-transparent transition-colors duration-150 group-hover:bg-accent/60 group-active:bg-accent" />
       </div>
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-hairline bg-surface-2 px-3 dark:border-white/[0.06] dark:bg-[#2C2C2E]">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-editor-hairline bg-elevated px-3">
         <span className="shrink-0 font-mono text-[12px] font-medium text-ink-3 dark:text-white/50">&gt;_ {t('nav.debugLog')}</span>
 
         {/* tabs: scroll horizontally, never squeeze the toolbar */}

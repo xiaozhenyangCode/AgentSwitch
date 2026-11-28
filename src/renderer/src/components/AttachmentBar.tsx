@@ -159,7 +159,7 @@ function AttachmentPreviewCard({
             e.stopPropagation()
             onRemove(a)
           }}
-          className="absolute top-1.5 right-1.5 z-10 grid size-[18px] place-items-center rounded-full bg-[rgba(15,15,18,0.62)] text-white opacity-75 ring-1 ring-white/20 backdrop-blur-[2px] transition-all group-hover:opacity-100 hover:bg-[rgba(15,15,18,0.85)]"
+          className="absolute top-1.5 right-1.5 z-10 grid size-[18px] place-items-center rounded-full bg-[rgba(15,15,18,0.62)] text-white opacity-75 ring-1 ring-white/20 transition-all group-hover:opacity-100 hover:bg-[rgba(15,15,18,0.85)]"
         >
           <IconX size={10} strokeWidth={2.4} />
         </button>

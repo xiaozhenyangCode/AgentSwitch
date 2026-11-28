@@ -697,7 +697,7 @@ export function QuickSkillsPopover({
   }
 
   return (
-    <div ref={root} className="flex max-h-[min(380px,calc(100dvh-12rem))] w-[min(420px,100%)] flex-col rounded-2xl bg-surface p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_40px_rgba(0,0,0,0.16)]">
+    <div ref={root} className="flex max-h-[min(380px,calc(100dvh-12rem))] w-[min(420px,100%)] flex-col rounded-xl border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
       {picker && (
         <div className="mb-1 flex shrink-0 items-center gap-2 border-b border-hairline px-2.5 py-2">
           <IconSearch size={14} className="shrink-0 text-ink-3" />

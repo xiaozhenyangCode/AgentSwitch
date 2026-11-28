@@ -377,7 +377,7 @@ function RowMenu({ items }: { items: { label: string; run: () => void; destructi
         </svg>
       </button>
       {open && (
-        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-black/[0.07] bg-surface p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
+        <div className="absolute top-9 right-0 z-20 w-44 rounded-xl border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
           {items.map((it, i) => (
             <div key={it.label}>
               {it.destructive && i > 0 && <div className="mx-2 my-1 h-px bg-hairline" />}

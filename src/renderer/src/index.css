@@ -40,7 +40,9 @@
   --surface-2: #fafafb;
   --editor-chrome: #f7f7f8;
   --editor-canvas: #ffffff;
-  --editor-elevated: #ffffff;
+  --chat-canvas: var(--editor-canvas);
+  --elevated: #ffffff;
+  --editor-elevated: var(--elevated);
   --editor-hairline: rgba(0, 0, 0, 0.08);
   --fill: #f5f5f7;
   --fill-hover: #ebebf0;
@@ -49,7 +51,7 @@
   --ring: rgba(0, 0, 0, 0.06);
   /* base of the black/[x] tint utilities: dark tints on light, light tints on dark */
   --tint: #000000;
-  --sidebar: #f3f3f5;
+  --sidebar: var(--editor-chrome);
   --tile: #ffffff;
   --scrim: rgba(0, 0, 0, 0.28);
   /* lighter scrim for sheets the page should still show through (settings) */
@@ -84,14 +86,13 @@
   --surface-2: #2c2c2e;
   --editor-chrome: #18181b;
   --editor-canvas: #1e1e22;
-  --editor-elevated: #26262b;
+  --elevated: #26262b;
   --editor-hairline: rgba(255, 255, 255, 0.08);
   --fill: #2c2c2e;
   --fill-hover: #3a3a3c;
   --hairline: rgba(255, 255, 255, 0.08);
   --ring: rgba(255, 255, 255, 0.08);
   --tint: #ffffff;
-  --sidebar: #161618;
   --tile: #2c2c2e;
   --scrim: rgba(0, 0, 0, 0.55);
   --scrim-soft: rgba(0, 0, 0, 0.42);
@@ -109,7 +110,7 @@
   --orange: #ffa524;
   --red: #ff453a;
   --muted-dot: #636366;
-  --code-bg: #1e1e21;
+  --code-bg: #17171a;
   --code-ink: #e6e6e8;
   --scrollbar-thumb: rgba(255, 255, 255, 0.24);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
@@ -123,6 +124,8 @@
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);
   --color-canvas: var(--canvas);
+  --color-chat-canvas: var(--chat-canvas);
+  --color-elevated: var(--elevated);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-editor-chrome: var(--editor-chrome);
@@ -466,7 +469,7 @@ label {
 .md-mermaid svg { max-width: 100%; max-height: 480px; height: auto; }
 
 @layer components {
-  .workspace-sheet-panel { background-color: var(--color-surface); }
+  .workspace-sheet-panel { background-color: var(--color-elevated); }
 }
 
 /* Sheet dialogs scale and fade in on mount, and out before unmount. CSS animations run

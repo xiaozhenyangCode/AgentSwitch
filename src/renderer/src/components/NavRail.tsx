@@ -8,8 +8,8 @@ import { useEscape } from '../lib/escStack'
 import { formatFullLocalTime, formatListTime } from '../lib/listTime'
 import { getSidebarGroups, loadCollapsedProjects, saveCollapsedProjects } from '../lib/sidebarGroups'
 import { useStartThread } from '../state/threads'
-import { isReady, isSignedIn } from '../lib/ui'
-import { BrandMark, KindAvatar, Segmented } from './common'
+import { isReady, isSignedIn, underlineTab } from '../lib/ui'
+import { BrandMark, KindAvatar } from './common'
 import { IconArchive, IconCheck, IconChevronDown, IconEngine, IconFolder, IconGauge, IconGear, IconPin, IconPlus, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 import { t } from '../state/i18n'
 import { useSettings } from '../state/settings'
@@ -68,7 +68,6 @@ function ListTime({ ts }: { ts: number }) {
   return <time className="tabular-nums" dateTime={new Date(ts).toISOString()} title={title}>{listTime(ts)}</time>
 }
 
-/** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
 export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTrafficLightSafeArea }: {
   chatsAvailable: boolean
   hiddenByMaximize?: boolean
@@ -150,9 +149,9 @@ export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTraffic
     <nav
       aria-hidden={!visible}
       inert={!visible}
-      className={`drag relative shrink-0 overflow-hidden bg-sidebar/85 backdrop-blur-2xl dark:bg-sidebar/95 ${
+      className={`drag relative shrink-0 overflow-hidden bg-sidebar ${
         dragging || trafficLightOwner !== 'none' ? '' : 'transition-[width,opacity] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
-      } ${visible ? 'border-r border-black/[0.06] opacity-100' : 'pointer-events-none border-r-0 opacity-0'}`}
+      } ${visible ? 'border-r border-editor-hairline opacity-100' : 'pointer-events-none border-r-0 opacity-0'}`}
       style={{ width: visible ? width : 0 }}
     >
       <div className="flex h-full flex-col" style={{ width }}>
@@ -186,26 +185,23 @@ export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTraffic
         </div>
       </div>
 
-      <div className="px-3 pb-3" hidden={!chatsAvailable}>
+      <div className="px-3 pb-2" hidden={!chatsAvailable}>
         <button
           onClick={() => start(current?.projectDir ?? null)}
-          className="no-drag flex h-9 w-full items-center justify-center gap-1.5 rounded-[10px] bg-surface text-[14px] font-medium text-ink shadow-[0_0_0_1px_var(--ring),0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:bg-surface-2 active:scale-[0.98]"
+          className="no-drag flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-editor-hairline bg-elevated text-[13px] font-medium text-ink shadow-xs transition-colors hover:bg-fill active:scale-[0.98]"
         >
-          <IconPlus size={16} className="text-accent" /> {t('nav.newChat')}
+          <IconPlus size={14} className="text-accent" /> {t('nav.newChat')}
         </button>
       </div>
 
       <div className="no-drag space-y-2 px-3 pb-2" hidden={!chatsAvailable}>
-        <Segmented
-          size="sm"
-          value={tab}
-          onChange={(v) => setTab(v as 'threads' | 'history')}
-          options={[
-            { value: 'threads', label: t('nav.tabThreads') },
-            { value: 'history', label: t('nav.tabHistory'), title: t('nav.tabHistoryHint') }
-          ]}
-        />
-        <div className="flex h-7 items-center gap-1.5 rounded-lg bg-black/[0.04] px-2 text-ink-3 focus-within:bg-surface focus-within:ring-1 focus-within:ring-accent/40">
+        <div className="flex h-8 items-stretch gap-3 border-b border-editor-hairline px-1">
+          <button type="button" className={underlineTab(tab === 'threads')} aria-pressed={tab === 'threads'}
+            onClick={() => setTab('threads')}>{t('nav.tabThreads')}</button>
+          <button type="button" className={underlineTab(tab === 'history')} aria-pressed={tab === 'history'}
+            onClick={() => setTab('history')} title={t('nav.tabHistoryHint')}>{t('nav.tabHistory')}</button>
+        </div>
+        <div className="flex h-7 items-center gap-1.5 rounded-md bg-black/[0.04] px-2 text-ink-3 focus-within:ring-1 focus-within:ring-accent/45 dark:bg-white/[0.05]">
           <IconSearch size={13} className="shrink-0" />
           <input
             ref={search}
@@ -315,7 +311,7 @@ export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTraffic
       </div>
       )}
 
-      <div className="border-t border-black/[0.05] px-3 pt-2 pb-4">
+      <div className="border-t border-editor-hairline px-3 pt-2 pb-4">
         <NavItem
           active={page === 'usage'}
           icon={<IconGauge size={18} />}
@@ -330,13 +326,13 @@ export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTraffic
           onClick={() => navigate('engines')}
           trailing={
             attention > 0 && (
-              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-orange px-1.5 text-[12px] font-semibold text-white" title={t('nav.notReady', { n: attention })}>
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-md bg-warn-soft px-1.5 text-[11px] font-medium text-warn tabular-nums" title={t('nav.notReady', { n: attention })}>
                 {attention}
               </span>
             )
           }
         />
-        <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<span className="text-[11px] text-ink-3/70">⌘,</span>} />
+        <NavItem active={settingsOpen} icon={<IconGear size={18} strokeWidth={1.7} />} label={t('nav.settings')} onClick={() => openSettings()} trailing={<kbd className="font-mono text-[11px] text-ink-3">⌘,</kbd>} />
       </div>
       </div>
     </nav>
@@ -824,8 +820,8 @@ type MenuAt = { x: number; y: number; alignRight?: boolean; flipY?: number }
 const MenuClose = createContext<() => void>(() => {})
 
 /**
- * A chat row's menu, in a portal at a fixed position (the sidebar clips and scrolls, and its
- * backdrop-filter would trap a fixed child). Kept inside the window; flips above the ··· button
+ * A chat row's menu uses a fixed portal outside the scrolling sidebar.
+ * It stays inside the window and flips above the ··· button
  * when there is no room below. Closes on outside click, Esc, scroll, resize or window blur.
  */
 function RowMenu({ at, onClose, children }: { at: MenuAt; onClose: () => void; children: ReactNode }) {
@@ -865,7 +861,7 @@ function RowMenu({ at, onClose, children }: { at: MenuAt; onClose: () => void; c
       role="menu"
       onContextMenu={(e) => e.preventDefault()}
       style={{ position: 'fixed', left: pos?.left ?? at.x, top: pos?.top ?? at.y, visibility: pos ? 'visible' : 'hidden' }}
-      className="no-drag z-50 w-56 rounded-xl bg-surface/95 p-1.5 shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl"
+      className="no-drag z-50 w-56 rounded-lg border border-editor-hairline bg-elevated p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]"
     >
       <MenuClose.Provider value={onClose}>{children}</MenuClose.Provider>
     </div>,
