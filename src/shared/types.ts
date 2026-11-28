@@ -223,12 +223,25 @@ export interface QuotaWindow {
   minutes: number
 }
 
+export interface BankedResetItem {
+  /** Expiry time in milliseconds since the Unix epoch. */
+  expiresAt: number
+  count: number
+  title?: string
+}
+
+export interface BankedResets {
+  remainingCount: number
+  items: BankedResetItem[]
+}
+
 export interface QuotaReport {
   fiveHour: QuotaWindow | null
   sevenDay: QuotaWindow | null
   /** The CLI says requests are currently rejected. */
   limited: boolean
   plan: string | null
+  bankedResets?: BankedResets | null
 }
 
 /** agy: models are grouped; each group has its own 5h / weekly buckets. */
@@ -308,6 +321,8 @@ export interface DailyUsage extends UsageTotals {
 export type QuotaErrorKind = 'rate_limited' | 'auth_expired' | 'error'
 
 export interface AccountUsage {
+  email?: string | null
+  planType?: string | null
   today: UsageTotals
   week: UsageTotals
   total: UsageTotals

@@ -633,7 +633,7 @@ export function which(bin: string, pathVar: string): string | null {
 export const kindBinaryPath = (kind: ProfileKind): string | null =>
   which(getKindConfig(kind).binary, getBaseEnv().PATH ?? '')
 
-const isSystemClaudeDir = (dir: string): boolean => safeRealpath(dir) === safeRealpath(join(realHome, '.claude'))
+export const isSystemClaudeDir = (dir: string): boolean => safeRealpath(dir) === safeRealpath(join(realHome, '.claude'))
 
 function readJson(p: string): any {
   try {
@@ -664,7 +664,7 @@ function localPath(dir: string, path: string): boolean {
   return within(safeRealpath(dirname(path)), safeRealpath(dir))
 }
 
-function isolatedKeychainFiles(dir: string): string[] {
+export function isolatedKeychainFiles(dir: string): string[] {
   return [ISOLATED_KEYCHAIN, ISOLATED_KEYCHAIN_LINK].map((name) => join(dir, 'Library', 'Keychains', name))
     .filter((path) => localPath(dir, path) && within(safeRealpath(path), safeRealpath(dir)) && existsSync(path))
 }
@@ -743,7 +743,7 @@ function agyKeychainItem(home: string): string | null {
  * When the keychain is unavailable (e.g. isolated HOME) agy falls back to file storage.
  * The exact file isn't documented, so look for token-like files under ~/.gemini (depth 2).
  */
-function agyTokenFiles(home: string, forCleanup = false): string[] {
+export function agyTokenFiles(home: string, forCleanup = false): string[] {
   const root = join(home, '.gemini')
   const out: string[] = []
   const walk = (dir: string, depth: number) => {

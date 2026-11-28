@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { AccountUsage, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaGroup, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
+import type { AccountUsage, BankedResets, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaGroup, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
 import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
+import { useLayer } from '../lib/escStack'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { useApp } from '../state/AppContext'
-import { t } from '../state/i18n'
+import { currentLocale, t, tNode } from '../state/i18n'
 import { getSettings, useSettings } from '../state/settings'
 import {
   effectiveQuota,
@@ -23,7 +25,7 @@ import {
   useUsage
 } from '../state/usage'
 import { KindAvatar, Modal, ProfileAvatar } from './common'
-import { IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
+import { IconChevronDown, IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
 import { RequestLogView } from './RequestLogView'
 
 const STALE = 6 * 3600_000
@@ -283,11 +285,128 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 
 const SectionTitle = ({ children }: { children: string }) => <h2 className="mt-8 mb-3 px-1 text-[13px] font-semibold text-ink-2">{children}</h2>
 
+export function getLiveBankedResets(bankedResets: BankedResets | null | undefined, now = Date.now()): BankedResets | null {
+  if (!bankedResets) return null
+  if (!bankedResets.items.length) return bankedResets.remainingCount > 0 ? bankedResets : null
+  const items = bankedResets.items.filter((item) => item.expiresAt > now).sort((a, b) => a.expiresAt - b.expiresAt)
+  const remainingCount = items.reduce((count, item) => count + item.count, 0)
+  return remainingCount > 0 ? { items, remainingCount } : null
+}
+
+export function formatBankedResetDate(ts: number, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(ts)
+}
+
+export function formatBankedResetCountdown(expiresAt: number, now = Date.now()): string {
+  const hours = Math.floor((expiresAt - now) / 3_600_000)
+  if (hours < 1) return t('usage.resetInLessThanHour')
+  if (hours < 24) return t('usage.resetInHours', { h: hours })
+  const d = Math.floor(hours / 24)
+  const h = hours % 24
+  return h ? t('usage.resetInDaysHours', { d, h }) : t('usage.resetInDays', { d })
+}
+
+function BankedResetsPopover({ resets, now }: { resets: BankedResets; now: number }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<CSSProperties>({})
+  const trigger = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const close = useCallback(() => setOpen(false), [])
+  useLayer({ onEsc: close, onClose: close, active: open })
+
+  useLayoutEffect(() => {
+    if (!open || !trigger.current || !panel.current) return
+    const anchor = trigger.current.getBoundingClientRect()
+    const below = window.innerHeight - anchor.bottom - 14
+    const above = anchor.top - 14
+    const flip = panel.current.scrollHeight > below && above > below
+    setPosition({
+      right: Math.max(8, window.innerWidth - anchor.right),
+      ...(flip ? { bottom: window.innerHeight - anchor.top + 6 } : { top: anchor.bottom + 6 }),
+      maxHeight: Math.max(0, flip ? above : below)
+    })
+  }, [open, resets.items.length])
+
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !trigger.current?.contains(event.target) && !panel.current?.contains(event.target)) close()
+    }
+    const scroll = (event: Event) => {
+      if (event.target instanceof Node && panel.current?.contains(event.target)) return
+      close()
+    }
+    document.addEventListener('pointerdown', outside, true)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', scroll, true)
+    return () => {
+      document.removeEventListener('pointerdown', outside, true)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', scroll, true)
+    }
+  }, [open, close])
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full bg-ok-soft px-2 text-[11px] font-medium whitespace-nowrap text-ok ring-1 ring-ok/20 ring-inset hover:bg-ok-soft/80"
+        onClick={() => setOpen(!open)}
+      >
+        <span>{tNode('usage.bankedResetsPill', { n: <span className="font-semibold tabular-nums">{resets.remainingCount}</span> })}</span>
+        <IconChevronDown size={12} className={open ? 'rotate-180' : undefined} />
+      </button>
+      {open && createPortal(
+        <div
+          id={id}
+          ref={panel}
+          role="region"
+          aria-labelledby={`${id}-title`}
+          className="fixed z-[70] w-[288px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl bg-surface px-3 py-2.5 text-[12px] shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.16)] dark:shadow-[0_0_0_1px_var(--ring),0_12px_32px_rgba(0,0,0,0.45)]"
+          style={position}
+        >
+          <div className="flex items-baseline justify-between gap-2">
+            <span id={`${id}-title`} className="font-semibold text-ink">{t('usage.bankedResetsTitle')}</span>
+            <span className="shrink-0 font-semibold text-ok tabular-nums">{t('usage.bankedResetsRemaining', { n: resets.remainingCount })}</span>
+          </div>
+          {resets.items.length > 0 && (
+            <ul className="mt-1.5 divide-y divide-black/[0.06] dark:divide-white/[0.08]">
+              {resets.items.map((item, i) => (
+                <li key={`${item.expiresAt}-${i}`} className="flex items-baseline justify-between gap-2 py-1.5 tabular-nums">
+                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                    <span className="text-ink-2">{formatBankedResetDate(item.expiresAt, currentLocale())}</span>
+                    <span className="text-[11px] text-ink-3">{formatBankedResetCountdown(item.expiresAt, now)}</span>
+                  </span>
+                  <span className="shrink-0 text-ink-2">{t('usage.bankedResetsCount', { n: item.count })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>,
+        document.body
+      )}
+    </>
+  )
+}
+
 /** One account in the quota grid: 5h / 7d bars (or local stats when the CLI reports no quota). */
 function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   const { openLogin } = useApp()
   const snap = useUsage()
   const u = snap?.accounts[p.id]
+  const [, tick] = useState(0)
+  const now = Date.now()
+  const liveBanked = p.kind === 'codex' ? getLiveBankedResets(u?.quota?.bankedResets, now) : null
+  const nextExpiry = liveBanked?.items[0]?.expiresAt
+  useEffect(() => {
+    if (nextExpiry === undefined) return
+    const timer = window.setTimeout(() => tick((n) => n + 1), Math.max(0, Math.min(nextExpiry - Date.now(), 60_000)))
+    return () => window.clearTimeout(timer)
+  }, [nextExpiry, now])
   const groups = u?.quota?.groups
   const eff = effectiveQuota(u, p.defaultModel)
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
@@ -314,22 +433,36 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
         : (level.reason ?? t('status.rateLimited'))
   return (
     <div className={`${CARD} px-4 py-3.5`}>
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <ProfileAvatar profile={p} size={22} />
-          <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
-          {idlest && !authExpired && (
-            <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
-              {t('usage.idlest')}
-            </span>
-          )}
-          {authExpired ? null : notReadyBadge ? (
-            <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
-          ) : limited ? (
-            <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
-          ) : null}
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <div className="mt-0.5 shrink-0"><ProfileAvatar profile={p} size={22} /></div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+              <span className="truncate text-[13.5px] font-semibold text-ink">{p.name}</span>
+              {idlest && !authExpired && (
+                <span className="shrink-0 rounded-md bg-ok-soft px-1.5 py-px text-[11px] font-medium text-ok" title={t('usage.idlestHint')}>
+                  {t('usage.idlest')}
+                </span>
+              )}
+              {authExpired ? null : notReadyBadge ? (
+                <span className={`shrink-0 rounded-md px-1.5 py-px text-[11px] font-medium ${notReadyBadge.cls}`}>{notReadyBadge.label}</span>
+              ) : limited ? (
+                <span className="shrink-0 rounded-md bg-danger-soft px-1.5 py-px text-[11px] font-medium text-danger">{limitedLabel}</span>
+              ) : null}
+            </div>
+            {(u?.planType || u?.email) && (
+              <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                {u.planType && (
+                  <span className="max-w-full shrink-0 truncate rounded bg-fill px-1.5 py-[1px] text-[10.5px] leading-4 font-medium text-ink-2 ring-1 ring-black/[0.06] ring-inset dark:ring-white/[0.08]" title={u.planType}>
+                    {u.planType}
+                  </span>
+                )}
+                {u.email && <span className="min-w-0 truncate text-[11.5px] leading-4 text-ink-3" title={u.email}>{u.email}</span>}
+              </div>
+            )}
+          </div>
         </div>
-        {(hasGroupSwitcher || authExpired) && (
+        {(hasGroupSwitcher || authExpired || liveBanked) && (
           <div className={`flex min-w-0 shrink-0 items-center gap-1.5 ${groups && groups.length > 3 ? 'max-w-[58%]' : 'max-w-[65%]'}`}>
             {hasGroupSwitcher && (
               <QuotaGroupSegmentedControl
@@ -340,6 +473,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
                 onSelect={setSelectedGroupKey}
               />
             )}
+            {liveBanked && <BankedResetsPopover resets={liveBanked} now={now} />}
             {authExpired && (
               <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-px text-[11px] font-medium text-warn">{t('usage.authExpiredBadge')}</span>
             )}

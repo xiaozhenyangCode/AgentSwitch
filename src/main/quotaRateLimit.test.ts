@@ -376,6 +376,50 @@ describe('OAuth provider quota integration', () => {
     expect(usage.snapshot().accounts[cfg.id].quota?.fiveHour?.percent).toBe(31)
   })
 
+  it('captures Codex RPC metadata and credits, keeps credits across rollouts and clears changed account caches', async () => {
+    const firstDir = tempDir('agentswitch-codex-meta-')
+    const nextDir = tempDir('agentswitch-codex-next-meta-')
+    const cfg = makeClaudeProfile({ id: 'codex-meta', kind: 'codex', configDir: firstDir })
+    writeFileSync(join(firstDir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'test-token' } }))
+    mockProfiles.push(cfg)
+    const usage = await import('./usage')
+    const expiresAt = Math.floor(Date.now() / 1000) + 7200
+    const methods: string[] = []
+    spawnMock.mockImplementation((_bin, _args, { env }) => {
+      expect(env.CODEX_HOME).toBe(firstDir)
+      const child = quotaChild()
+      child.stdin.on('data', (data) => {
+        const request = JSON.parse(String(data))
+        methods.push(request.method)
+        const result = request.id === 1 ? {} : request.id === 3
+          ? { account: { email: 'rpc@example.test', planType: 'team' } }
+          : {
+            rateLimits: { primary: { usedPercent: 31, windowDurationMins: 300 } },
+            rateLimitResetCredits: { availableCount: 1, credits: [{ status: 'available', expiresAt }] }
+          }
+        if (request.id) queueMicrotask(() => child.stdout.write(JSON.stringify({ id: request.id, result }) + '\n'))
+      })
+      return child
+    })
+    await expect(usage.refreshCodexLive(cfg.id)).resolves.toBe(true)
+    expect(methods).toEqual(['initialize', 'initialized', 'account/read', 'account/rateLimits/read'])
+    const read = () => usage.snapshot().accounts[cfg.id]
+    const bankedResets = { remainingCount: 1, items: [{ expiresAt: expiresAt * 1000, count: 1 }] }
+    expect(read()).toMatchObject({ email: 'rpc@example.test', planType: 'Team', quota: { bankedResets } })
+    const cacheFile = join(state.userDataDir, 'account-meta-cache.json')
+    expect(JSON.parse(readFileSync(cacheFile, 'utf8'))[cfg.id]).toMatchObject({ email: 'rpc@example.test', planType: 'Team' })
+
+    usage.recordQuota(cfg.id, { fiveHour: null, sevenDay: null, plan: 'team', limited: false }, 'codex-rollout', Date.now() + 1)
+    expect(read().quota?.bankedResets).toEqual(bankedResets)
+
+    mockProfiles[0] = { ...cfg, configDir: nextDir }
+    expect(read()).toMatchObject({ email: null, planType: null, quota: null })
+    mockProfiles[0] = cfg
+    usage.clearAccountUsageCache(cfg.id, { keepStats: true })
+    expect(read()).toMatchObject({ email: null, planType: null, quota: null })
+    expect(JSON.parse(readFileSync(cacheFile, 'utf8'))).not.toHaveProperty(cfg.id)
+  })
+
   it.each([true, false])('uses the isolated Gemini HOME for /usage and models (renewal succeeds: %s)', async (renewed) => {
     const home = tempDir('agentswitch-gemini-oauth-')
     const cfg = makeClaudeProfile({ id: 'gemini-oauth', kind: 'gemini', extraEnv: { HOME: home } })

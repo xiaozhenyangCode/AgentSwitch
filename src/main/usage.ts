@@ -17,6 +17,7 @@ import { hasSubscriptionQuota } from './apiKey'
 import { getBaseEnv } from './shellEnv'
 import { authExpired, clearOAuthRefreshCooldown, oauthCredentialFile, OAUTH_AUTH_ERROR_RE, quotaFailure, refreshOAuthCredentials, runWithOAuth401Recovery, type OAuthCredentialStore, type QuotaAttempt, type RefreshResult } from './oauthQuotaAuth'
 import { nativeSessionEntries, type NativeSessions } from './historyResume'
+import { normalizePlanType, parseAgyPlanType, parseCodexBankedResets, readAsyncAgyAccountMeta, readClaudeAccountMeta, readSyncAccountMeta, type AccountMeta } from './accountMeta'
 
 /**
  * Per-account token / cost statistics and quota windows.
@@ -66,6 +67,7 @@ interface Stats {
 
 const statsFile = (): string => join(app.getPath('userData'), 'usage-stats.json')
 const quotaFile = (): string => join(app.getPath('userData'), 'quota-cache.json')
+const accountMetaFile = (): string => join(app.getPath('userData'), 'account-meta-cache.json')
 const pricesFile = (): string => join(app.getPath('userData'), 'prices-cache.v2.json')
 const legacyPricesFile = (): string => join(app.getPath('userData'), 'prices-litellm.json')
 const customPricesFile = (): string => join(app.getPath('userData'), 'prices-custom.json')
@@ -288,6 +290,7 @@ type Stored = Omit<Stats, 'version' | 'runs'> & { version: 1 | 2 | 3; runs: Reco
 let old: Stored | null = null
 let stats: Stats = load()
 let quotas: Record<ProfileId, AccountQuota> = loadQuota()
+const accountMeta = loadAccountMeta()
 let backfill: UsageSnapshot['backfill'] = 'idle'
 let listener: ((s: UsageSnapshot) => void) | null = null
 let notifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -340,6 +343,43 @@ function loadQuota(): Record<ProfileId, AccountQuota> {
   } catch {
     return {}
   }
+}
+
+type CachedAccountMeta = AccountMeta & { dir: string }
+function loadAccountMeta(): Map<ProfileId, CachedAccountMeta> {
+  try {
+    const data = JSON.parse(readFileSync(accountMetaFile(), 'utf8')) as Record<ProfileId, CachedAccountMeta>
+    return new Map(Object.entries(data).filter(([, meta]) => meta && typeof meta.dir === 'string' &&
+      (meta.email === null || typeof meta.email === 'string') && (meta.planType === null || typeof meta.planType === 'string')))
+  } catch {
+    return new Map()
+  }
+}
+
+function persistAccountMeta(): void {
+  const path = accountMetaFile()
+  const temp = path + '.tmp'
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  writeFileSync(temp, JSON.stringify(Object.fromEntries(accountMeta)), { mode: 0o600 })
+  renameSync(temp, path)
+}
+
+function updateAccountMeta(id: ProfileId, dir: string, meta: AccountMeta): void {
+  const previous = accountMeta.get(id)
+  const sameAccount = previous?.dir === dir && (!meta.email || !previous.email || previous.email === meta.email)
+  const email = meta.email ?? (sameAccount ? previous.email : null)
+  const planType = meta.planType ?? (sameAccount ? previous.planType : null)
+  if (sameAccount && previous.email === email && previous.planType === planType) return
+  const staleQuota = previous && !sameAccount && quotas[id]
+  if (staleQuota) delete quotas[id]
+  accountMeta.set(id, { dir, email, planType })
+  try {
+    if (staleQuota) writeFileSync(quotaFile(), JSON.stringify(quotas, null, 2))
+    persistAccountMeta()
+  } catch {
+    /* The current metadata remains available in memory. */
+  }
+  changed()
 }
 function persist(): void {
   if (saveTimer) return
@@ -635,11 +675,19 @@ export function snapshot(): UsageSnapshot {
   const daily = new Map<string, DailyUsage>()
   for (const c of configs) {
     const err = quotaErrors[c.id]
+    const local = readSyncAccountMeta(c)
+    const stored = accountMeta.get(c.id)
+    const dirMatches = !stored || stored.dir === safeRealpath(resolveProfileDir(c))
+    const identityMatches = !stored?.email || !local.email || stored.email === local.email
+    const cached = dirMatches && identityMatches ? stored : undefined
+    const quota = dirMatches && identityMatches ? quotas[c.id] ?? null : null
     const a: AccountUsage = {
       today: zero(),
       week: zero(),
       total: zero(),
-      quota: quotas[c.id] ?? null,
+      quota,
+      email: c.apiKey ? null : local.email ?? cached?.email ?? null,
+      planType: c.apiKey ? null : local.planType ?? cached?.planType ?? normalizePlanType(quota?.plan),
       quotaError: err?.message ?? null,
       quotaErrorKind: err?.kind ?? null,
       quotaErrorResetAt: err?.resetAt ?? null,
@@ -698,7 +746,9 @@ export function recordQuota(
 ): void {
   const prev = quotas[profileId]
   if (prev && prev.fetchedAt >= at) return
-  quotas[profileId] = { ...q, fetchedAt: at, source }
+  // Rollout events contain windows but omit the dedicated RPC's reset credits.
+  const bankedResets = source === 'codex-rollout' ? prev?.bankedResets : undefined
+  quotas[profileId] = { ...(bankedResets !== undefined ? { bankedResets } : {}), ...q, fetchedAt: at, source }
   if (!opts?.preserveError && quotaErrors[profileId]?.kind !== 'auth_expired') delete quotaErrors[profileId]
   if (q.limited) stats.limitedAt[profileId] = at
   changed()
@@ -853,6 +903,7 @@ export function clearAccountUsageCache(id: ProfileId, opts?: { keepStats?: boole
     }
   }
   mkdirSync(app.getPath('userData'), { recursive: true })
+  if (accountMeta.delete(id)) persistAccountMeta()
   writeFileSync(quotaFile(), JSON.stringify(quotas, null, 2))
   // Convert legacy stats before writing the current format.
   migrate()
@@ -860,20 +911,29 @@ export function clearAccountUsageCache(id: ProfileId, opts?: { keepStats?: boole
   changed()
 }
 
-function refreshOAuthQuota(id: ProfileId, kind: ProfileKind, run: (cfg: ProfileConfig, signal: AbortSignal) => Promise<QuotaAttempt<QuotaData>>): Promise<boolean> {
+function refreshOAuthQuota(
+  id: ProfileId, kind: ProfileKind,
+  run: (cfg: ProfileConfig, signal: AbortSignal, updateMeta: (meta: AccountMeta) => void) => Promise<QuotaAttempt<QuotaData>>
+): Promise<boolean> {
   if (!hasProfile(id) || quotaPaused.has(id)) return Promise.resolve(false)
   const cfg = getConfig(id)
   if (cfg.kind !== kind || !hasSubscriptionQuota(cfg)) return Promise.resolve(false)
   const pending = quotaPending.get(id)
   if (pending) return pending.request
   const controller = new AbortController()
+  const dir = safeRealpath(resolveProfileDir(cfg))
   const request = Promise.resolve().then(async () => {
     const { signal } = controller
-    if (signal.aborted) return false
-    const result = await run(cfg, signal)
-    if (signal.aborted || !hasProfile(id)) return false
-    const current = getConfig(id)
-    if (!hasSubscriptionQuota(current) || resolveProfileDir(current) !== resolveProfileDir(cfg)) return false
+    const isCurrent = () => {
+      if (signal.aborted || !hasProfile(id)) return false
+      const current = getConfig(id)
+      return current.kind === kind && hasSubscriptionQuota(current) && safeRealpath(resolveProfileDir(current)) === dir
+    }
+    if (!isCurrent()) return false
+    const result = await run(cfg, signal, (meta) => {
+      if (isCurrent()) updateAccountMeta(id, dir, meta)
+    })
+    if (!isCurrent()) return false
     if ('error' in result) {
       setQuotaError(id, result.error)
       return false
@@ -915,7 +975,7 @@ const quotaError = (input: Parameters<typeof classifyQuotaError>[0]) =>
   ({ error: classifyQuotaError(input) ?? quotaFailure('Quota request failed') })
 
 export function refreshCodexLive(id: ProfileId): Promise<boolean> {
-  return refreshOAuthQuota(id, 'codex', (cfg, signal) => {
+  return refreshOAuthQuota(id, 'codex', (cfg, signal, updateMeta) => {
     const dir = resolveProfileDir(cfg)
     const store = oauthCredentialFile(safeRealpath(join(dir, 'auth.json')))
     let rejectedToken: string | undefined
@@ -930,7 +990,7 @@ export function refreshCodexLive(id: ProfileId): Promise<boolean> {
         const token = credentials.tokens?.access_token
         if (reload && rejectedToken && token === rejectedToken && lastAuthError) return { error: lastAuthError }
         rejectedToken = token
-        const res = await requestCodexQuota(dir, env, signal)
+        const res = await requestCodexQuota(dir, env, signal, updateMeta)
         if ('error' in res && res.error.kind === 'auth_expired') lastAuthError = res.error
         return res
       },
@@ -939,7 +999,7 @@ export function refreshCodexLive(id: ProfileId): Promise<boolean> {
   })
 }
 
-function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<QuotaAttempt<QuotaData>> {
+function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSignal, updateMeta: (meta: AccountMeta) => void): Promise<QuotaAttempt<QuotaData>> {
   return new Promise((resolve) => {
     const bin = kindBinaryPath('codex')
     if (!bin) return resolve({ value: null })
@@ -965,11 +1025,19 @@ function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSig
     proc.on('close', () => finish(quotaError({ message: stderr.trim() || 'Codex quota process exited' })))
 
     const rl = createInterface({ input: proc.stdout })
+    let rpcEmail: string | null = null
+    let rpcPlan: string | null = null
     rl.on('line', (line) => {
       if (done) return
       let msg: any
       try { msg = JSON.parse(line) } catch { return }
-      if (msg.id !== 1 && msg.id !== 2) return
+      if (msg?.id === 3) {
+        const account = msg.result?.account
+        if (typeof account?.email === 'string') rpcEmail = account.email.trim() || null
+        rpcPlan = normalizePlanType(account?.planType)
+        return
+      }
+      if (msg?.id !== 1 && msg?.id !== 2) return
       if (msg.error) {
         const code = msg.error.data?.status ?? msg.error.data?.statusCode ?? msg.error.code
         const status = Number(code) >= 100 && Number(code) < 600 ? Number(code) : undefined
@@ -977,11 +1045,15 @@ function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSig
       }
       if (msg.id === 1) {
         proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n')
+        proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'account/read', params: {} }) + '\n')
         proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} }) + '\n')
         return
       }
       const r = msg.result?.rateLimits
-      if (!r || typeof r !== 'object') return finish({ value: null })
+      const bankedResets = parseCodexBankedResets(msg.result)
+      const plan = normalizePlanType(r?.planType) ?? rpcPlan
+      if (rpcEmail || plan || bankedResets) updateMeta({ email: rpcEmail, planType: plan })
+      if (!r && !bankedResets) return finish({ value: null })
       const parseWin = (w: any): QuotaWindow | null => {
         if (!w || typeof w.usedPercent !== 'number') return null
         return {
@@ -990,12 +1062,12 @@ function requestCodexQuota(dir: string, env: NodeJS.ProcessEnv, signal: AbortSig
           minutes: Number(w.windowDurationMins) || 0
         }
       }
-      const wins = [parseWin(r.primary), parseWin(r.secondary)].filter((w): w is QuotaWindow => !!w)
-      if (!wins.length) return finish({ value: null })
+      const wins = [parseWin(r?.primary), parseWin(r?.secondary)].filter((w): w is QuotaWindow => !!w)
+      if (!wins.length && !bankedResets) return finish({ value: null })
       const fiveHour = wins.find((w) => w.minutes > 0 && w.minutes <= 600) ?? null
       const sevenDay = wins.find((w) => w.minutes >= 1440) ?? null
-      const limited = !!r.rateLimitReachedType || wins.some((w) => w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-      finish({ value: { source: 'codex-rpc', report: { fiveHour, sevenDay, limited, plan: typeof r.planType === 'string' ? r.planType : null } } })
+      const limited = !!r?.rateLimitReachedType || wins.some((w) => w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
+      finish({ value: { source: 'codex-rpc', report: { fiveHour, sevenDay, limited, plan, bankedResets } } })
     })
     proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'agentswitch', version: '0.1.0' } } }) + '\n')
   })
@@ -1116,7 +1188,7 @@ function oauthPost(id: ProfileId, signal: AbortSignal, kind: 'claude' | 'codex')
 }
 
 export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
-  return refreshOAuthQuota(id, 'claude', (cfg, signal) => {
+  return refreshOAuthQuota(id, 'claude', (cfg, signal, updateMeta) => {
     const dir = resolveProfileDir(cfg)
     let store: OAuthCredentialStore | undefined
     let rejectedToken: string | undefined
@@ -1126,6 +1198,8 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
       request: async (reload) => {
         const { env } = buildSpawnSpec(id, 'run', undefined, false)
         const credentials = await readClaudeCredentials(dir, signal)
+        const meta = readClaudeAccountMeta(dir, credentials.data)
+        if (meta.email || meta.planType) updateMeta(meta)
         store = credentials.store
         const token = credentials.data?.claudeAiOauth?.accessToken
         if (typeof token !== 'string' || !token) {
@@ -1157,7 +1231,7 @@ export function refreshClaudeOauth(id: ProfileId): Promise<boolean> {
         const sevenDay = parseWin(d?.seven_day, 10080)
         if (!fiveHour && !sevenDay) return { value: null }
         const limited = [fiveHour, sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-        return { value: { source: 'claude-oauth', report: { fiveHour, sevenDay, limited, plan: null } } }
+        return { value: { source: 'claude-oauth', report: { fiveHour, sevenDay, limited, plan: meta.planType } } }
       },
       refresh: () => store ? refreshOAuthCredentials('claude', store, oauthPost(id, signal, 'claude'), signal, rejectedToken) : Promise.resolve(authExpired())
     })
@@ -1172,7 +1246,7 @@ const hasAgyAuthPrompt = (output: string): boolean => output.split(/\r?\n/).some
 const AGY_QUOTA_MAX_BYTES = 4 * 1024 * 1024
 
 export function refreshAgyQuota(id: ProfileId): Promise<boolean> {
-  return refreshOAuthQuota(id, 'gemini', (cfg, signal) => runWithOAuth401Recovery<QuotaData>(id, {
+  return refreshOAuthQuota(id, 'gemini', (cfg, signal, updateMeta) => runWithOAuth401Recovery<QuotaData>(id, {
     signal,
     request: async (reload) => {
       const bin = kindBinaryPath('gemini')
@@ -1180,7 +1254,11 @@ export function refreshAgyQuota(id: ProfileId): Promise<boolean> {
       clearProfileKeychainCache(resolveProfileDir(cfg))
       if (!reload && !isLoggedIn(id)) return { value: null }
       const { env } = buildSpawnSpec(id, 'run', undefined, true)
-      const result = await runAgyQuotaCommand(bin, env, false, signal)
+      const [result, meta] = await Promise.all([
+        runAgyQuotaCommand(bin, env, false, signal),
+        readAsyncAgyAccountMeta(cfg, signal).catch(() => null)
+      ])
+      if (meta?.email || meta?.planType) updateMeta(meta)
       if ('error' in result) return result
       if (!result.value) return { value: null }
       const { stdout, stderr, code } = result.value
@@ -1191,7 +1269,10 @@ export function refreshAgyQuota(id: ProfileId): Promise<boolean> {
           const message = typeof d.error === 'string' ? d.error : String(d.error.message ?? JSON.stringify(d.error))
           return quotaError({ message, body: d })
         }
-        const groups: QuotaGroup[] = (d?.command?.data?.groups ?? []).map((g: any): QuotaGroup => {
+        const data = d?.command?.data
+        const plan = parseAgyPlanType(data) ?? parseAgyPlanType(d) ?? meta?.planType ?? null
+        if (plan) updateMeta({ email: meta?.email ?? null, planType: plan })
+        const groups: QuotaGroup[] = (data?.groups ?? []).map((g: any): QuotaGroup => {
           const buckets: any[] = Array.isArray(g.buckets) ? g.buckets : []
           const win = (w: string, minutes: number): QuotaWindow | null => {
             const b = buckets.find((x) => x.window === w)
@@ -1216,7 +1297,7 @@ export function refreshAgyQuota(id: ProfileId): Promise<boolean> {
         }
         const main = groups.find((g) => g.key === 'gemini') ?? groups[0]
         const limited = [main.fiveHour, main.sevenDay].some((w) => !!w && w.percent >= 100 && (!w.resetsAt || w.resetsAt > Date.now()))
-        return { value: { source: 'agy-usage', report: { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan: null, groups } } }
+        return { value: { source: 'agy-usage', report: { fiveHour: main.fiveHour, sevenDay: main.sevenDay, limited, plan, groups } } }
       } catch (err) {
         return quotaError({ message: stderr.trim() || String(err) })
       }

@@ -32,11 +32,47 @@ vi.hoisted(() => {
 })
 
 import {
+  formatBankedResetCountdown,
+  formatBankedResetDate,
   formatQuotaGroupLabel,
   formatQuotaGroupTooltip,
+  getLiveBankedResets,
   quotaGroupAlertLevel,
   resolveActiveQuotaGroup
 } from './Usage'
+
+describe('banked reset display', () => {
+  const hour = 3_600_000
+  const now = 1_800_000_000_000
+
+  it('drops expired batches, sorts the remaining batches and recalculates the total', () => {
+    const resets = { remainingCount: 10, items: [
+      { expiresAt: now + hour, count: 2 },
+      { expiresAt: now, count: 7 },
+      { expiresAt: now + 1000, count: 1 }
+    ] }
+    expect(getLiveBankedResets(resets, now)).toEqual({
+      remainingCount: 3,
+      items: [resets.items[2], resets.items[0]]
+    })
+    expect(getLiveBankedResets(resets, now + hour)).toBeNull()
+    expect(getLiveBankedResets({ remainingCount: 2, items: [] }, now)).toEqual({ remainingCount: 2, items: [] })
+    expect(getLiveBankedResets({ remainingCount: 0, items: [] }, now)).toBeNull()
+    expect(getLiveBankedResets(undefined, now)).toBeNull()
+  })
+
+  it.each([['zh-CN', '12月13日'], ['zh-TW', '12月13日'], ['ja', '12月13日'], ['en', 'Dec 13']])(
+    'formats the expiry date for %s',
+    (locale, label) => expect(formatBankedResetDate(new Date(2026, 11, 13, 12).getTime(), locale)).toBe(label)
+  )
+
+  it.each([
+    [(15 * 24 + 7) * hour, 'in 15d 7h'], [15 * 24 * hour, 'in 15d'], [24 * hour, 'in 1d'],
+    [8 * hour, 'in 8h'], [hour, 'in 1h'], [hour - 1, 'in <1h']
+  ])('formats the time remaining for %i milliseconds', (duration, label) => {
+    expect(formatBankedResetCountdown(now + duration, now)).toBe(label)
+  })
+})
 
 function makeGroup(overrides: Partial<QuotaGroup> & { key: string; name: string }): QuotaGroup {
   return {
