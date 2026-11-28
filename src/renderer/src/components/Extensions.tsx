@@ -147,8 +147,8 @@ function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind |
     pins
   )
   return (
-    <>
-      <div className="flex flex-wrap gap-1 px-2 pt-1 pb-1.5">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-wrap gap-1 px-3.5 pt-1 pb-2">
         {SKILL_FILTERS.map((f) => (
           <button
             key={f}
@@ -159,32 +159,34 @@ function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind |
           </button>
         ))}
       </div>
-      {list.map((it) => {
-        const id = it.insert + it.source + (it.plugin ?? '')
-        const pinned = pins.includes(it.name)
-        const expanded = open === id
-        return (
-          <div key={id}>
-            <div className="group flex items-center gap-2 rounded-[10px] px-2.5 py-1.5 hover:bg-black/[0.035]">
-              <button onClick={() => kind && togglePin(kind, it.name)} className={`shrink-0 ${pinned ? 'text-warn' : 'text-ink-3/50 hover:text-ink-2'}`} title={pinned ? t('ext.unpin') : t('ext.pin')}>
-                <IconStar size={13} filled={pinned} />
-              </button>
-              <button className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left" onClick={() => it.path && setOpen(expanded ? null : id)}>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-mono text-[13px] leading-5 text-ink">{it.insert}</span>
-                  {it.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{it.description}</span>}
-                </span>
-                {it.kind === 'command' && <Tag>{t('ext.command')}</Tag>}
-                <Tag title={it.plugin}>{it.plugin ? `${sourceLabel(it.source)} · ${it.plugin}` : sourceLabel(it.source)}</Tag>
-                {it.path && <Chevron open={expanded} />}
-              </button>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1">
+        {list.map((it) => {
+          const id = it.insert + it.source + (it.plugin ?? '')
+          const pinned = pins.includes(it.name)
+          const expanded = open === id
+          return (
+            <div key={id}>
+              <div className="group flex items-center gap-2 rounded-[10px] px-2.5 py-1.5 hover:bg-black/[0.035]">
+                <button onClick={() => kind && togglePin(kind, it.name)} className={`shrink-0 ${pinned ? 'text-warn' : 'text-ink-3/50 hover:text-ink-2'}`} title={pinned ? t('ext.unpin') : t('ext.pin')}>
+                  <IconStar size={13} filled={pinned} />
+                </button>
+                <button className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left" onClick={() => it.path && setOpen(expanded ? null : id)}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[13px] leading-5 text-ink">{it.insert}</span>
+                    {it.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{it.description}</span>}
+                  </span>
+                  {it.kind === 'command' && <Tag>{t('ext.command')}</Tag>}
+                  <Tag title={it.plugin}>{it.plugin ? `${sourceLabel(it.source)} · ${it.plugin}` : sourceLabel(it.source)}</Tag>
+                  {it.path && <Chevron open={expanded} />}
+                </button>
+              </div>
+              {expanded && it.path && <FilePreview path={it.path} />}
             </div>
-            {expanded && it.path && <FilePreview path={it.path} />}
-          </div>
-        )
-      })}
-      {!list.length && <Empty>{items.length ? (filter === 'pinned' && !q ? t('ext.noPinned') : t('ext.noMatchAny')) : t('ext.noSkills')}</Empty>}
-    </>
+          )
+        })}
+        {!list.length && <Empty>{items.length ? (filter === 'pinned' && !q ? t('ext.noPinned') : t('ext.noMatchAny')) : t('ext.noSkills')}</Empty>}
+      </div>
+    </div>
   )
 }
 
@@ -757,8 +759,8 @@ export function ExtensionsSettingsView() {
   const q = query.trim().toLowerCase()
 
   return (
-    <div className="overflow-hidden rounded-xl border border-hairline bg-surface-2">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5">
         <label className="flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
           {t('ext.accountSelect')}
           <select
@@ -780,7 +782,7 @@ export function ExtensionsSettingsView() {
           {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
         </button>
       </div>
-      <div className="flex flex-wrap gap-0.5 px-2.5 pt-2.5">
+      <div className="flex shrink-0 flex-wrap gap-0.5 px-2.5 pt-2.5">
         {TABS.map((id) => (
           <button
             key={id}
@@ -792,8 +794,8 @@ export function ExtensionsSettingsView() {
           </button>
         ))}
       </div>
-      <p className="px-3.5 pt-2 pb-2.5 text-[12px] text-ink-3">{t(`ext.desc.${tab}`)}</p>
-      <div className="mx-3.5 mb-2 flex items-center gap-2 rounded-lg bg-surface px-2.5 py-1.5 shadow-[0_0_0_1px_var(--ring)]">
+      <p className="shrink-0 px-3.5 pt-2 pb-2.5 text-[12px] text-ink-3">{t(`ext.desc.${tab}`)}</p>
+      <div className="mx-3.5 mb-2 flex shrink-0 items-center gap-2 rounded-lg bg-surface px-2.5 py-1.5 shadow-[0_0_0_1px_var(--ring)]">
         <IconSearch size={14} className="shrink-0 text-ink-3" />
         <input
           value={query}
@@ -803,25 +805,33 @@ export function ExtensionsSettingsView() {
           className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3"
         />
       </div>
-      <div key={JSON.stringify([account?.id, projectDir])} className="px-1.5 py-1">
+      <div key={JSON.stringify([account?.id, projectDir])} className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {!account ? (
-          <Empty>{t('ext.noAccount')}</Empty>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1">
+            <Empty>{t('ext.noAccount')}</Empty>
+          </div>
         ) : !data ? (
-          <Empty>{t(loading ? 'ext.loading' : 'ext.previewFailed')}</Empty>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1">
+            <Empty>{t(loading ? 'ext.loading' : 'ext.previewFailed')}</Empty>
+          </div>
         ) : tab === 'skills' ? (
           <SkillsTab items={data.skills} kind={account.kind} q={q} />
-        ) : tab === 'agents' ? (
-          <AgentsTab data={data} q={q} />
-        ) : tab === 'plugins' ? (
-          <PluginsTab data={data} q={q} />
-        ) : tab === 'mcp' ? (
-          <McpTab data={data} q={q} />
         ) : (
-          <ContextTab account={account} projectDir={projectDir} data={data} q={q} onReload={() => void reload()} />
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1">
+            {tab === 'agents' ? (
+              <AgentsTab data={data} q={q} />
+            ) : tab === 'plugins' ? (
+              <PluginsTab data={data} q={q} />
+            ) : tab === 'mcp' ? (
+              <McpTab data={data} q={q} />
+            ) : (
+              <ContextTab account={account} projectDir={projectDir} data={data} q={q} onReload={() => void reload()} />
+            )}
+          </div>
         )}
       </div>
       {data && (
-        <div className="border-t border-hairline px-3.5 py-2 text-[11px] text-ink-3">
+        <div className="shrink-0 border-t border-hairline px-3.5 py-2 text-[11px] text-ink-3">
           <div className="truncate" title={[data.configDir, data.project].filter(Boolean).join('\n')}>
             {t('ext.readFrom', { dir: data.configDir })}
             {data.project ? ` · ${data.project.split('/').filter(Boolean).pop()}` : ''}

@@ -321,6 +321,7 @@ export function SettingsDialog() {
     setQ('')
     openSettings(id)
   }
+  const fillSection = !searching && section === 'extensions'
 
   return (
     <SettingsTransfer>
@@ -381,8 +382,8 @@ export function SettingsDialog() {
           </h1>
           <SheetCloseButton onClick={closeSettings} label={t('set.close')} />
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[760px] px-7 py-6">
+        <div className={fillSection ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'min-h-0 flex-1 overflow-y-auto'}>
+          <div className={fillSection ? 'mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col px-7 py-6' : 'mx-auto w-full max-w-[760px] px-7 py-6'}>
             {searching ? <Results hits={hits} query={query} onClear={clearSearch} onOpen={go} /> : <Section id={section} />}
           </div>
         </div>
