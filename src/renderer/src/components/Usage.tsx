@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import type { AccountUsage, BankedResets, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaGroup, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
+import type { AccountUsage, AccountWindowLogRequest, AccountWindowLogSummary, BankedResets, ModelPrice, PriceRate, ProfileId, ProfileKind, ProfileState, QuotaGroup, QuotaWindow, RequestLogPage, UsageTotals } from '@shared/types'
 import { canUseSubscriptionQuota } from '@shared/providerCapabilities'
+import { estimateSevenDayUsage, formatSevenDayEstimateTime, type SevenDayEstimate } from '../lib/sevenDayEstimate'
 import { useLayer } from '../lib/escStack'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, inputCls } from '../lib/ui'
 import { useApp } from '../state/AppContext'
@@ -27,6 +28,7 @@ import {
 import { KindAvatar, Modal, ProfileAvatar } from './common'
 import { IconChevronDown, IconEdit, IconPlus, IconRefresh, Spinner } from './icons'
 import { RequestLogView } from './RequestLogView'
+import { SevenDayQuotaDetails } from './SevenDayQuotaDetails'
 
 const STALE = 6 * 3600_000
 const CARD = 'rounded-xl border border-black/[0.07] bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
@@ -66,23 +68,50 @@ function useTick(ms: number) {
   }, [ms])
 }
 
-/** One quota window: label / % on top, h-1.5 bar, reset time below. A rounded 0% draws no fill. */
-export function QuotaMeter({ kind, label, w, stale, title }: { kind: ProfileKind; label: string; w: QuotaWindow | null; stale: boolean; title?: string }) {
+interface QuotaForecast {
+  estimate: SevenDayEstimate
+  summary?: AccountWindowLogSummary
+  now: number
+}
+
+/** One quota window: label and %, bar, then reset and optional prediction on a single line. */
+export function QuotaMeter({ kind, label, w, stale, title, forecast }: {
+  kind: ProfileKind; label: string; w: QuotaWindow | null; stale: boolean; title?: string; forecast?: QuotaForecast
+}) {
   const { quotaWarn } = useSettings()
   const pct = w ? pctOf(w) : 0
   const shown = Math.round(pct)
-  return (
-    <div className="min-w-0" title={title}>
-      <div className="flex items-baseline justify-between text-[11.5px] leading-4">
+  const estimate = forecast?.estimate
+  const progress = estimate?.timeProgressPct ?? 0
+  const reset = w ? (w.resetsAt ? t('usage.resets', { time: fmtResetShort(w.resetsAt) }) : t('usage.rolling')) : t('usage.noWindow')
+  const inline = forecast && estimate?.status === 'will_deplete'
+    ? t('usage.estimateDepleteShort', { time: formatSevenDayEstimateTime(estimate.depleteAt, forecast.now, currentLocale()) })
+    : estimate?.status === 'within_limit' ? t('usage.estimateWithinShort', { pct: estimate.projectedPct }) : null
+
+  const content = (
+    <>
+      <span className="flex items-baseline justify-between text-[11.5px] leading-4">
         <span className="text-ink-3">{label}</span>
         <span className={`tabular-nums ${!w ? 'text-ink-3' : pct >= quotaWarn ? 'font-semibold text-ink' : 'font-medium text-ink-2'}`}>{w ? `${shown}%` : '—'}</span>
-      </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
-        {w && shown > 0 && <div className={`h-full rounded-full transition-[width] duration-500 ${stale ? 'opacity-45' : ''}`} style={fillStyle(kind, pct, Math.max(pct, 3))} />}
-      </div>
-      <div className="mt-1 text-[11px] leading-4 text-ink-3/80 tabular-nums">
-        {w ? (w.resetsAt ? t('usage.resets', { time: fmtResetShort(w.resetsAt) }) : t('usage.rolling')) : t('usage.noWindow')}
-      </div>
+      </span>
+      <span className="relative mt-1.5 block h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
+        {w && shown > 0 && <span className={`block h-full rounded-full transition-[width] duration-500 ${stale ? 'opacity-45' : ''}`} style={fillStyle(kind, pct, Math.max(pct, 3))} />}
+        {progress > 2 && progress < 98 && (
+          <span aria-hidden="true" className="absolute inset-y-0 w-px bg-black/25 dark:bg-white/30" style={{ left: `${progress}%` }} />
+        )}
+      </span>
+      <span className="mt-1 flex items-center justify-between gap-1.5 text-[11px] leading-4 text-ink-3/80 tabular-nums">
+        <span className="min-w-0 shrink-0 truncate">{reset}</span>
+        {inline && (
+          <span className={`min-w-0 truncate text-right ${estimate?.status === 'will_deplete'
+            ? 'font-medium text-[#896221] dark:text-[#d4a853]' : 'text-ink-3'}`}>{inline}</span>
+        )}
+      </span>
+    </>
+  )
+  return (
+    <div className="min-w-0" title={forecast ? undefined : title}>
+      {forecast ? <SevenDayQuotaDetails {...forecast}>{content}</SevenDayQuotaDetails> : content}
     </div>
   )
 }
@@ -215,7 +244,10 @@ const todayBrief = (u: AccountUsage | undefined) => {
 }
 
 /** The two fixed-width quota cells of an account row (5h | 7d); one spanning note when there is no data. */
-function AccountQuotaCells({ kind, u, model, group }: { kind: ProfileKind; u: AccountUsage | undefined; model?: string | null; group?: QuotaGroup | null }) {
+function AccountQuotaCells({ kind, u, model, group, summary, now }: {
+  kind: ProfileKind; u: AccountUsage | undefined; model?: string | null; group: QuotaGroup | null
+  summary?: AccountWindowLogSummary; now: number
+}) {
   const q = u?.quota
   if (!q) return <div className="col-span-2 text-right text-[11.5px] text-ink-3/80">{t('usage.noQuota')}</div>
   const eff = effectiveQuota(u, model)
@@ -223,13 +255,27 @@ function AccountQuotaCells({ kind, u, model, group }: { kind: ProfileKind; u: Ac
   const sevenRaw = group ? group.sevenDay : eff.sevenDay
   const five = fiveRaw ? liveWindow(fiveRaw) : null
   const seven = sevenRaw ? liveWindow(sevenRaw) : null
+  const result = estimateSevenDayUsage({
+    usedPct: seven?.percent ?? 0,
+    resetAt: seven?.resetsAt ?? null,
+    now,
+    windowCost: summary?.windowCost ?? 0,
+    last24hCost: summary?.last24hCost ?? 0,
+    windowTokens: summary?.windowTokens,
+    last24hTokens: summary?.last24hTokens,
+    windowRequestCount: summary?.windowRequestCount ?? 0,
+    last24hRequestCount: summary?.last24hRequestCount ?? 0
+  })
+  const estimate: SevenDayEstimate = !summary && result.status === 'no_local_logs'
+    ? { status: 'unavailable', timeProgressPct: result.timeProgressPct }
+    : result
   const stale = Date.now() - q.fetchedAt > STALE
   const groupLimited = group ? (five ? pctOf(five) >= 100 : false) || (seven ? pctOf(seven) >= 100 : false) : q.limited
   const tip = t('usage.quotaAge', { ago: fmtAgo(q.fetchedAt) }) + (groupLimited && !stale ? t('usage.limitedSuffix') : '')
   return (
     <>
       <QuotaMeter kind={kind} label="5h" w={five} stale={stale} title={tip} />
-      <QuotaMeter kind={kind} label="7d" w={seven} stale={stale} title={tip} />
+      <QuotaMeter kind={kind} label="7d" w={seven} stale={stale} forecast={{ estimate, summary, now }} />
     </>
   )
 }
@@ -394,10 +440,16 @@ function BankedResetsPopover({ resets, now }: { resets: BankedResets; now: numbe
 }
 
 /** One account in the quota grid: 5h / 7d bars (or local stats when the CLI reports no quota). */
-function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
+function QuotaCard({ p, idlest, u, activeGroup, onSelectGroup, summary, forecastAt }: {
+  p: ProfileState
+  idlest: boolean
+  u: AccountUsage | undefined
+  activeGroup: QuotaGroup | null
+  onSelectGroup: (key: string) => void
+  summary?: AccountWindowLogSummary
+  forecastAt: number
+}) {
   const { openLogin } = useApp()
-  const snap = useUsage()
-  const u = snap?.accounts[p.id]
   const [, tick] = useState(0)
   const now = Date.now()
   const liveBanked = p.kind === 'codex' ? getLiveBankedResets(u?.quota?.bankedResets, now) : null
@@ -409,11 +461,6 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
   }, [nextExpiry, now])
   const groups = u?.quota?.groups
   const eff = effectiveQuota(u, p.defaultModel)
-  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
-  useEffect(() => {
-    setSelectedGroupKey(null)
-  }, [p.defaultModel])
-  const activeGroup = resolveActiveQuotaGroup(groups, selectedGroupKey, eff.group)
   const hasGroupSwitcher = !!(groups && groups.length > 1 && activeGroup)
   const level = quotaLevel(p, u)
   const authExpired = u?.quotaErrorKind === 'auth_expired'
@@ -470,7 +517,7 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
                 activeKey={activeGroup!.key}
                 defaultKey={eff.group?.key ?? null}
                 accountRateLimited={isRateLimited}
-                onSelect={setSelectedGroupKey}
+                onSelect={onSelectGroup}
               />
             )}
             {liveBanked && <BankedResetsPopover resets={liveBanked} now={now} />}
@@ -482,8 +529,8 @@ function QuotaCard({ p, idlest }: { p: ProfileState; idlest: boolean }) {
       </div>
       {u?.quota ? (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-5">
-            <AccountQuotaCells kind={p.kind} u={u} model={p.defaultModel} group={activeGroup} />
+          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-4">
+            <AccountQuotaCells kind={p.kind} u={u} model={p.defaultModel} group={activeGroup} summary={summary} now={forecastAt} />
           </div>
           <div className="mt-2 text-[11px] text-ink-3 tabular-nums">
             {todayBrief(u)} · {t('usage.quotaAge', { ago: fmtAgo(u.quota.fetchedAt) })}
@@ -950,6 +997,73 @@ type UsageTab = 'logs' | 'accounts' | 'models'
 let lastUsageTab: UsageTab = 'logs'
 
 /** 用量限额 page body: multi-tab view (Request Logs, Providers/Accounts, Models). */
+function AccountQuotaGrid({ profiles, snap, idlest, refreshToken }: {
+  profiles: ProfileState[]
+  snap: ReturnType<typeof useUsage>
+  idlest: ReadonlySet<ProfileId>
+  refreshToken: number
+}) {
+  const [selectedGroups, setSelectedGroups] = useState(() => new Map<ProfileId, { model: string | null; key: string }>())
+  const [batch, setBatch] = useState<{ now: number; summaries: Map<ProfileId, AccountWindowLogSummary> }>()
+  const cards = useMemo(() => profiles.map((p) => {
+    const u = snap?.accounts[p.id]
+    const effective = effectiveQuota(u, p.defaultModel)
+    const selected = selectedGroups.get(p.id)
+    const group = resolveActiveQuotaGroup(u?.quota?.groups, selected?.model === p.defaultModel ? selected.key : null, effective.group)
+    return { p, u, group, resetAt: (group ? group.sevenDay : effective.sevenDay)?.resetsAt ?? null }
+  }), [profiles, snap, selectedGroups])
+
+  useEffect(() => {
+    let active = true
+    let generation = 0
+    let debounce: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
+      const version = ++generation
+      const now = Date.now()
+      const requests: AccountWindowLogRequest[] = []
+      for (const { p, resetAt } of cards) {
+        if (resetAt !== null && Number.isFinite(new Date(resetAt).getTime()) && resetAt > now) requests.push({ accountId: p.id, resetAt, now })
+      }
+      if (!requests.length) {
+        setBatch(undefined)
+        return
+      }
+      void window.agentswitch.usage.requestLogWindowSummary(requests).then((summaries) => {
+        if (active && version === generation) setBatch({ now, summaries: new Map(summaries.map((row) => [row.accountId, row])) })
+      }).catch(() => {
+        if (active && version === generation) setBatch(undefined)
+      })
+    }
+    refresh()
+    const unsubscribe = window.agentswitch.usage.onRequestLogsChanged(() => {
+      clearTimeout(debounce)
+      debounce = setTimeout(refresh, 80)
+    })
+    const timer = setInterval(refresh, 60_000)
+    return () => {
+      active = false
+      clearTimeout(debounce)
+      clearInterval(timer)
+      unsubscribe()
+    }
+  }, [cards, refreshToken])
+
+  const now = Date.now()
+  return (
+    <div className="grid grid-cols-1 gap-3 @[660px]:grid-cols-2 @[1080px]:grid-cols-3">
+      {cards.map(({ p, u, group, resetAt }) => {
+        const row = batch?.summaries.get(p.id)
+        const summary = row && row.resetAt === resetAt && row.resetAt > now ? row : undefined
+        return (
+          <QuotaCard key={p.id} p={p} u={u} activeGroup={group} idlest={idlest.has(p.id)} summary={summary}
+            forecastAt={summary && batch ? batch.now : now}
+            onSelectGroup={(key) => setSelectedGroups((previous) => new Map(previous).set(p.id, { model: p.defaultModel, key }))} />
+        )
+      })}
+    </div>
+  )
+}
+
 export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void; refreshToken?: number }) {
   const { profiles } = useApp()
   const snap = useUsage()
@@ -1074,11 +1188,7 @@ export function UsageView({ onClose, refreshToken = 0 }: { onClose?: () => void;
 
             <SectionTitle>{t('usage.quotaSection')}</SectionTitle>
             {cards.length ? (
-              <div className="grid grid-cols-1 gap-3 @[660px]:grid-cols-2 @[1080px]:grid-cols-3">
-                {cards.map((p) => (
-                  <QuotaCard key={p.id} p={p} idlest={idlest.has(p.id)} />
-                ))}
-              </div>
+              <AccountQuotaGrid profiles={cards} snap={snap} idlest={idlest} refreshToken={refreshToken} />
             ) : (
               <div className={`${CARD} px-4 py-5 text-[13px] text-ink-3`}>{t('usage.noReady')}</div>
             )}

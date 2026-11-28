@@ -215,6 +215,25 @@ export interface ActivityDetail {
 
 // ---- usage & quota ---------------------------------------------------------------------------
 
+export const SEVEN_DAY_QUOTA_WINDOW_MS = 7 * 86400_000
+
+export interface AccountWindowLogRequest {
+  accountId: ProfileId
+  resetAt: number
+  now: number
+}
+
+export interface AccountWindowLogSummary {
+  accountId: ProfileId
+  resetAt: number
+  windowCost: number
+  last24hCost: number
+  windowTokens: number
+  last24hTokens: number
+  windowRequestCount: number
+  last24hRequestCount: number
+}
+
 export interface QuotaWindow {
   /** 0–100 */
   percent: number
@@ -766,6 +785,7 @@ export const IPC = {
   usageChanged: 'usage:changed',
   requestLogsQuery: 'usage:requestLogsQuery',
   requestLogsChanged: 'usage:requestLogsChanged',
+  requestLogsWindowSummary: 'usage:requestLogsWindowSummary',
   historyOpen: 'history:open',
   historyImport: 'history:import',
   historyStat: 'history:stat',

@@ -98,7 +98,7 @@ import { Orchestrator, importSession, threadCwd } from './orchestrator'
 import { cwdExists, historyStat, listHistory, openHistory, writeHandoff } from './history'
 import { deleteThreadData, trashHistorySession } from './threadDelete'
 import { clearAccountUsageCache, onUsageChange, pauseAccountQuota, refreshAccountQuota, refreshUsage, setCustomPrice, syncPrices, snapshot as usageSnapshot, startUsage } from './usage'
-import { onRequestLogChange, queryRequestLogs } from './requestLog'
+import { onRequestLogChange, queryRequestLogs, summarizeAccountWindowLogs } from './requestLog'
 import { forgetModels, forgetModelsByKind, listModels, refreshModelsByKind } from './models'
 import { gitChanges, gitCommitDetail, gitStashDetail } from './gitChanges'
 import { clearGitCommandLog, gitCommandLog, gitConflictFile, gitGraph, gitLog, gitMutate, gitRemotes, gitStashes, gitStatus, gitTags } from './gitOps'
@@ -646,6 +646,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     if (typeof model !== 'string' || !model.trim()) throw new Error('bad model')
     if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) throw new Error('bad rate')
     return setCustomPrice(model, rate as Parameters<typeof setCustomPrice>[1])
+  })
+  ipcMain.handle(IPC.requestLogsWindowSummary, (_e, raw: unknown) => {
+    if (!Array.isArray(raw) || raw.length > 1_000) throw new Error('bad request log window batch')
+    const requests = raw.map((item: unknown) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('bad request log window')
+      const { accountId, resetAt, now } = item as Record<string, unknown>
+      if (typeof accountId !== 'string' || !accountId.trim() || accountId.length > 512 ||
+          typeof resetAt !== 'number' || !Number.isFinite(new Date(resetAt).getTime()) ||
+          typeof now !== 'number' || !Number.isFinite(now) || now < 0 || resetAt <= now) {
+        throw new Error('bad request log window')
+      }
+      return { accountId, resetAt, now }
+    })
+    return summarizeAccountWindowLogs(requests)
   })
   ipcMain.handle(IPC.requestLogsQuery, (_e, raw?: unknown) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return queryRequestLogs()

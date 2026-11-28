@@ -48,6 +48,8 @@ import {
   type PriceRate,
   type RequestLogPage,
   type RequestLogQuery,
+  type AccountWindowLogRequest,
+  type AccountWindowLogSummary,
   type HistoryStat,
   type HistoryThread,
   type KindConfig,
@@ -154,6 +156,8 @@ const api = {
     setPrice: (model: string, rate: PriceRate | null): Promise<UsageSnapshot> => ipcRenderer.invoke(IPC.usageSetPrice, model, rate),
     onChanged: (cb: (s: UsageSnapshot) => void) => subscribe(IPC.usageChanged, cb),
     requestLogs: (query?: RequestLogQuery): Promise<RequestLogPage> => ipcRenderer.invoke(IPC.requestLogsQuery, query),
+    requestLogWindowSummary: (requests: AccountWindowLogRequest[]): Promise<AccountWindowLogSummary[]> =>
+      ipcRenderer.invoke(IPC.requestLogsWindowSummary, requests),
     onRequestLogsChanged: (cb: () => void) => subscribe(IPC.requestLogsChanged, () => cb())
   },
   history: {

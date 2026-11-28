@@ -4,7 +4,10 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { cleanModelName } from '@shared/modelSpec'
+import { SEVEN_DAY_QUOTA_WINDOW_MS } from '@shared/types'
 import type {
+  AccountWindowLogRequest,
+  AccountWindowLogSummary,
   ProfileConfig,
   ProfileId,
   ProfileKind,
@@ -431,6 +434,31 @@ export function recordRequestLog(input: RecordRequestLogInput): RequestLogEntry 
   }
   notifyChanged()
   return entry
+}
+
+/** Indexed account-window scans. Each scan returns both periods without loading raw requests. */
+export function summarizeAccountWindowLogs(requests: readonly AccountWindowLogRequest[]): AccountWindowLogSummary[] {
+  if (!requests.length) return []
+  const tokens = '(uncached_input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)'
+  const query = getDb().prepare(`
+    SELECT
+      COALESCE(SUM(cost_usd), 0) AS windowCost,
+      COALESCE(SUM(cost_usd) FILTER (WHERE timestamp >= :recent), 0) AS last24hCost,
+      COALESCE(SUM(${tokens}), 0) AS windowTokens,
+      COALESCE(SUM(${tokens}) FILTER (WHERE timestamp >= :recent), 0) AS last24hTokens,
+      COUNT(*) AS windowRequestCount,
+      COUNT(*) FILTER (WHERE timestamp >= :recent) AS last24hRequestCount
+    FROM request_logs
+    WHERE account_id = :accountId AND timestamp >= :start AND timestamp <= :now
+      AND (COALESCE(cost_usd, 0) > 0 OR ${tokens} > 0)
+  `)
+
+  return requests.map(({ accountId, resetAt, now }) => {
+    const start = resetAt - SEVEN_DAY_QUOTA_WINDOW_MS
+    const recent = Math.max(start, now - 86400_000)
+    const summary = query.get({ accountId, start, now, recent }) as Omit<AccountWindowLogSummary, 'accountId' | 'resetAt'>
+    return { accountId, resetAt, ...summary }
+  })
 }
 
 function buildStatusFilter(statusCode: RequestLogStatusFilter | undefined, params: (string | number)[]): string | null {

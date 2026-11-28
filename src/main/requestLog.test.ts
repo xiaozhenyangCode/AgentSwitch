@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentEvent, ProfileConfig } from '@shared/types'
+import { SEVEN_DAY_QUOTA_WINDOW_MS, type AgentEvent, type ProfileConfig } from '@shared/types'
 
 const { state } = vi.hoisted(() => ({
   state: { userDataDir: '/tmp/agentswitch-reqlog-init' }
@@ -28,7 +28,8 @@ import {
   pruneRequestLogs,
   queryRequestLogs,
   recordRequestLog,
-  resolveProviderLabel
+  resolveProviderLabel,
+  summarizeAccountWindowLogs
 } from './requestLog'
 import { claudeAdapter, type RunSpec } from './agentRunner'
 
@@ -181,6 +182,39 @@ describe('requestLog SQLite persistence, pagination, filtering & pruning', () =>
   afterEach(() => {
     closeRequestLogDb()
     rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('aggregates indexed account windows and both time boundaries in one batch', () => {
+    const now = Date.now()
+    const resetAt = now + 2 * 86400_000
+    const start = resetAt - SEVEN_DAY_QUOTA_WINDOW_MS
+    const a = 'claude-a'
+    const b = 'claude-b'
+    const add = (accountId: string, timestamp: number, costUsd: number | null, tokens = 0, statusCode = 200) =>
+      recordRequestLog({ accountId, accountName: accountId, engineKind: 'claude', provider: 'Anthropic',
+        model: 'unpriced-counter-fixture', timestamp, outputTokens: tokens, costUsd, statusCode })
+
+    add(a, start - 1, 99)
+    add(a, start, 1)
+    add(a, now - 86400_000 - 1, 2, 20)
+    add(a, now - 86400_000, 3, 30)
+    add(a, now, null, 40, 500)
+    add(a, now, 0, 0, 429)
+    add(a, now + 1, 99)
+    add(b, now, null, 60)
+
+    expect(summarizeAccountWindowLogs([
+      { accountId: a, resetAt, now }, { accountId: b, resetAt, now },
+      { accountId: a, resetAt: now + SEVEN_DAY_QUOTA_WINDOW_MS - 10, now },
+      { accountId: 'empty', resetAt, now }
+    ])).toEqual([
+      { accountId: a, resetAt, windowCost: 6, last24hCost: 3, windowTokens: 90, last24hTokens: 70, windowRequestCount: 4, last24hRequestCount: 2 },
+      { accountId: b, resetAt, windowCost: 0, last24hCost: 0, windowTokens: 60, last24hTokens: 60, windowRequestCount: 1, last24hRequestCount: 1 },
+      { accountId: a, resetAt: now + SEVEN_DAY_QUOTA_WINDOW_MS - 10, windowCost: 0, last24hCost: 0,
+        windowTokens: 40, last24hTokens: 40, windowRequestCount: 1, last24hRequestCount: 1 },
+      { accountId: 'empty', resetAt, windowCost: 0, last24hCost: 0, windowTokens: 0, last24hTokens: 0, windowRequestCount: 0, last24hRequestCount: 0 }
+    ])
+    expect(summarizeAccountWindowLogs([])).toEqual([])
   })
 
   it('persists unlisted model IDs and leaves their costs unset', () => {
