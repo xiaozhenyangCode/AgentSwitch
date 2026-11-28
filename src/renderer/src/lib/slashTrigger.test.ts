@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { ExtOverview, SkillItem } from '@shared/types'
 import { makeCompactSlashItem } from './compactCommand'
 import {
-  applyCapabilityInsert, buildCapabilityInsert, buildQuickCapabilitiesView, buildQuickSkillsView, cycleCapabilityTab,
-  extensionPinKey, groupQuickSkills, matchSlashTrigger, type ExtTabId, type QuickCapabilityItem
+  applyCapabilityInsert, buildCapabilityInsert, buildQuickCapabilitiesView, buildQuickSkillsView, cycleCapabilityTab, cycleQuickCapabilityTab,
+  extensionPinKey, groupQuickSkills, matchSlashTrigger, scoreCapability, type ExtTabId, type QuickCapabilityTab, type QuickCapabilityItem
 } from './slashTrigger'
 
 describe('matchSlashTrigger', () => {
@@ -237,5 +237,80 @@ describe('capability insertion', () => {
     const hook = buildCapabilityInsert({ type: 'hooks', item: { ...firstHook.item, name: undefined } }, 'claude', 'en')
     expect(hook.text).toBe('Regarding the PostToolUse · Edit hook: ')
     expect(applyCapabilityInsert('a selected text', 2, 10, hook, true).value).toBe('a Regarding the PostToolUse · Edit hook: text')
+  })
+})
+
+describe('cross-category capability search', () => {
+  const chrome = { ...firstMcp.item, name: 'chrome-devtools', command: 'npx chrome-devtools-mcp' }
+  const snapshot: ExtOverview = { ...capabilityOverview, mcp: [...capabilityOverview.mcp, chrome] }
+  const search = (tab: QuickCapabilityTab, query: string, tabLocked: boolean) =>
+    buildQuickCapabilitiesView(snapshot, [compact], { tab, query, pinned: [], locale: 'zh-CN', tabLocked })
+
+  it('starts with Skills, automatically searches all categories, and returns to Skills when cleared', () => {
+    const browse = search('skills', '', false)
+    expect(browse).toMatchObject({ effectiveTab: 'skills', fallbackAll: false, showTypeBadge: false, allCount: 10 })
+    expect(browse.sections.length).toBeGreaterThan(0)
+    const found = search('skills', 'chrome', false)
+    expect(found).toMatchObject({ effectiveTab: 'all', fallbackAll: false, showPackBar: false, showTypeBadge: true, allCount: 1 })
+    expect(found.tabCounts).toEqual({ skills: 0, agents: 0, plugins: 0, mcp: 1, context: 0 })
+    expect(found.flat[0]).toEqual({ type: 'mcp', item: chrome })
+    expect(found.sections).toEqual([])
+    expect(search('skills', '', false)).toEqual(browse)
+    expect(search('mcp', '', false).effectiveTab).toBe('mcp')
+  })
+
+  it('falls back only when the locked category is empty and another category has matches', () => {
+    expect(search('skills', 'chrome', true)).toMatchObject({
+      effectiveTab: 'skills', fallbackAll: true, allCount: 1, showPackBar: false, showTypeBadge: true,
+      flat: [{ type: 'mcp', item: chrome }]
+    })
+    expect(search('mcp', 'chrome', true)).toMatchObject({ effectiveTab: 'mcp', fallbackAll: false, showTypeBadge: false })
+    expect(search('skills', 'unmatched-string-z', true)).toMatchObject({ effectiveTab: 'skills', fallbackAll: false, allCount: 0, flat: [] })
+    expect(search('all', '', true)).toMatchObject({ effectiveTab: 'all', fallbackAll: false, allCount: 10, showTypeBadge: true })
+  })
+
+  it.each([
+    ['chrome', 0], ['chrome-devtools', 1], ['inspect/chrome-devtools', 2],
+    ['antichrome', 3], ['c-h-r-o-m-e', 4], ['inspect-browser', 5], ['unrelated', -1]
+  ])('scores %s in the right relevance tier', (name, score) => {
+    const entry: QuickCapabilityItem = {
+      type: 'mcp', item: { ...firstMcp.item, name, command: name === 'inspect-browser' ? 'open chrome' : 'npx tool' }
+    }
+    expect(scoreCapability(entry, 'ＣＨＲＯＭＥ', 'zh-CN')).toBe(score)
+  })
+
+  it('orders by relevance, then pin order, category and name, even with a stale pack filter', () => {
+    const results = buildQuickCapabilitiesView({
+      ...snapshot,
+      skills: [skill('chrome', 'global'), skill('chrome-skill', 'global'), skill('pin-me', 'global', 'chrome')],
+      agents: [{ ...firstAgent.item, name: 'chrome-agent' }],
+      mcp: [chrome, { ...chrome, name: 'chrome-bridge' }, { ...chrome, name: 'chrome-pinned' }]
+    }, [], {
+      query: 'chrome', tab: 'skills', tabLocked: false, locale: 'en', packFilter: 'obsolete',
+      pinned: ['pin-me', 'mcp:chrome-pinned', 'agent:Toolkit:chrome-agent']
+    })
+    expect(results.flat.map(extensionPinKey)).toEqual([
+      'chrome', 'mcp:chrome-pinned', 'agent:Toolkit:chrome-agent', 'chrome-skill', 'mcp:chrome-bridge', 'mcp:chrome-devtools', 'pin-me'
+    ])
+    const translated = search('skills', '媒體', false)
+    expect(translated.allCount).toBe(2)
+    expect(translated.flat.map((entry) => entry.type)).toEqual(['agents', 'plugins'])
+  })
+
+  it('cycles from All into Skills and wraps backward into rules and hooks', () => {
+    expect(cycleQuickCapabilityTab('all', 1)).toBe('skills')
+    expect(cycleQuickCapabilityTab('all', -1)).toBe('context')
+    expect(cycleQuickCapabilityTab('context', 1)).toBe('all')
+  })
+
+  it('replaces the full slash query with the selected MCP reference, preserving surrounding text', () => {
+    const value = '先用 /chrome-devtools 查看页面'
+    const caret = '先用 /chrome-devtools'.length
+    const trigger = matchSlashTrigger(value, caret)!
+    const selected = search('skills', trigger.query, false).flat[0]
+    const inserted = buildCapabilityInsert(selected, 'claude', 'zh-CN')
+    expect(applyCapabilityInsert(value, trigger.start, caret, inserted, false)).toEqual({
+      value: '先用 使用 chrome-devtools MCP： 查看页面', caret: '先用 使用 chrome-devtools MCP：'.length
+    })
   })
 })

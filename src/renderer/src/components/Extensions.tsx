@@ -5,9 +5,9 @@ import { useApp, useSortedAccounts } from '../state/AppContext'
 import { activeThread, useChat } from '../state/chat'
 import { pickDriver, useDraft } from '../state/draft'
 import {
-  EXT_TABS, PINNED_PACK_ID, capabilityLabel, cycleCapabilityTab, extensionPack, extensionPackLabel, extensionPinKey,
+  EXT_TABS, PINNED_PACK_ID, QUICK_CAPABILITY_TABS, capabilityLabel, cycleQuickCapabilityTab, extensionPack, extensionPackLabel, extensionPinKey,
   groupExtensionPacks, matchesExtensionSearch, type buildQuickCapabilitiesView, type ExtensionPack,
-  type ExtensionPackFilter, type ExtTabId, type QuickCapabilityItem
+  type ExtensionPackFilter, type ExtTabId, type QuickCapabilityItem, type QuickCapabilityTab
 } from '../lib/slashTrigger'
 import type { Locale, MsgKey } from '@shared/i18n'
 import type { ExtDescription, ExtDetail, ExtOverview, ExtPackMeta, ExtSource, McpServer, ProfileKind, ProfileState, RuleFile, RuleScope } from '@shared/types'
@@ -618,15 +618,19 @@ function capabilitySubtitle(entry: QuickCapabilityItem, original: boolean): stri
   return item.summary
 }
 
+const TYPE_BADGE_KEY = {
+  skills: 'ext.badge.skill', agents: 'ext.badge.agent', plugins: 'ext.badge.plugin',
+  mcp: 'ext.badge.mcp', rules: 'ext.badge.rule', hooks: 'ext.badge.hook'
+} as const satisfies Record<QuickCapabilityItem['type'], MsgKey>
+
 export function QuickSkillsPopover({
-  mode, query, groups, tab, onTab, onPackFilter, onTogglePack,
+  mode, query, groups, onTab, onPackFilter, onTogglePack,
   kind, pins, loading, active, onQuery, onPick, onHover, onDismiss, onCancel, onManage
 }: {
   mode: 'inline' | 'picker'
   query: string
   groups: ReturnType<typeof buildQuickCapabilitiesView>
-  tab: ExtTabId
-  onTab: (tab: ExtTabId) => void
+  onTab: (tab: QuickCapabilityTab) => void
   onPackFilter: (id: string) => void
   onTogglePack: (id: string) => void
   kind: ProfileKind | undefined
@@ -647,7 +651,7 @@ export function QuickSkillsPopover({
   const picker = mode === 'picker'
   const { locale } = useI18n()
   const original = useShowOriginalDesc()
-  const { packs, sections, flat, showPackBar, packFilter, tabCounts } = groups
+  const { effectiveTab, fallbackAll, allCount, showTypeBadge, packs, sections, flat, showPackBar, packFilter, tabCounts } = groups
   const searching = !!query.trim()
   const selected = flat[active]
   const selectedFilter = packs.findIndex((pack) => pack.id === packFilter)
@@ -662,7 +666,7 @@ export function QuickSkillsPopover({
   }, [filterIndex, showPackBar])
   useEffect(() => {
     tabs.current?.querySelector('[aria-pressed=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [tab])
+  }, [effectiveTab])
   useEffect(() => {
     const outside = (event: PointerEvent) => {
       const target = event.target
@@ -673,6 +677,30 @@ export function QuickSkillsPopover({
     return () => window.removeEventListener('pointerdown', outside)
   }, [onDismiss])
   useEscape(onCancel, picker, onCancel)
+
+  const renderResult = (entry: QuickCapabilityItem) => {
+    const index = rowIndices.get(entry)!
+    const pinKey = extensionPinKey(entry)
+    const starred = pins.includes(pinKey)
+    const description = capabilitySubtitle(entry, original)
+    const label = capabilityLabel(entry)
+    const highlighted = index === active
+    return (
+      <div key={`${pinKey}:${index}`} data-skill-index={index} onMouseEnter={() => onHover(index)}
+        className={`group flex min-w-0 items-center gap-1 rounded-md pr-1.5 ${highlighted ? 'bg-accent/10' : 'hover:bg-fill'}`}>
+        <button type="button" aria-pressed={highlighted} onFocus={() => onHover(index)} onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onPick(entry)} className="flex min-w-0 flex-1 items-center gap-2 py-1 pl-2 text-left">
+          <span className="min-w-0 flex-1">
+            <span className={`block truncate text-[12.5px] leading-4 text-ink ${entry.type === 'skills' || entry.type === 'rules' ? 'font-mono' : ''}`}>{label}</span>
+            {description && <span className="block truncate text-[11.5px] leading-4 text-ink-2">{description}</span>}
+          </span>
+          {showTypeBadge && <span className="shrink-0 rounded bg-fill px-1.5 py-0.5 text-[10px] leading-none text-ink-2">{t(TYPE_BADGE_KEY[entry.type])}</span>}
+        </button>
+        {kind && <CapabilityPin kind={kind} pinKey={pinKey} pinned={starred}
+          className={starred || highlighted ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'} />}
+      </div>
+    )
+  }
 
   return (
     <div ref={root} data-quick-skills-popover onKeyDown={(event) => {
@@ -685,12 +713,12 @@ export function QuickSkillsPopover({
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (event.key === 'Tab') {
         event.preventDefault()
-        onTab(cycleCapabilityTab(tab, event.shiftKey ? -1 : 1))
+        onTab(cycleQuickCapabilityTab(effectiveTab, event.shiftKey ? -1 : 1))
       } else if (picker && !query.trim() && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
         event.preventDefault()
         const direction = event.key === 'ArrowLeft' ? -1 : 1
         if (showPackBar) onPackFilter(packs[(filterIndex + direction + packs.length) % packs.length].id)
-        else onTab(cycleCapabilityTab(tab, direction))
+        else onTab(cycleQuickCapabilityTab(effectiveTab, direction))
       } else if (flat.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault()
         const direction = event.key === 'ArrowDown' ? 1 : -1
@@ -715,12 +743,15 @@ export function QuickSkillsPopover({
         </div>
       )}
       <div ref={tabs} role="group" aria-label={t('set.extensions')} className="flex h-[34px] shrink-0 items-stretch gap-1 overflow-x-auto border-b border-hairline px-2">
-        {EXT_TABS.map((id) => (
-          <button key={id} type="button" aria-pressed={tab === id} onMouseDown={(event) => event.preventDefault()} onClick={() => onTab(id)}
-            className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2 text-[12px] whitespace-nowrap ${tab === id ? 'border-accent font-medium text-accent' : 'border-transparent text-ink-2 hover:text-ink'}`}>
-            {t(`ext.tab.${id}`)} <span className="text-[11px] tabular-nums opacity-80">{tabCounts[id]}</span>
-          </button>
-        ))}
+        {QUICK_CAPABILITY_TABS.map((id) => {
+          const count = id === 'all' ? allCount : tabCounts[id]
+          return (
+            <button key={id} type="button" aria-pressed={effectiveTab === id} onMouseDown={(event) => event.preventDefault()} onClick={() => onTab(id)}
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2 text-[12px] whitespace-nowrap ${effectiveTab === id ? 'border-accent font-medium text-accent' : 'border-transparent text-ink-2 hover:text-ink'}`}>
+              {t(`ext.tab.${id}`)} <span className={`text-[11px] tabular-nums ${searching && id !== 'all' && count === 0 ? 'opacity-50' : 'opacity-80'}`}>{count}</span>
+            </button>
+          )
+        })}
       </div>
       {showPackBar && (
         <div ref={filters} role="group" aria-label={t('ext.pack.filter')} className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-hairline px-2">
@@ -740,37 +771,21 @@ export function QuickSkillsPopover({
       )}
       <div className={`grid min-h-0 flex-1 grid-cols-1 ${selected ? '@[560px]:grid-cols-[minmax(0,52fr)_minmax(0,48fr)]' : ''}`}>
         <div ref={list} tabIndex={-1} className="min-h-0 min-w-0 overflow-y-auto overscroll-contain bg-editor-canvas p-1.5">
-          {sections.map(({ pack, items, expanded }) => (
+          {fallbackAll && <p role="status" className="px-2 py-1.5 text-[11.5px] text-ink-2">{t('ext.quickFallbackHint')}</p>}
+          {showTypeBadge ? flat.map(renderResult) : sections.map(({ pack, items, expanded }) => (
             <div key={pack.id} className="pb-1">
               <PackHeading pack={pack} expanded={expanded} locked={searching} onToggle={() => { if (!searching) onTogglePack(pack.id) }} />
-              {expanded && items.map((entry) => {
-                const index = rowIndices.get(entry)!
-                const pinKey = extensionPinKey(entry)
-                const starred = pins.includes(pinKey)
-                const description = capabilitySubtitle(entry, original)
-                const label = capabilityLabel(entry)
-                return (
-                  <div key={`${pinKey}:${index}`} data-skill-index={index} onMouseEnter={() => onHover(index)}
-                    className={`group relative rounded-md ${index === active ? 'bg-accent/10' : 'hover:bg-fill'}`}>
-                    <button type="button" aria-pressed={index === active} onFocus={() => onHover(index)} onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => onPick(entry)} className={`block w-full min-w-0 px-2 py-1 text-left ${kind ? 'pr-8' : ''}`}>
-                      <span className={`block truncate text-[12.5px] leading-4 text-ink ${entry.type === 'skills' || entry.type === 'rules' ? 'font-mono' : ''}`}>{label}</span>
-                      {description && <span className="block truncate text-[11.5px] leading-4 text-ink-2">{description}</span>}
-                    </button>
-                    {kind && <CapabilityPin kind={kind} pinKey={pinKey} pinned={starred} className={`absolute top-1 right-1.5 ${starred || index === active ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`} />}
-                  </div>
-                )
-              })}
+              {expanded && items.map(renderResult)}
             </div>
           ))}
-          {!sections.length && <div className="px-2.5 py-3 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : searching ? 'ext.quickNoMatch' : packFilter === PINNED_PACK_ID ? 'ext.noPinned' : 'ext.quickEmpty')}</div>}
-          {tab === 'skills' && !searching && !showPackBar && flat.length === 1 && packs.some((pack) => pack.id === 'builtin') && (
+          {!flat.length && !sections.length && <div className="px-2.5 py-3 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : searching ? 'ext.quickNoMatch' : packFilter === PINNED_PACK_ID ? 'ext.noPinned' : 'ext.quickEmpty')}</div>}
+          {effectiveTab === 'skills' && !searching && !showPackBar && flat.length === 1 && packs.some((pack) => pack.id === 'builtin') && (
             <p className="px-2.5 py-2 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : 'ext.quickEmpty')}</p>
           )}
         </div>
         {selected && (
           <aside className="hidden min-h-0 min-w-0 flex-col border-l border-hairline bg-editor-chrome @[560px]:flex">
-            <div key={`${tab}:${active}:${extensionPinKey(selected)}`} tabIndex={-1} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-3">
+            <div key={`${effectiveTab}:${active}:${extensionPinKey(selected)}`} tabIndex={-1} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-3">
               <div className="flex items-start justify-between gap-2">
                 <h2 className={`min-w-0 text-[15px] font-semibold break-words text-ink ${selected.type === 'skills' || selected.type === 'rules' ? 'font-mono' : ''}`}>{capabilityLabel(selected)}</h2>
                 {kind && <CapabilityPin kind={kind} pinKey={extensionPinKey(selected)} pinned={pins.includes(extensionPinKey(selected))} onToggle={() => onHover(active)} />}

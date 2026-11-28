@@ -28,17 +28,19 @@ export function matchesExtensionSearch(query: string, ...fields: (string | null 
 const SOURCE_RANK: Record<ExtSource, number> = { project: 0, global: 1, plugin: 2, builtin: 3 }
 
 function nameMatchScore(name: string, query: string): number {
-  if (name.startsWith(query)) return 0
-  if (name.split(/[-:_\s]/).some((word) => word.startsWith(query))) return 1
-  if (name.includes(query)) return 2
+  if (name === query) return 0
+  if (name.startsWith(query)) return 1
+  if (name.split(/[-:_./\s]/u).some((word) => word.startsWith(query))) return 2
+  if (name.includes(query)) return 3
+  const letters = Array.from(query)
   let cursor = 0
-  for (const ch of name) if (ch === query[cursor]) cursor++
-  return cursor === query.length ? 3 : -1
+  for (const ch of name) if (ch === letters[cursor]) cursor++
+  return cursor === letters.length ? 4 : -1
 }
 
 /**
- * Fuzzy match for the / menu: name prefix, then a word in the name (`-`, `:`, `_`), then
- * substring, then letters in order; the description is searched last. Project skills first.
+ * Match exact names, prefixes, word starts, substrings, then letters in order.
+ * Metadata is searched last. Project skills rank first within each tier.
  */
 export function filterSkills(items: SkillItem[], query: string, limit = 400, locale?: Locale): SkillItem[] {
   const q = normalize(query).trim()
@@ -47,7 +49,7 @@ export function filterSkills(items: SkillItem[], query: string, limit = 400, loc
     const n = normalize(it.name)
     const nameScore = nameMatchScore(n, q)
     if (nameScore >= 0) return nameScore
-    if (matchesExtensionSearch(q, n, it.insert, it.description, it.translatedDescription, it.path, it.plugin, locale ? extensionPackLabel(extensionPack(it), locale) : it.packName, it.category, ...(it.tags ?? []))) return 4
+    if (matchesExtensionSearch(q, n, it.insert, it.description, it.translatedDescription, it.path, it.plugin, locale ? extensionPackLabel(extensionPack(it), locale) : it.packName, it.category, ...(it.tags ?? []))) return 5
     return -1
   }
   return items
@@ -165,6 +167,8 @@ export function buildQuickSkillsView(cliItems: SkillItem[], builtinItems: SkillI
 
 export const EXT_TABS = ['skills', 'agents', 'plugins', 'mcp', 'context'] as const
 export type ExtTabId = typeof EXT_TABS[number]
+export const QUICK_CAPABILITY_TABS = ['all', ...EXT_TABS] as const
+export type QuickCapabilityTab = typeof QUICK_CAPABILITY_TABS[number]
 
 export type QuickCapabilityItem =
   | { type: 'skills'; item: SkillItem }
@@ -237,34 +241,52 @@ function capabilityPack(entry: QuickCapabilityItem, locale: Locale): Omit<Extens
   return extensionPack(item)
 }
 
-function matchesCapability(entry: QuickCapabilityItem, query: string, locale: Locale): boolean {
+export function scoreCapability(entry: QuickCapabilityItem, query: string, locale: Locale): number {
+  const q = normalize(query).trim()
+  if (!q) return 0
   const { type, item } = entry
   const label = capabilityLabel(entry)
-  if (nameMatchScore(normalize(label), normalize(query).trim()) >= 0) return true
+  const scores = [nameMatchScore(normalize(label), q)]
+  if (type === 'skills') scores.push(nameMatchScore(normalize(item.name), q))
+  const best = scores.filter((score) => score >= 0)
+  if (best.length) return Math.min(...best)
+
   const pack = extensionPackLabel(capabilityPack(entry, locale), locale)
-  if (type === 'agents') return matchesExtensionSearch(query, label, pack, item.plugin, item.path, item.description, item.translatedDescription, item.category, ...(item.tags ?? []))
-  if (type === 'plugins') return matchesExtensionSearch(query, label, pack, item.key, item.path, item.description, item.translatedDescription, item.skills.join(' '), item.agents.join(' '), item.mcp.join(' '), item.rules.join(' '), item.hooks.join(' '))
-  if (type === 'mcp') return matchesExtensionSearch(query, label, pack, item.plugin, item.transport, item.command, item.url, item.configPath, item.cwd)
-  if (type === 'rules') return matchesExtensionSearch(query, label, pack, item.plugin, item.path, item.scope, item.importedBy)
-  if (type === 'hooks') return matchesExtensionSearch(query, label, pack, item.plugin, item.name, item.event, item.type, item.matcher, item.summary, item.file)
-  return false
+  let fields: (string | null | undefined)[]
+  if (type === 'skills' || type === 'agents') {
+    fields = [item.name, item.plugin, item.path, item.description, item.translatedDescription, item.category, ...(item.tags ?? [])]
+  } else if (type === 'plugins') {
+    fields = [item.key, item.path, item.description, item.translatedDescription,
+      item.skills.join(' '), item.agents.join(' '), item.mcp.join(' '), item.rules.join(' '), item.hooks.join(' ')]
+  } else if (type === 'mcp') {
+    fields = [item.plugin, item.transport, item.command, item.url, item.configPath, item.cwd]
+  } else if (type === 'rules') {
+    fields = [item.plugin, item.path, item.scope, item.importedBy]
+  } else {
+    fields = [item.plugin, item.name, item.event, item.type, item.matcher, item.summary, item.file]
+  }
+  return matchesExtensionSearch(q, label, pack, ...fields) ? 5 : -1
 }
 
 export function cycleCapabilityTab(tab: ExtTabId, direction: number): ExtTabId {
   return EXT_TABS[(EXT_TABS.indexOf(tab) + direction + EXT_TABS.length) % EXT_TABS.length]
 }
 
+export function cycleQuickCapabilityTab(tab: QuickCapabilityTab, direction: number): QuickCapabilityTab {
+  const count = QUICK_CAPABILITY_TABS.length
+  return QUICK_CAPABILITY_TABS[((QUICK_CAPABILITY_TABS.indexOf(tab) + direction) % count + count) % count]
+}
+
 export function buildQuickCapabilitiesView(
   overview: ExtOverview | null | undefined,
   builtinSkills: SkillItem[],
-  options: QuickSkillsOptions & { tab: ExtTabId; locale: Locale }
+  options: QuickSkillsOptions & { tab: QuickCapabilityTab; locale: Locale; tabLocked?: boolean }
 ) {
-  const { tab, query, pinned, collapsedPacks, locale } = options
+  const { tab, query, pinned, collapsedPacks, locale, tabLocked = true } = options
   const searching = !!query.trim()
   const skills = [...(overview?.skills ?? []).filter((item) => !isCliCompactCommand(item)), ...builtinSkills]
-  const matchingSkills = searching ? filterSkills(skills, query, Infinity, locale) : skills
   const entries: Record<ExtTabId, QuickCapabilityItem[]> = {
-    skills: matchingSkills.map((item) => ({ type: 'skills', item })),
+    skills: skills.map((item) => ({ type: 'skills', item })),
     agents: (overview?.agents ?? []).map((item) => ({ type: 'agents', item })),
     plugins: (overview?.plugins ?? []).map((item) => ({ type: 'plugins', item })),
     mcp: (overview?.mcp ?? []).map((item) => ({ type: 'mcp', item })),
@@ -274,15 +296,40 @@ export function buildQuickCapabilitiesView(
     ]
   }
   const tabCounts = { skills: 0, agents: 0, plugins: 0, mcp: 0, context: 0 }
-  for (const id of EXT_TABS) {
-    if (searching && id !== 'skills') entries[id] = entries[id].filter((entry) => matchesCapability(entry, query, locale))
-    tabCounts[id] = entries[id].length
-  }
+  const ranked = EXT_TABS.flatMap((category, categoryRank) => {
+    const hits = entries[category]
+      .map((entry) => ({ entry, score: searching ? scoreCapability(entry, query, locale) : 0, categoryRank }))
+      .filter(({ score }) => score >= 0)
+    tabCounts[category] = hits.length
+    return hits
+  })
 
-  const matches = entries[tab]
+  const allCount = ranked.length
+  const effectiveTab = searching && !tabLocked ? 'all' : tab
+  const fallbackAll = searching && effectiveTab !== 'all' && tabCounts[effectiveTab] === 0 && allCount > 0
   const pinOrder = new Map(pinned.map((key, rank) => [key, rank]))
   const rank = (entry: QuickCapabilityItem) => pinOrder.get(extensionPinKey(entry)) ?? Number.MAX_SAFE_INTEGER
   const byPin = (a: QuickCapabilityItem, b: QuickCapabilityItem) => rank(a) - rank(b)
+  if (effectiveTab === 'all' || fallbackAll) {
+    const flat = ranked.sort((a, b) => a.score - b.score || byPin(a.entry, b.entry) ||
+      a.categoryRank - b.categoryRank || capabilityLabel(a.entry).localeCompare(capabilityLabel(b.entry), locale))
+      .map(({ entry }) => entry)
+    return {
+      effectiveTab, fallbackAll, allCount, tabCounts, flat, showTypeBadge: true,
+      showPackBar: false, packs: [], sections: [], packFilter: ALL_PACKS_ID
+    }
+  }
+
+  const categoryRank = EXT_TABS.indexOf(effectiveTab)
+  const hits = ranked.filter((hit) => hit.categoryRank === categoryRank)
+  if (searching && effectiveTab === 'skills') {
+    hits.sort((a, b) => {
+      if (a.entry.type !== 'skills' || b.entry.type !== 'skills') return 0
+      return a.score - b.score || SOURCE_RANK[a.entry.item.source] - SOURCE_RANK[b.entry.item.source] ||
+        a.entry.item.name.localeCompare(b.entry.item.name)
+    })
+  }
+  const matches = hits.map(({ entry }) => entry)
   const groups = new Map<string, { pack: ExtensionPack; items: QuickCapabilityItem[] }>()
   for (const entry of matches) {
     const pack = capabilityPack(entry, locale)
@@ -295,7 +342,7 @@ export function buildQuickCapabilitiesView(
     }
   }
   const ordered = [...groups.values()]
-  if (!searching || tab !== 'skills') {
+  if (!searching || effectiveTab !== 'skills') {
     ordered.sort((a, b) => PACK_RANK[a.pack.kind] - PACK_RANK[b.pack.kind] ||
       extensionPackLabel(a.pack, locale).localeCompare(extensionPackLabel(b.pack, locale), locale))
   }
@@ -323,5 +370,8 @@ export function buildQuickCapabilitiesView(
     items,
     expanded: searching || !collapsedPacks?.has(pack.id)
   }))
-  return { packs, showPackBar, packFilter, sections: visible, flat: visible.flatMap(({ items, expanded }) => expanded ? items : []), tabCounts }
+  return {
+    effectiveTab, fallbackAll, allCount, tabCounts, packs, showPackBar, packFilter, showTypeBadge: false,
+    sections: visible, flat: visible.flatMap(({ items, expanded }) => expanded ? items : [])
+  }
 }

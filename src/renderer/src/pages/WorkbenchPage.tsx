@@ -10,7 +10,7 @@ import { useOverview, usePins } from '../state/extensions'
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp, useSortedAccounts } from '../state/AppContext'
-import { applyCapabilityInsert, buildCapabilityInsert, buildQuickCapabilitiesView, cycleCapabilityTab, extensionPinKey, matchSlashTrigger, type ExtTabId, type QuickCapabilityItem, type SlashTrigger } from '../lib/slashTrigger'
+import { applyCapabilityInsert, buildCapabilityInsert, buildQuickCapabilitiesView, cycleQuickCapabilityTab, extensionPinKey, matchSlashTrigger, type ExtTabId, type QuickCapabilityItem, type QuickCapabilityTab, type SlashTrigger } from '../lib/slashTrigger'
 import {
   clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_CHAT_MIN_W, EDITOR_PANEL_DEFAULT_H,
   EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
@@ -2124,7 +2124,7 @@ function Composer({
   const [slash, setSlash] = useState<(
     | ({ mode: 'inline' } & SlashTrigger)
     | { mode: 'picker'; query: string }
-  ) & { tab: ExtTabId; index: number; activePinKey?: string; packFilter?: string; collapsedPacks?: ReadonlySet<string> } | null>(null)
+  ) & { tab: QuickCapabilityTab; tabLocked: boolean; index: number; activePinKey?: string; packFilter?: string; collapsedPacks?: ReadonlySet<string> } | null>(null)
   const [file, setFile] = useState<{ trigger: FileTrigger; index: number } | null>(null)
   const fileMenuId = useId()
   const [lastPickerTab, setLastPickerTab] = useState<ExtTabId>('skills')
@@ -2136,13 +2136,14 @@ function Composer({
   const { locale: skillLocale } = useI18n()
   const slashQuery = slash?.query
   const slashTab = slash?.tab
+  const tabLocked = slash?.tabLocked
   const packFilter = slash?.packFilter
   const collapsedPacks = slash?.collapsedPacks
   const slashGroups = useMemo(
     () => slashTab === undefined || slashQuery === undefined ? null : buildQuickCapabilitiesView(overview.data, builtinSlash, {
-      tab: slashTab, query: slashQuery, pinned: pins, packFilter, collapsedPacks, locale: skillLocale
+      tab: slashTab, tabLocked, query: slashQuery, pinned: pins, packFilter, collapsedPacks, locale: skillLocale
     }),
-    [overview.data, builtinSlash, slashTab, slashQuery, pins, packFilter, collapsedPacks, skillLocale]
+    [overview.data, builtinSlash, slashTab, tabLocked, slashQuery, pins, packFilter, collapsedPacks, skillLocale]
   )
   const slashIndex = Math.min(slash?.index ?? 0, Math.max(0, (slashGroups?.flat.length ?? 0) - 1))
   const entryAtIndex = slashGroups?.flat[slashIndex]
@@ -2393,24 +2394,28 @@ function Composer({
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
       setMention(null)
+      const isSkillName = (name: string) => [...(overview.data?.skills ?? []), ...builtinSlash]
+        .some((item) => item.name.toLowerCase() === name.toLowerCase())
       let trigger = matchSlashTrigger(value, caret)
-      if (!trigger && slash?.mode === 'inline' && slash.tab !== 'skills') {
+      if (!trigger && slash?.mode === 'inline' && slash.tabLocked) {
         const query = value.slice(slash.start + 1, caret)
         const queryEnd = caret - (/[ \t\u3000]+$/u.exec(query)?.[0].length ?? 0)
         const prior = matchSlashTrigger(value, queryEnd, true) ?? matchSlashTrigger(value, queryEnd)
-        if (prior?.start === slash.start && query !== prior.query && query.length <= 48) trigger = { ...prior, query }
+        if (prior?.start === slash.start && query !== prior.query && query.length <= 48 &&
+            (slash.tab !== 'skills' || (prior.query && !isSkillName(prior.query)))) {
+          trigger = { ...prior, query }
+        }
       }
       if (!trigger) {
         const phrase = matchSlashTrigger(value, caret, true)
         if (phrase) {
-          const items = [...(overview.data?.skills ?? []), ...builtinSlash]
-          const firstWord = phrase.query.split(/\s+/u)[0].toLowerCase()
+          const firstWord = phrase.query.split(/\s+/u)[0]
           // A completed command followed by prompt text still dismisses the inline menu.
-          if (!items.some((item) => item.name.toLowerCase() === firstWord)) {
-            const { tabCounts } = buildQuickCapabilitiesView(overview.data, builtinSlash, {
-              tab: slash?.tab ?? 'skills', query: phrase.query, pinned: [], locale: skillLocale
+          if (!isSkillName(firstWord)) {
+            const { allCount } = buildQuickCapabilitiesView(overview.data, builtinSlash, {
+              tab: 'all', query: phrase.query, pinned: [], locale: skillLocale
             })
-            if (Object.values(tabCounts).some(Boolean)) trigger = phrase
+            if (allCount) trigger = phrase
           }
         }
       }
@@ -2419,7 +2424,7 @@ function Composer({
         if (current?.mode === 'inline' && current.start === trigger.start) {
           return current.query === trigger.query ? current : { ...current, ...trigger, index: 0, activePinKey: undefined }
         }
-        return { mode: 'inline', ...trigger, tab: 'skills', index: 0 }
+        return { mode: 'inline', ...trigger, tab: 'skills', tabLocked: false, index: 0 }
       })
     }
     setSlash(null)
@@ -2486,10 +2491,10 @@ function Composer({
     setSlash(null)
   }, [])
 
-  const selectCapabilityTab = (tab: ExtTabId) => {
-    if (!slash || slash.tab === tab) return
-    if (slash.mode === 'picker') setLastPickerTab(tab)
-    setSlash({ ...slash, tab, index: 0, activePinKey: undefined, packFilter: undefined, collapsedPacks: undefined })
+  const selectCapabilityTab = (tab: QuickCapabilityTab) => {
+    if (!slash || (slash.tab === tab && slash.tabLocked)) return
+    if (slash.mode === 'picker' && tab !== 'all') setLastPickerTab(tab)
+    setSlash({ ...slash, tab, tabLocked: true, index: 0, activePinKey: undefined, packFilter: undefined, collapsedPacks: undefined })
   }
 
   /** Inserts a CLI token or localized reference, or runs standalone /compact. */
@@ -2692,7 +2697,7 @@ function Composer({
     if (slash?.mode === 'inline' && slashGroups && !composing && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (e.key === 'Tab') {
         e.preventDefault()
-        return selectCapabilityTab(cycleCapabilityTab(slash.tab, e.shiftKey ? -1 : 1))
+        return selectCapabilityTab(cycleQuickCapabilityTab(slashGroups.effectiveTab, e.shiftKey ? -1 : 1))
       }
       const n = slashGroups.flat.length
       if (n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
@@ -2782,7 +2787,6 @@ function Composer({
               mode={slash.mode}
               query={slash.query}
               groups={slashGroups}
-              tab={slash.tab}
               onTab={selectCapabilityTab}
               onPackFilter={(id) => setSlash((current) => current && { ...current, packFilter: id, index: 0, activePinKey: undefined })}
               onTogglePack={(id) => setSlash((current) => {
@@ -3033,7 +3037,7 @@ function Composer({
                 }
                 setMention(null)
                 setFile(null)
-                setSlash({ mode: 'picker', query: '', tab: lastPickerTab, index: 0 })
+                setSlash({ mode: 'picker', query: '', tab: lastPickerTab, tabLocked: false, index: 0 })
               }}
             />
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />
