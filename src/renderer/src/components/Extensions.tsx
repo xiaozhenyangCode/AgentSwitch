@@ -801,10 +801,22 @@ export function ExtensionsSettingsView() {
       if (result.status === 'noop') invalidateExtCache()
       if (result.status === 'busy') toast({ kind: 'info', title: t('ext.translate.busy') })
       if (result.status === 'error') {
+        const { detail, diagnostics } = result
+        const partial = result.translated ? t('ext.translate.partial', { n: result.translated }) : undefined
         toast({
           kind: 'error',
           title: t(result.error === 'cache-write' ? 'ext.translate.cacheWrite' : 'ext.translate.unavailable'),
-          desc: result.translated ? t('ext.translate.partial', { n: result.translated }) : undefined
+          desc: [partial, detail?.replaceAll(' / ', '\n')].filter(Boolean).join('\n') || undefined,
+          action: detail ? {
+            label: t('ext.translate.copyDiag'),
+            run: () => {
+              const report = diagnostics?.length ? `${detail}\n\n${JSON.stringify(diagnostics, null, 2)}` : detail
+              void window.agentswitch.sys.copy(report).then(
+                () => toast({ kind: 'success', title: t('ext.translate.diagCopied') }),
+                () => toast({ kind: 'error', title: t('ext.detail.copyFailed') })
+              )
+            }
+          } : undefined
         })
       }
       if (result.status === 'cancelled' && result.translated) {

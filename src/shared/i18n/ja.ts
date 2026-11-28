@@ -986,6 +986,8 @@ export const ja: Dict = {
   'ext.translate.original': '原文',
   'ext.translate.translated': '翻訳',
   'ext.translate.tooltip': '2 つの無料翻訳サービスを使用します。モデルの利用枠は消費しません。',
+  'ext.translate.copyDiag': '診断情報をコピー',
+  'ext.translate.diagCopied': '翻訳の診断情報をコピーしました',
   'ext.translate.unavailable': 'Google と Microsoft の翻訳サービスに接続できません。しばらくしてから再試行してください。',
   'ext.translate.partial': '{n} 件の翻訳を保存しました。もう一度クリックすると続きから翻訳できます。',
   'ext.translate.cancelFailed': '翻訳をキャンセルできませんでした。もう一度お試しください。',

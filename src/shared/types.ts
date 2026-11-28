@@ -871,6 +871,14 @@ interface ExtTranslationSummary {
 
 export type TranslationProvider = 'google' | 'microsoft'
 
+export interface TranslationProviderDiagnostic {
+  provider: TranslationProvider
+  status?: number
+  code?: string
+  message: string
+  bodySnippet?: string
+}
+
 export interface ExtTranslateRequest {
   profileId: ProfileId
   cwd: string | null
@@ -886,6 +894,8 @@ export interface ExtTranslateResult {
   translated: number
   provider?: TranslationProvider
   error?: string
+  detail?: string
+  diagnostics?: TranslationProviderDiagnostic[]
 }
 
 export interface ExtTranslateProgressEvent extends Omit<ExtTranslateResult, 'status'> {

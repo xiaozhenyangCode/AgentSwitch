@@ -986,6 +986,8 @@ export const en: Dict = {
   'ext.translate.original': 'Original',
   'ext.translate.translated': 'Translation',
   'ext.translate.tooltip': 'Free translation via two providers. Uses no model quota.',
+  'ext.translate.copyDiag': 'Copy diagnostics',
+  'ext.translate.diagCopied': 'Translation diagnostics copied',
   'ext.translate.unavailable': 'Google and Microsoft translation are unavailable. Try again later.',
   'ext.translate.partial': 'Saved {n} translations. Click again to resume.',
   'ext.translate.cancelFailed': 'Could not cancel translation. Try again.',

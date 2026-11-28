@@ -1010,6 +1010,8 @@ export const zhCN = {
   'ext.translate.original': '原文',
   'ext.translate.translated': '译文',
   'ext.translate.tooltip': '免费双通道翻译，不消耗模型额度',
+  'ext.translate.copyDiag': '复制诊断',
+  'ext.translate.diagCopied': '已复制翻译诊断',
   'ext.translate.unavailable': 'Google 和微软翻译暂时不可用，请稍后重试。',
   'ext.translate.partial': '已保存 {n} 条译文，再次点击可继续翻译。',
   'ext.translate.cancelFailed': '无法取消翻译，请重试。',

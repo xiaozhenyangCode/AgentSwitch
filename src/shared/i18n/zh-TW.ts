@@ -1008,6 +1008,8 @@ export const zhTW: Dict = {
   'ext.translate.original': '原文',
   'ext.translate.translated': '譯文',
   'ext.translate.tooltip': '免費雙管道翻譯，不消耗模型額度',
+  'ext.translate.copyDiag': '複製診斷',
+  'ext.translate.diagCopied': '已複製翻譯診斷',
   'ext.translate.unavailable': 'Google 和 Microsoft 翻譯暫時無法使用，請稍後再試。',
   'ext.translate.partial': '已儲存 {n} 筆譯文，再次點擊可繼續翻譯。',
   'ext.translate.cancelFailed': '無法取消翻譯，請再試一次。',
