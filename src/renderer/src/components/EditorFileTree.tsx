@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { EditorDirEntry } from '@shared/editor'
 import type { FileChange } from '@shared/types'
@@ -7,12 +7,10 @@ import { useEscape } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
+import type { EditorFileTreePosition } from '../lib/editorLayout'
+import { EditorResizeHandle } from './EditorResizeHandle'
 import { FileTypeIcon } from './AttachmentBar'
 import { IconChevronRight, IconCopy, IconExternal, IconFolder, IconRefresh, IconSearch, IconX, Spinner } from './icons'
-
-export const TREE_MIN_W = 160
-export const TREE_MAX_W = 340
-export const TREE_DEFAULT_W = 216
 
 const GIT_STATUS_STYLE: Partial<Record<FileChange['status'], { label: string; cls: string }>> = {
   M: { label: 'M', cls: 'text-info' },
@@ -30,6 +28,8 @@ export interface EditorFileTreeProps {
   dirtyPaths: ReadonlySet<string>
   changedFiles: readonly FileChange[]
   width: number
+  position: EditorFileTreePosition
+  onResetWidth: () => void
   onResizeWidth: (width: number) => void
   onOpenFile: (absPath: string) => void
 }
@@ -46,6 +46,8 @@ export function EditorFileTree({
   dirtyPaths,
   changedFiles,
   width,
+  position,
+  onResetWidth,
   onResizeWidth,
   onOpenFile
 }: EditorFileTreeProps) {
@@ -214,25 +216,6 @@ export function EditorFileTree({
     setExpandedDirs(next)
   }, [entriesByDir, loadingDirs, loadDir])
 
-  const startResize = (e: PointerEvent) => {
-    e.preventDefault()
-    const x0 = e.clientX
-    const w0 = width
-    let w = w0
-    const move = (ev: globalThis.PointerEvent) => {
-      w = Math.min(TREE_MAX_W, Math.max(TREE_MIN_W, w0 + (ev.clientX - x0)))
-      onResizeWidth(w)
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      document.body.style.cursor = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
-
   const rootKey = rootRealDir ?? projectDir ?? ''
   const rootEntries = rootKey ? (entriesByDir.get(rootKey) ?? []) : []
   const query = filter.trim().toLowerCase()
@@ -343,8 +326,8 @@ export function EditorFileTree({
   return (
     <div
       data-editor-file-tree
-      className="relative flex h-full shrink-0 flex-col border-r border-hairline bg-surface-2/40 select-none"
-      style={{ width: `min(${width}px, calc(100% - 160px))` }}
+      className={`relative flex h-full min-w-0 shrink-0 flex-col border-hairline bg-surface-2/40 select-none ${position === 'left' ? 'border-r' : 'order-1 border-l'}`}
+      style={{ width }}
     >
       <div className="mx-2 mt-2 flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
         {(['all', 'modified'] as const).map((item) => (
@@ -420,13 +403,8 @@ export function EditorFileTree({
         )}
       </div>
 
-      {/* Right resize handle */}
-      <div
-        className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize transition-colors hover:bg-accent/25"
-        onPointerDown={startResize}
-        onDoubleClick={() => onResizeWidth(TREE_DEFAULT_W)}
-        title={t('chg.resize')}
-      />
+      <EditorResizeHandle edge={position === 'left' ? 'right' : 'left'} size={width}
+        onResize={onResizeWidth} onReset={onResetWidth} />
       {menu && createPortal(
         <div ref={menuRef} role="menu" aria-label={t('editor.fileActions')} data-editor-panel
           className="fixed z-[80] w-52 rounded-lg bg-surface p-1 shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.2)]"

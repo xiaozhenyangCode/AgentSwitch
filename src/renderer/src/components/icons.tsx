@@ -45,6 +45,20 @@ export const IconMinimize = (p: P) => (
     <path d="M19 10h-5V5m0 5 5-5M5 14h5v5m0-5-5 5" />
   </svg>
 )
+const dockFrame = <rect x="3" y="5" width="18" height="14" rx="2" />
+
+export const IconLayout = (p: P) => (
+  <svg {...base(p)}>{dockFrame}<path d="M3 9h18m-6 0v10" /></svg>
+)
+export const IconDockLeft = (p: P) => (
+  <svg {...base(p)}>{dockFrame}<path d="M9 5v14" /></svg>
+)
+export const IconDockRight = (p: P) => (
+  <svg {...base(p)}>{dockFrame}<path d="M15 5v14" /></svg>
+)
+export const IconDockBottom = (p: P) => (
+  <svg {...base(p)}>{dockFrame}<path d="M3 13h18" /></svg>
+)
 export const IconWorkflow = (p: P) => (
   <svg {...base(p)}>
     <rect x="3" y="3" width="6" height="6" rx="1.5" />

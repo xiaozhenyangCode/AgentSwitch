@@ -48,7 +48,7 @@ export function useDrawerLayout(): DrawerLayout {
  * Opening the drawer with no active sessions spawns a default shell in the current project's
  * folder (or the system home directory when no project is selected).
  */
-export function DebugDrawer() {
+export function DebugDrawer({ visibleHeight }: { visibleHeight: string | number }) {
   const { drawer, closeDrawer, setDrawerSession, toast, info, page } = useApp()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -147,14 +147,14 @@ export function DebugDrawer() {
     }
   }
 
-  const { height, dragging } = useDrawerLayout()
+  const { dragging } = useDrawerLayout()
   const onResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     e.preventDefault()
     const el = e.currentTarget
     el.setPointerCapture(e.pointerId)
     const startY = e.clientY
-    const startH = drawerLayout.height
+    const startH = el.parentElement?.clientHeight ?? drawerLayout.height
     const prevCursor = document.body.style.cursor
     document.body.style.cursor = 'row-resize'
     document.body.style.userSelect = 'none'
@@ -186,7 +186,7 @@ export function DebugDrawer() {
         page !== 'workbench' ? 'z-[45]' : 'z-30'
       }`}
       style={{
-        height,
+        height: visibleHeight,
         transform: drawer.open ? 'translateY(0)' : 'translateY(100%)'
       }}
     >

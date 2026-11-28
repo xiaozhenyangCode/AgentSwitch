@@ -1,9 +1,9 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { openSearchPanel } from '@codemirror/search'
 import { EditorView } from '@codemirror/view'
 import type { FileChange } from '@shared/types'
 import { detectIndentInfo } from '../lib/codeEditorTheme'
-import { loadWorkspaceEditorState, loadWorkspaceTreeOpen, saveWorkspaceEditorState } from '../lib/editorPersistence'
+import { TRAFFIC_LIGHT_SAFE_LEFT_PX, type EditorDockPosition, type EditorFileTreePosition } from '../lib/editorLayout'
 import { escLayers, useFocusCloseHandler } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { btnPrimary, btnSecondary } from '../lib/ui'
@@ -12,7 +12,9 @@ import { t } from '../state/i18n'
 import { FileTypeIcon } from './AttachmentBar'
 import { CodeDiffView } from './CodeDiffView'
 import { CodeEditor, type EditorCursorStatus, type EditorSelectionRange } from './CodeEditor'
-import { EditorFileTree, TREE_DEFAULT_W, TREE_MAX_W, TREE_MIN_W } from './EditorFileTree'
+import { EditorFileTree } from './EditorFileTree'
+import { EditorLayoutMenu } from './EditorLayoutMenu'
+import { EditorResizeHandle } from './EditorResizeHandle'
 import { EditorImagePreview, fmtBytes } from './EditorImagePreview'
 import { Markdown, MarkdownBase } from './Markdown'
 import { Modal } from './common'
@@ -28,14 +30,10 @@ import {
   IconMaximize,
   IconMinimize,
   IconRefresh,
+  IconSidebar,
   IconX,
   Spinner
 } from './icons'
-
-const WIDTH_KEY = 'agentswitch.editorWidth'
-const DEFAULT_W = 540
-const MIN_W = 360
-const MAX_W = 1100
 
 const LANGUAGE_LABELS: Readonly<Record<string, string>> = {
   typescript: 'TypeScript',
@@ -73,17 +71,6 @@ const LANGUAGE_LABELS: Readonly<Record<string, string>> = {
   plaintext: 'Plain Text'
 }
 
-function clampWidth(val: number | undefined): number {
-  const fallback = Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W
-  const candidate = typeof val === 'number' && Number.isFinite(val) ? val : fallback
-  return Math.min(MAX_W, Math.max(MIN_W, candidate))
-}
-
-function clampTreeWidth(val: number | undefined): number {
-  const candidate = typeof val === 'number' && Number.isFinite(val) ? val : TREE_DEFAULT_W
-  return Math.min(TREE_MAX_W, Math.max(TREE_MIN_W, candidate))
-}
-
 function breadcrumbSegments(filePath: string, projectDir: string | null): string[] {
   const normFile = filePath.replace(/\\/g, '/')
   if (projectDir) {
@@ -105,7 +92,23 @@ export interface CodeEditorPanelProps {
   activeTab: EditorTab | null
   projectDir: string | null
   home: string | null
-  maximized: boolean
+  dockPosition: EditorDockPosition
+  fileTreePosition: EditorFileTreePosition
+  fileTreeVisible: boolean
+  panelWidth: number
+  panelHeight: number
+  fileTreeWidth: number
+  needsTrafficLightSafeArea: boolean
+  showSidebarToggle: boolean
+  onShowSidebar: () => void
+  onChangeDockPosition: (position: EditorDockPosition) => void
+  onChangeFileTreePosition: (position: EditorFileTreePosition | 'hidden') => void
+  onToggleFileTree: () => void
+  onResizePanelWidth: (width: number) => void
+  onResizePanelHeight: (height: number) => void
+  onResetPanelSize: () => void
+  onResizeTreeWidth: (width: number) => void
+  onResetTreeWidth: () => void
   focusToken: number
   pendingClose: PendingClosePrompt | null
   changedFiles: readonly FileChange[]
@@ -137,7 +140,23 @@ export function CodeEditorPanel({
   activeTab,
   projectDir,
   home,
-  maximized,
+  dockPosition,
+  fileTreePosition,
+  fileTreeVisible,
+  panelWidth,
+  panelHeight,
+  fileTreeWidth,
+  needsTrafficLightSafeArea,
+  showSidebarToggle,
+  onShowSidebar,
+  onChangeDockPosition,
+  onChangeFileTreePosition,
+  onToggleFileTree,
+  onResizePanelWidth,
+  onResizePanelHeight,
+  onResetPanelSize,
+  onResizeTreeWidth,
+  onResetTreeWidth,
   focusToken,
   pendingClose,
   changedFiles,
@@ -159,29 +178,15 @@ export function CodeEditorPanel({
   onReferenceToChat
 }: CodeEditorPanelProps) {
   const panelRef = useRef<HTMLElement>(null)
-  const [width, setWidth] = useState(() => clampWidth(loadWorkspaceEditorState(projectDir)?.width))
-  const [treeOpen, setTreeOpen] = useState(() => loadWorkspaceTreeOpen(projectDir))
-  const [treeWidth, setTreeWidth] = useState(() => clampTreeWidth(loadWorkspaceEditorState(projectDir)?.treeWidth))
+  const maximized = dockPosition === 'maximized'
+  const dockedBottom = dockPosition === 'bottom'
+  const treeOpen = fileTreeVisible && !!projectDir
   const [cursor, setCursor] = useState<EditorCursorStatus>({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
-
-  // Restore panel and tree preferences for the selected workspace.
-  useEffect(() => {
-    const saved = loadWorkspaceEditorState(projectDir)
-    setWidth(clampWidth(saved?.width))
-    setTreeWidth(clampTreeWidth(saved?.treeWidth))
-    setTreeOpen(loadWorkspaceTreeOpen(projectDir))
-  }, [projectDir])
 
   // Reset cursor readout when switching tabs.
   useEffect(() => {
     setCursor({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
   }, [activeTab?.id])
-
-  const toggleTree = () => {
-    const next = !treeOpen
-    setTreeOpen(next)
-    saveWorkspaceEditorState(projectDir, { treeOpen: next })
-  }
 
   const closeActive = () => {
     if (activeTab) onCloseTab(activeTab.id)
@@ -253,7 +258,7 @@ export function CodeEditorPanel({
       case 'b': {
         if (!projectDir) break
         if (treeOpen && target.closest('[data-editor-file-tree]')) panelRef.current?.focus()
-        toggleTree()
+        onToggleFileTree()
         break
       }
       case 'f': {
@@ -272,38 +277,6 @@ export function CodeEditorPanel({
         closeActive()
         break
     }
-  }
-
-  const persistWidth = (w: number) => {
-    localStorage.setItem(WIDTH_KEY, String(w))
-    if (projectDir) saveWorkspaceEditorState(projectDir, { width: w })
-  }
-
-  const startDrag = (e: PointerEvent) => {
-    if (maximized) return
-    e.preventDefault()
-    const x0 = e.clientX
-    const w0 = width
-    let w = w0
-    const move = (ev: globalThis.PointerEvent) => {
-      w = Math.min(MAX_W, Math.max(MIN_W, w0 + (x0 - ev.clientX)))
-      setWidth(w)
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      document.body.style.cursor = ''
-      persistWidth(w)
-    }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
-
-  const handleResizeTree = (nextW: number) => {
-    const clamped = clampTreeWidth(nextW)
-    setTreeWidth(clamped)
-    if (projectDir) saveWorkspaceEditorState(projectDir, { treeWidth: clamped })
   }
 
   const dirty = activeTab ? isTabDirty(activeTab) : false
@@ -362,26 +335,34 @@ export function CodeEditorPanel({
       data-editor-panel
       tabIndex={-1}
       onKeyDown={onPanelKeyDown}
-      className={`relative flex h-full min-w-0 flex-col border-l border-hairline bg-surface outline-none ${maximized ? 'flex-1' : 'shrink-0'}`}
-      style={maximized ? undefined : { width }}
+      className={`relative flex min-h-0 min-w-0 flex-col border-hairline bg-surface outline-none ${{
+        left: 'shrink-0 border-r',
+        right: 'shrink-0 border-l',
+        bottom: 'order-1 shrink-0 border-t',
+        maximized: 'flex-1'
+      }[dockPosition]}`}
+      style={maximized ? undefined : dockedBottom ? { height: panelHeight } : { width: panelWidth }}
     >
       {!maximized && (
-        <div
-          className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize transition-colors hover:bg-accent/25"
-          onPointerDown={startDrag}
-          onDoubleClick={() => {
-            setWidth(DEFAULT_W)
-            persistWidth(DEFAULT_W)
-          }}
-          title={t('chg.resize')}
+        <EditorResizeHandle
+          edge={dockedBottom ? 'top' : dockPosition === 'left' ? 'right' : 'left'}
+          size={dockedBottom ? panelHeight : panelWidth}
+          onResize={dockedBottom ? onResizePanelHeight : onResizePanelWidth}
+          onReset={onResetPanelSize}
         />
       )}
 
-      {/* Top Tab Bar + Action Controls */}
-      <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-hairline bg-surface-2/80 pr-2 pl-1.5">
+      <div className={`flex shrink-0 items-center gap-1 border-b border-hairline bg-surface-2/80 px-2 ${dockedBottom ? 'h-10' : 'drag h-[52px]'}`}
+        style={needsTrafficLightSafeArea ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+        {showSidebarToggle && (
+          <button type="button" onClick={onShowSidebar} className={iconBtn}
+            title={t('nav.showSidebar')} aria-label={t('nav.showSidebar')}>
+            <IconSidebar size={16} strokeWidth={1.7} />
+          </button>
+        )}
         <button
           type="button"
-          onClick={toggleTree}
+          onClick={onToggleFileTree}
           disabled={!projectDir}
           className={`${iconBtn} ${treeOpen ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
           title={`${t('editor.toggleTree')} (⌘B)`}
@@ -391,103 +372,72 @@ export function CodeEditorPanel({
           <IconFolderTree size={15} />
         </button>
 
-        <div className="no-drag flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden py-1">
-          {tabs.map((tab) => {
-            const selected = activeTab?.id === tab.id
-            const tabDirty = isTabDirty(tab)
-            const meta = resolveFileTypeMeta(tab.name)
-            return (
-              <div
-                key={tab.id}
-                title={tab.path}
-                onMouseDown={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault()
-                    onCloseTab(tab.id)
-                  }
-                }}
-                className={`group flex h-8 max-w-[180px] shrink-0 items-center gap-1.5 rounded-lg pr-1 pl-2 text-[12px] transition-colors ${
-                  selected
-                    ? 'bg-surface font-medium text-ink shadow-[0_0_0_1px_var(--ring)]'
-                    : 'text-ink-2 hover:bg-black/[0.04] hover:text-ink dark:hover:bg-white/[0.06]'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => onSelectTab(tab.id)}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                >
-                  <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
-                  <span className="truncate">{tab.name}</span>
-                </button>
-                {tabDirty && (
-                  <span
-                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent group-hover:hidden"
-                    title={t('editor.unsaved')}
-                  />
-                )}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onCloseTab(tab.id)
-                  }}
-                  title={t('common.close')}
-                  aria-label={t('common.close')}
-                  className={`grid h-5 w-5 shrink-0 place-items-center rounded text-ink-3 transition-opacity hover:bg-black/[0.08] hover:text-ink dark:hover:bg-white/[0.12] ${
-                    tabDirty
-                      ? 'hidden group-hover:grid'
-                      : selected
-                        ? 'opacity-70 hover:opacity-100'
-                        : 'opacity-0 group-hover:opacity-80 hover:!opacity-100'
-                  }`}
-                >
-                  <IconX size={11} />
-                </button>
-              </div>
-            )
-          })}
+        <div className="flex min-w-0 flex-1">
+          {tabs.length > 0 && (
+            <div className="no-drag flex min-w-0 max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden py-1">
+              {tabs.map((tab) => {
+                const selected = activeTab?.id === tab.id
+                const tabDirty = isTabDirty(tab)
+                const meta = resolveFileTypeMeta(tab.name)
+                return (
+                  <div
+                    key={tab.id}
+                    title={tab.path}
+                    onMouseDown={(e) => {
+                      if (e.button === 1) {
+                        e.preventDefault()
+                        onCloseTab(tab.id)
+                      }
+                    }}
+                    className={`group flex h-8 max-w-[180px] shrink-0 items-center gap-1.5 rounded-lg pr-1 pl-2 text-[12px] transition-colors ${
+                      selected
+                        ? 'bg-surface font-medium text-ink shadow-[0_0_0_1px_var(--ring)]'
+                        : 'text-ink-2 hover:bg-black/[0.04] hover:text-ink dark:hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelectTab(tab.id)}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                    >
+                      <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
+                      <span className="truncate">{tab.name}</span>
+                    </button>
+                    {tabDirty && (
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent group-hover:hidden"
+                        title={t('editor.unsaved')}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onCloseTab(tab.id)
+                      }}
+                      title={t('common.close')}
+                      aria-label={t('common.close')}
+                      className={`grid h-5 w-5 shrink-0 place-items-center rounded text-ink-3 transition-opacity hover:bg-black/[0.08] hover:text-ink dark:hover:bg-white/[0.12] ${
+                        tabDirty
+                          ? 'hidden group-hover:grid'
+                          : selected
+                            ? 'opacity-70 hover:opacity-100'
+                            : 'opacity-0 group-hover:opacity-80 hover:!opacity-100'
+                      }`}
+                    >
+                      <IconX size={11} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="no-drag flex shrink-0 items-center gap-0.5 border-l border-hairline pl-1.5">
-          {activeTab?.status === 'ready' && (
-            <button
-              type="button"
-              onClick={() => onSaveTab(activeTab.id)}
-              disabled={activeTab.saving || (!dirty && !activeTab.conflictMtimeMs)}
-              title={`${t('common.save')} (⌘S)`}
-              className={`flex h-7 items-center gap-1 rounded-lg px-2 text-[12px] font-medium transition-colors ${
-                dirty || activeTab.conflictMtimeMs
-                  ? 'bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
-                  : 'text-ink-3 disabled:opacity-45'
-              }`}
-            >
-              {activeTab.saving ? <Spinner size={12} /> : <IconCheck size={12} />}
-              <span>{t('common.save')}</span>
-            </button>
-          )}
-          {activeTab?.status === 'ready' && (dirty || activeTab.diffMode === 'unsaved') && (
-            <button
-              type="button"
-              onClick={() => onToggleUnsavedDiff(activeTab.id)}
-              className={`${iconBtn} ${activeTab.diffMode === 'unsaved' ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
-              title={t('editor.compareSaved')}
-              aria-label={t('editor.compareSaved')}
-              aria-pressed={activeTab.diffMode === 'unsaved'}
-            >
-              <IconDiff size={14} />
-            </button>
-          )}
-          {canExternalAction && !showingImage && (
-            <>
-              <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
-                <IconFolder size={14} />
-              </button>
-              <button type="button" onClick={openExternal} className={iconBtn} title={t('editor.openExternal')} aria-label={t('editor.openExternal')}>
-                <IconExternal size={14} />
-              </button>
-            </>
-          )}
+          <EditorLayoutMenu dockPosition={dockPosition}
+            treePosition={fileTreeVisible ? fileTreePosition : 'hidden'}
+            onDock={onChangeDockPosition} onTree={onChangeFileTreePosition} />
           <button
             type="button"
             onClick={onToggleMaximize}
@@ -514,6 +464,44 @@ export function CodeEditorPanel({
               </Fragment>
             ))}
           </div>
+          {activeTab?.status === 'ready' && (
+            <button
+              type="button"
+              onClick={() => onSaveTab(activeTab.id)}
+              disabled={activeTab.saving || (!dirty && !activeTab.conflictMtimeMs)}
+              title={`${t('common.save')} (⌘S)`}
+              aria-label={t('common.save')}
+              className={`${iconBtn} ${
+                dirty || activeTab.conflictMtimeMs
+                  ? 'bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
+                  : 'text-ink-3 disabled:opacity-45'
+              }`}
+            >
+              {activeTab.saving ? <Spinner size={12} /> : <IconCheck size={12} />}
+            </button>
+          )}
+          {activeTab?.status === 'ready' && (dirty || activeTab.diffMode === 'unsaved') && (
+            <button
+              type="button"
+              onClick={() => onToggleUnsavedDiff(activeTab.id)}
+              className={`${iconBtn} ${activeTab.diffMode === 'unsaved' ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
+              title={t('editor.compareSaved')}
+              aria-label={t('editor.compareSaved')}
+              aria-pressed={activeTab.diffMode === 'unsaved'}
+            >
+              <IconDiff size={14} />
+            </button>
+          )}
+          {canExternalAction && !showingImage && (
+            <>
+              <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
+                <IconFolder size={14} />
+              </button>
+              <button type="button" onClick={openExternal} className={iconBtn} title={t('editor.openExternal')} aria-label={t('editor.openExternal')}>
+                <IconExternal size={14} />
+              </button>
+            </>
+          )}
           {canSwitchView && (
             <div className="flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
               {(['source', 'preview'] as const).map((mode) => (
@@ -599,15 +587,17 @@ export function CodeEditorPanel({
 
       {/* Main Workspace Split: Optional File Tree + Code/Diff Editor */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {treeOpen && projectDir && (
+        {treeOpen && fileTreeWidth > 0 && (
           <EditorFileTree
             projectDir={projectDir}
             activeFilePath={activeTab?.path ?? null}
             activeRealPath={activeTab?.realPath ?? null}
             dirtyPaths={dirtyPaths}
             changedFiles={changedFiles}
-            width={treeWidth}
-            onResizeWidth={handleResizeTree}
+            width={fileTreeWidth}
+            position={fileTreePosition}
+            onResizeWidth={onResizeTreeWidth}
+            onResetWidth={onResetTreeWidth}
             onOpenFile={onOpenFile}
           />
         )}

@@ -1,5 +1,6 @@
 import { AppProvider, useApp } from './state/AppContext'
 import { Modal } from './components/common'
+import { EDITOR_CHAT_MIN_H, EDITOR_PANEL_MIN_H, TRAFFIC_LIGHT_SAFE_LEFT_PX } from './lib/editorLayout'
 import { btnPrimary, btnSecondary } from './lib/ui'
 import { IconSidebar } from './components/icons'
 import { NavRail } from './components/NavRail'
@@ -135,11 +136,15 @@ function TurnNotifier() {
 }
 
 function Shell({ chatStatus }: { chatStatus: ReturnType<typeof useChatStatus> }) {
-  const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState, sidebarOpen, toggleSidebar } = useApp()
+  const { drawer, loginId, configId, byId, info, openConfig, cliConfigKind, addRequest, confirmState, removeAccount, kindState, page, sidebarOpen, toggleSidebar, editorMaximized, trafficLightOwner, workspaceEditorOpen, editorLayout } = useApp()
   const { height: drawerHeight, dragging: drawerDragging } = useDrawerLayout()
   const configProfile = configId ? byId(configId) : undefined
   const onboarding = useOnboarding()
   const chatsAvailable = chatStatus === 'ready' || chatStatus === 'saveFailed'
+  const bottomEditor = page === 'workbench' && workspaceEditorOpen && editorLayout.dockPosition === 'bottom'
+  const visibleDrawerHeight = bottomEditor
+    ? `min(${drawerHeight}px, max(0px, calc(100cqh - ${EDITOR_CHAT_MIN_H + EDITOR_PANEL_MIN_H}px)))`
+    : drawerHeight
 
   return (
     <div className="flex h-full">
@@ -147,30 +152,32 @@ function Shell({ chatStatus }: { chatStatus: ReturnType<typeof useChatStatus> })
         <OnboardingPage />
       ) : (
         <>
-          <NavRail chatsAvailable={chatsAvailable} />
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas">
+          <NavRail chatsAvailable={chatsAvailable} hiddenByMaximize={editorMaximized}
+            needsTrafficLightSafeArea={trafficLightOwner === 'sidebar'} />
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-clip bg-canvas"
+            style={bottomEditor ? { containerType: 'size' } : undefined}>
             <div
               className={`min-h-0 flex-1 overflow-clip ${
                 drawerDragging ? '' : 'transition-[padding-bottom] duration-[260ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
               }`}
-              style={{ paddingBottom: drawer.open ? drawerHeight : 0 }}
+              style={{ paddingBottom: drawer.open ? visibleDrawerHeight : 0 }}
             >
               {chatsAvailable ? <WorkbenchPage /> : (
                 <div className="grid h-full place-items-center px-8 text-center text-sm text-ink-2">
                   {!sidebarOpen && (
-                    <button
-                      className="no-drag absolute top-3 left-24 rounded-lg p-1.5 hover:bg-surface-2"
-                      onClick={toggleSidebar}
-                      aria-label={t('nav.showSidebar')}
-                    >
-                      <IconSidebar size={16} />
-                    </button>
+                    <div className="drag absolute inset-x-0 top-0 flex h-[52px] items-center pl-3"
+                      style={trafficLightOwner === 'chat' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+                      <button className="no-drag rounded-lg p-1.5 hover:bg-surface-2" onClick={toggleSidebar}
+                        aria-label={t('nav.showSidebar')}>
+                        <IconSidebar size={16} />
+                      </button>
+                    </div>
                   )}
                   {chatStatus === 'loading' ? <p role="status">{t('chat.loading')}</p> : <p role="alert">{t('chat.loadFailed')}</p>}
                 </div>
               )}
             </div>
-            <DebugDrawer />
+            <DebugDrawer visibleHeight={visibleDrawerHeight} />
           </main>
           <PageDialog />
           <SettingsDialog />
@@ -214,19 +221,21 @@ function UnsavedChatDialog() {
 }
 
 function ChatShell({ locale }: { locale: string }) {
+  const { trafficLightOwner } = useApp()
   const status = useChatStatus()
   const confirmClose = useUnsavedChatClose()
   return (
     <>
       <div className="flex h-full flex-col" inert={confirmClose}>
-        {status === 'saveFailed' && (
-          <div role="alert" className="shrink-0 bg-warn-soft py-2 pr-4 pl-[100px] text-sm text-ink">
-            {t('chat.saveFailed')}
-          </div>
-        )}
         <div className="min-h-0 flex-1">
           <Shell key={locale} chatStatus={status} />
         </div>
+        {status === 'saveFailed' && (
+          <div role="alert" className="shrink-0 bg-warn-soft py-2 pr-4 pl-3 text-sm text-ink"
+            style={trafficLightOwner !== 'none' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+            {t('chat.saveFailed')}
+          </div>
+        )}
       </div>
       {confirmClose && <UnsavedChatDialog />}
     </>

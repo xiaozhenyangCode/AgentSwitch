@@ -9,6 +9,7 @@ import {
   type SessionId,
   type Snapshot
 } from '@shared/types'
+import { loadEditorLayoutPrefs, resolveTrafficLightOwner, saveEditorLayoutPrefs, toggleEditorMaximized, type EditorLayoutPrefs, type TrafficLightOwner } from '../lib/editorLayout'
 import { KIND_META, isReady, isSignedIn } from '../lib/ui'
 import { canUseOAuthLogin } from '@shared/providerCapabilities'
 import { t } from './i18n'
@@ -57,6 +58,15 @@ interface AppState {
   sidebarOpen: boolean
   setSidebarOpen: (open: boolean) => void
   toggleSidebar: () => void
+  platform: string
+  isFullScreen: boolean
+  trafficLightOwner: TrafficLightOwner
+  editorLayout: EditorLayoutPrefs
+  setEditorLayout: (update: (prefs: EditorLayoutPrefs) => EditorLayoutPrefs) => void
+  editorMaximized: boolean
+  setEditorMaximized: (maximized: boolean) => void
+  workspaceEditorOpen: boolean
+  setWorkspaceEditorOpen: (open: boolean) => void
   settingsSection: SettingsSection
   /** Settings is a dialog over the current page (which keeps its state). */
   settingsOpen: boolean
@@ -121,6 +131,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState<Page>('workbench')
   const [engineFocus, setEngineFocus] = useState<AppState['engineFocus']>(null)
   const [sidebarOpen, setSidebarOpenState] = useState<boolean>(() => localStorage.getItem('agentswitch.sidebar.open') !== '0')
+  const { platform } = window.agentswitch.sys
+  const [isFullScreen, setIsFullScreen] = useState(() => window.agentswitch.sys.isFullScreen())
+  const [editorLayout, setEditorLayout] = useState(() => loadEditorLayoutPrefs())
+  const [workspaceEditorOpen, setWorkspaceEditorOpen] = useState(false)
+  const editorMaximized = workspaceEditorOpen && editorLayout.dockPosition === 'maximized'
+  const trafficLightOwner = resolveTrafficLightOwner({
+    platform, isFullScreen, sidebarOpen, editorOpen: workspaceEditorOpen, dockPosition: editorLayout.dockPosition
+  })
+  useEffect(() => {
+    const off = window.agentswitch.sys.onFullScreenChanged(setIsFullScreen)
+    setIsFullScreen(window.agentswitch.sys.isFullScreen())
+    return off
+  }, [])
+  useEffect(() => saveEditorLayoutPrefs(editorLayout), [editorLayout])
+  const setEditorMaximized = useCallback((maximized: boolean) => {
+    setEditorLayout((prefs) => (prefs.dockPosition === 'maximized') === maximized ? prefs : toggleEditorMaximized(prefs))
+  }, [])
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawer, setDrawer] = useState<AppState['drawer']>({ open: false, session: null })
@@ -230,16 +257,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (focus) setEngineFocus({ target: focus, at: Date.now() })
   }, [])
   const setSidebarOpen = useCallback((open: boolean) => {
+    if (open && editorMaximized) setEditorMaximized(false)
     localStorage.setItem('agentswitch.sidebar.open', open ? '1' : '0')
     setSidebarOpenState(open)
-  }, [])
+  }, [editorMaximized, setEditorMaximized])
   const toggleSidebar = useCallback(() => {
+    if (editorMaximized) {
+      setSidebarOpen(true)
+      return
+    }
     setSidebarOpenState((o) => {
       const next = !o
       localStorage.setItem('agentswitch.sidebar.open', next ? '1' : '0')
       return next
     })
-  }, [])
+  }, [editorMaximized, setSidebarOpen])
   const openSettings = useCallback((section?: SettingsSection) => {
     if (section) setSettingsSection(section)
     setSettingsOpen(true)
@@ -336,6 +368,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sidebarOpen,
       setSidebarOpen,
       toggleSidebar,
+      platform,
+      isFullScreen,
+      trafficLightOwner,
+      editorLayout,
+      setEditorLayout,
+      editorMaximized,
+      setEditorMaximized,
+      workspaceEditorOpen,
+      setWorkspaceEditorOpen,
       settingsSection,
       settingsOpen,
       openSettings,
@@ -363,7 +404,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dismissToast,
       install
     }),
-    [info, snap, profiles, kinds, cliVersions, byId, kindState, refresh, page, navigate, engineFocus, sidebarOpen, setSidebarOpen, toggleSidebar, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
+    [info, snap, profiles, kinds, cliVersions, byId, kindState, refresh, page, navigate, engineFocus, sidebarOpen, setSidebarOpen, toggleSidebar, platform, isFullScreen, trafficLightOwner, editorLayout, editorMaximized, setEditorMaximized, workspaceEditorOpen, settingsSection, settingsOpen, openSettings, closeSettings, toggleSettings, drawer, openDrawer, closeDrawer, setDrawerSession, loginId, configId, cliConfigKind, addRequest, openAddAccount, confirmState, confirm, removeAccount, toasts, toast, dismissToast, install]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

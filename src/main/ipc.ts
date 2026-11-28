@@ -149,6 +149,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload)
   }
 
+  ipcMain.on(IPC.windowFullScreenGetSync, (e) => {
+    e.returnValue = getWindow()?.isFullScreen() ?? false
+  })
+
   // ---- state snapshot ---------------------------------------------------------
   const snapshot = (): Snapshot => {
     const kinds: KindState[] = KINDS.map((k) => ({

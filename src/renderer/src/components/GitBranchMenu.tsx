@@ -47,6 +47,7 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
   const { gitPullStrategy, gitFetchPrune } = useSettings()
   const [options, setOptions] = useState(false)
   useEscape(() => setOptions(false), options)
+  const syncItem = compact ? itemBase.replace('px-2.5', '') : itemBase
 
   const sync = (kind: 'fetch' | 'pull' | 'push') => {
     if (kind === 'fetch') return run({ kind, prune: gitFetchPrune })
@@ -74,11 +75,11 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
         const blocked = kind === 'fetch' ? undefined : gitOperationReason(status.inProgress)
         return (
           <button type="button" key={kind}
-            className={itemBase + (compact ? ' gap-1 px-1.5' : ' flex-1 justify-center gap-1 px-1.5') + (active ? ' disabled:opacity-100!' : '')}
+            className={syncItem + (compact ? ' gap-1 px-1 @min-[520px]:px-1.5' : ' flex-1 justify-center gap-1 px-1.5') + (active ? ' disabled:opacity-100!' : '')}
             disabled={disabled || unavailable || !!blocked} aria-label={active ? t(progress) : label}
             title={active ? t(progress) : blocked ?? [label, count].filter(Boolean).join(' ')} onClick={() => void sync(kind)}>
             {active ? <Spinner size={13} className="shrink-0 text-accent" /> : <Icon size={13} className="shrink-0 text-ink-3" />}
-            <span className={compact ? 'hidden min-[1100px]:inline' : 'truncate'}>{active ? t(progress) : label}</span>
+            <span className={compact ? 'hidden @min-[520px]:inline' : 'truncate'}>{active ? t(progress) : label}</span>
             {!compact && !active && count && <span className="shrink-0 text-[10px] tabular-nums text-ink-3">{count}</span>}
           </button>
         )
@@ -86,7 +87,7 @@ export function GitSyncBar({ status, pending, disabled, run, compact = false }: 
       <div className={compact ? 'relative shrink-0' : 'shrink-0'} onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget)) setOptions(false)
       }}>
-        <button type="button" className={itemBase + ' px-1.5'} aria-expanded={options}
+        <button type="button" className={syncItem + (compact ? ' px-1 @min-[520px]:px-1.5' : ' px-1.5')} aria-expanded={options}
           aria-label={t('git.syncOptions')} title={t('git.syncOptions')} onClick={() => setOptions(!options)}>
           <IconGear size={14} />
         </button>

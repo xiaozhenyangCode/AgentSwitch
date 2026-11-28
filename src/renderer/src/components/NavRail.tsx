@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { HistoryEntry, HistoryThread, ProfileKind } from '@shared/types'
 import { useApp } from '../state/AppContext'
 import { activeThread, archiveThread, chatMarkdown, clearUnread, deleteThread, importedThreadOf, isThreadBusy, openHistory, renameThread, selectThread, stop, togglePin, unarchiveThread, useChat, type Thread } from '../state/chat'
+import { TRAFFIC_LIGHT_SAFE_LEFT_PX } from '../lib/editorLayout'
 import { useEscape } from '../lib/escStack'
 import { formatFullLocalTime, formatListTime } from '../lib/listTime'
 import { getSidebarGroups, loadCollapsedProjects, saveCollapsedProjects } from '../lib/sidebarGroups'
@@ -68,8 +69,13 @@ function ListTime({ ts }: { ts: number }) {
 }
 
 /** Frosted sidebar; the native `vibrancy: 'sidebar'` material shows through the translucent fill. */
-export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
-  const { info, page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar } = useApp()
+export function NavRail({ chatsAvailable, hiddenByMaximize = false, needsTrafficLightSafeArea }: {
+  chatsAvailable: boolean
+  hiddenByMaximize?: boolean
+  needsTrafficLightSafeArea: boolean
+}) {
+  const { info, page, navigate, profiles, confirm, toast, openSettings, settingsOpen, sidebarOpen, toggleSidebar, trafficLightOwner } = useApp()
+  const visible = sidebarOpen && !hiddenByMaximize
   const version = info?.version ? `v${info.version.replace(/^v/i, '')}` : null
   const chat = useChat()
   const start = useStartThread()
@@ -142,11 +148,12 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
 
   return (
     <nav
-      aria-hidden={!sidebarOpen}
+      aria-hidden={!visible}
+      inert={!visible}
       className={`drag relative shrink-0 overflow-hidden bg-sidebar/85 backdrop-blur-2xl dark:bg-sidebar/95 ${
-        dragging ? '' : 'transition-[width,opacity] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
-      } ${sidebarOpen ? 'border-r border-black/[0.06] opacity-100' : 'pointer-events-none border-r-0 opacity-0'}`}
-      style={{ width: sidebarOpen ? width : 0 }}
+        dragging || trafficLightOwner !== 'none' ? '' : 'transition-[width,opacity] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+      } ${visible ? 'border-r border-black/[0.06] opacity-100' : 'pointer-events-none border-r-0 opacity-0'}`}
+      style={{ width: visible ? width : 0 }}
     >
       <div className="flex h-full flex-col" style={{ width }}>
       {/* resize handle on the right edge (double-click resets) */}
@@ -159,7 +166,8 @@ export function NavRail({ chatsAvailable }: { chatsAvailable: boolean }) {
         <div className="ml-auto h-full w-px bg-transparent transition-colors duration-150 group-hover:bg-accent/50 group-active:bg-accent" />
       </div>
       {/* traffic-light zone + native macOS sidebar toggle */}
-      <div className="flex h-[52px] shrink-0 items-center justify-end pr-3 pl-[84px]">
+      <div className="flex h-[52px] shrink-0 items-center justify-end px-3"
+        style={needsTrafficLightSafeArea ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
         <button
           onClick={toggleSidebar}
           className="no-drag flex h-7 w-7 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"

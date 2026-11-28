@@ -11,6 +11,11 @@ import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearc
 import { openOnboarding } from '../state/onboarding'
 import { useApp, useSortedAccounts } from '../state/AppContext'
 import { groupQuickSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
+import {
+  clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_CHAT_MIN_W, EDITOR_PANEL_DEFAULT_H,
+  EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
+  type EditorDockPosition, type EditorFileTreePosition
+} from '../lib/editorLayout'
 import { KIND_META, accountBadge, btnPrimary, btnSecondary, isReady, isSignedIn, popover } from '../lib/ui'
 import { defaultHint, effectiveModel, modelLabel, resolveSpec, withEffort } from '../lib/models'
 import { KindAvatar, Modal, ProfileAvatar } from '../components/common'
@@ -23,7 +28,7 @@ import { EffortBar } from '../components/EffortBar'
 import { QuotaDot } from '../components/Usage'
 import { estimateMessageCost, fmtTokens, useUsage } from '../state/usage'
 import { ActivityBar, LiveProgress, PermissionCard, ThinkingCard, UsageLine } from '../components/Process'
-import { ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
+import { CHANGES_PANEL_MIN_W, ChangesPanel, Counts, useFileChanges } from '../components/ChangesPanel'
 import { CodeEditorPanel } from '../components/CodeEditorPanel'
 import { QuickOpenModal } from '../components/QuickOpenModal'
 import { useCodeEditor } from '../state/useCodeEditor'
@@ -196,7 +201,8 @@ function contextWindow(kind: ProfileState['kind'], model: string | null): number
 }
 
 export function WorkbenchPage() {
-  const { byId, profiles, info, confirm, toast, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar } = useApp()
+  const { byId, profiles, info, confirm, toast, drawer, openDrawer, closeDrawer, sidebarOpen, toggleSidebar,
+    trafficLightOwner, editorLayout: layout, setEditorLayout, setEditorMaximized, setWorkspaceEditorOpen } = useApp()
   const { showDebugTerminal, showGitTools } = useSettings()
   const chat = useChat()
   const thread = activeThread(chat)
@@ -276,6 +282,48 @@ export function WorkbenchPage() {
       .flatMap((file) => resolveOutputFileCandidates(file, projectDir))
   }), [messages, projectDir, sourceProjectDir])
   const codeEditor = useCodeEditor(projectDir)
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const [layoutSize, setLayoutSize] = useState<{ width: number; height: number }>()
+  const { dockPosition, fileTreePosition, fileTreeVisible } = layout
+  const editorMaximized = codeEditor.open && dockPosition === 'maximized'
+  const editorOnLeft = codeEditor.open && dockPosition === 'left'
+  const editorOnSide = editorOnLeft || (codeEditor.open && dockPosition === 'right')
+  const editorOnBottom = codeEditor.open && dockPosition === 'bottom'
+  const panelWidth = clampPanelWidth(layout.panelWidth, layoutSize?.width)
+  const panelHeight = clampPanelHeight(layout.panelHeight, layoutSize?.height)
+  const treeContainerWidth = editorOnSide ? panelWidth - 1 : layoutSize?.width
+  const treeWidth = clampFileTreeWidth(layout.fileTreeWidth, treeContainerWidth)
+  const changesOverlay = layoutSize !== undefined
+    && layoutSize.width - (editorOnSide ? panelWidth : 0) < EDITOR_CHAT_MIN_W + CHANGES_PANEL_MIN_W
+
+  useLayoutEffect(() => {
+    setWorkspaceEditorOpen(codeEditor.open)
+  }, [codeEditor.open, setWorkspaceEditorOpen])
+  useLayoutEffect(() => () => setWorkspaceEditorOpen(false), [setWorkspaceEditorOpen])
+  useLayoutEffect(() => {
+    const container = layoutRef.current
+    if (!container) return
+    const measure = () => {
+      const { clientWidth: width, clientHeight: height } = container
+      setLayoutSize((prior) => prior?.width === width && prior.height === height ? prior : { width, height })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
+
+  const changeDock = (position: EditorDockPosition) => {
+    setEditorLayout((prefs) => setEditorDockPosition(prefs, position))
+  }
+  const changeTreePosition = (position: EditorFileTreePosition | 'hidden') => {
+    setEditorLayout((prefs) => ({
+      ...prefs,
+      fileTreePosition: position === 'hidden' ? prefs.fileTreePosition : position,
+      fileTreeVisible: position !== 'hidden'
+    }))
+  }
+
   const [quickOpen, setQuickOpen] = useState(false)
   useEffect(() => {
     const onQuickOpenKey = (e: KeyboardEvent) => {
@@ -607,14 +655,14 @@ export function WorkbenchPage() {
     [rewindModal, checkpoints, showGitTools, git, fc, toast]
   )
 
-  return (
-    <div className="flex h-full">
-      <div className={`relative flex h-full min-w-0 flex-1 flex-col overflow-clip ${codeEditor.open && codeEditor.maximized ? 'hidden' : ''}`}>
-        <div className={`drag flex h-14 shrink-0 items-center gap-2.5 pr-8 transition-[padding] duration-200 ${sidebarOpen ? 'pl-8' : 'pl-[86px]'}`}>
-          {!sidebarOpen && (
+  const chatPanel = (
+      <div className="@container relative flex min-h-0 min-w-0 flex-1 flex-col overflow-clip">
+        <div className="drag flex h-[52px] shrink-0 items-center gap-1 px-3 @min-[520px]:gap-2.5 @min-[520px]:pr-8"
+          style={trafficLightOwner === 'chat' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+          {!sidebarOpen && !editorOnLeft && (
             <button
               onClick={toggleSidebar}
-              className="no-drag -ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
+              className="no-drag flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-2 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]"
               title={`${t('nav.showSidebar')} (⌘\\)`}
               aria-label={t('nav.showSidebar')}
             >
@@ -626,18 +674,20 @@ export function WorkbenchPage() {
           </div>
           <div className="flex-1" />
           {synced && (
-            <div key={synced.seq} className="no-drag pointer-events-none absolute top-3.5 left-1/2 z-20 -translate-x-1/2">
-              <div className="flex items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
-                <IconRefresh size={12} className="text-accent" />
-                {t('wb.extSynced', { n: synced.n })}
+            <div key={synced.seq} className="pointer-events-none absolute inset-x-0 top-3.5 z-20 flex justify-center px-3"
+              style={trafficLightOwner === 'chat' ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+              <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-surface/95 px-3 py-1 text-[12px] text-ink-2 shadow-[0_0_0_1px_var(--ring),0_4px_16px_rgba(0,0,0,0.10)] backdrop-blur-xl">
+                <IconRefresh size={12} className="shrink-0 text-accent" />
+                <span className="truncate">{t('wb.extSynced', { n: synced.n })}</span>
               </div>
             </div>
           )}
-          <div className="no-drag flex items-center gap-1.5">
+          <div className="no-drag flex items-center gap-0.5 @min-[520px]:gap-1.5">
             {showGitTools && git.status && <GitSyncBar key={ctx.projectDir} status={git.status} disabled={git.disabled}
               pending={git.pending} run={git.run} compact />}
             {!changesOpen && conflictLabel && <button type="button" onClick={() => setChangesVisible(true)}
-              className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-danger hover:bg-danger-soft">{conflictLabel}</button>}
+              className="flex shrink-0 items-center gap-1 rounded-md px-1 py-1 text-[12px] font-medium text-danger hover:bg-danger-soft"
+              title={conflictLabel}><IconAlert size={14} /><span className="hidden @min-[520px]:inline">{conflictLabel}</span></button>}
             <ParticipantsButton participants={participants} driverId={driverP?.id ?? null} onChange={(ids) => update({ participants: ids })} />
             {showDebugTerminal && (
               <button
@@ -657,24 +707,24 @@ export function WorkbenchPage() {
             )}
             <button
               onClick={toggleChanges}
-              className={pill + ` gap-1.5 px-3 ${changesOpen ? 'bg-surface-2 text-accent' : ''}`}
+              className={pill.replace('px-4', '') + ` shrink-0 gap-1.5 px-1.5 @min-[520px]:px-3 ${changesOpen ? 'bg-surface-2 text-accent' : ''}`}
               title={nChanged ? t('chg.btnHint', { n: nChanged }) : t('chg.title')}
             >
               <IconFile size={15} className={changesOpen ? 'text-accent' : 'text-ink-2'} />
               {nChanged > 0 ? (
                 <>
-                  <span className="text-[13px] tabular-nums">{nChanged}</span>
-                  <Counts added={fc.changes!.added} removed={fc.changes!.removed} className="text-[11.5px]" />
+                  <span className="hidden text-[13px] tabular-nums @min-[520px]:inline">{nChanged}</span>
+                  <span className="hidden @min-[520px]:inline"><Counts added={fc.changes!.added} removed={fc.changes!.removed} className="text-[11.5px]" /></span>
                 </>
               ) : (
-                <span className="text-[13px] text-ink-2">{t('chg.short')}</span>
+                <span className="hidden text-[13px] text-ink-2 @min-[520px]:inline">{t('chg.short')}</span>
               )}
             </button>
             <button type="button" onClick={codeEditor.togglePanel}
-              className={pill + ` gap-1.5 px-3 ${codeEditor.open ? 'bg-surface-2 text-accent' : ''}`}
+              className={pill.replace('px-4', '') + ` shrink-0 gap-1.5 px-1.5 @min-[520px]:px-3 ${codeEditor.open ? 'bg-surface-2 text-accent' : ''}`}
               title={t('editor.togglePanel')} aria-label={t('editor.togglePanel')} aria-pressed={codeEditor.open}>
               <IconFolderTree size={15} />
-              <span className="text-[13px]">{t('editor.panelShort')}</span>
+              <span className="hidden text-[13px] @min-[520px]:inline">{t('editor.panelShort')}</span>
             </button>
           </div>
         </div>
@@ -971,24 +1021,56 @@ export function WorkbenchPage() {
           </div>
         )}
       </div>
-      {changesOpen && !(codeEditor.open && codeEditor.maximized) && (
-        <ChangesPanel key={ctx.projectDir} changes={fc.changes} loading={fc.loading} readFailed={fc.readFailed} dir={ctx.projectDir}
-          onRefresh={showGitTools ? git.refreshAll : fc.refresh} onClose={toggleChanges} onViewHistory={openHistory}
-          onEditFile={(p) => codeEditor.openFile(p)} gitRevision={git.revision} gitTools={gitTools
-            ? { ...gitTools, disabled: gitTools.disabled || fc.loading }
-            : null} />
-      )}
+  )
+
+  return (
+    <div ref={layoutRef} className={`relative flex h-full min-h-0 min-w-0 ${editorOnBottom ? 'flex-col' : ''}`}>
+      <div className={`relative min-h-0 min-w-0 flex-1 ${editorMaximized ? 'hidden' : 'flex'} ${editorOnLeft ? 'order-1' : ''}`}>
+        {chatPanel}
+        {changesOpen && !editorMaximized && (
+          <ChangesPanel key={ctx.projectDir} changes={fc.changes} loading={fc.loading} readFailed={fc.readFailed} dir={ctx.projectDir}
+            overlay={changesOverlay}
+            onRefresh={showGitTools ? git.refreshAll : fc.refresh} onClose={toggleChanges} onViewHistory={openHistory}
+            onEditFile={(p) => codeEditor.openFile(p)} gitRevision={git.revision} gitTools={gitTools
+              ? { ...gitTools, disabled: gitTools.disabled || fc.loading }
+              : null} />
+        )}
+      </div>
       {codeEditor.open && (
         <CodeEditorPanel
           tabs={codeEditor.tabs}
           activeTab={codeEditor.activeTab}
           projectDir={ctx.projectDir}
           home={info?.realHome ?? null}
-          maximized={codeEditor.maximized}
+          dockPosition={dockPosition}
+          fileTreePosition={fileTreePosition}
+          fileTreeVisible={fileTreeVisible}
+          panelWidth={panelWidth}
+          panelHeight={panelHeight}
+          fileTreeWidth={treeWidth}
+          needsTrafficLightSafeArea={trafficLightOwner === 'editor'}
+          showSidebarToggle={editorMaximized || (!sidebarOpen && editorOnLeft)}
+          onShowSidebar={toggleSidebar}
+          onChangeDockPosition={changeDock}
+          onChangeFileTreePosition={changeTreePosition}
+          onToggleFileTree={() => setEditorLayout((prefs) => ({ ...prefs, fileTreeVisible: !prefs.fileTreeVisible }))}
+          onResizePanelWidth={(width) => setEditorLayout((prefs) => ({
+            ...prefs, panelWidth: clampPanelWidth(clampPanelWidth(width, layoutSize?.width))
+          }))}
+          onResizePanelHeight={(height) => setEditorLayout((prefs) => ({
+            ...prefs, panelHeight: clampPanelHeight(clampPanelHeight(height, layoutSize?.height))
+          }))}
+          onResizeTreeWidth={(width) => setEditorLayout((prefs) => ({
+            ...prefs, fileTreeWidth: clampFileTreeWidth(clampFileTreeWidth(width, treeContainerWidth))
+          }))}
+          onResetPanelSize={() => setEditorLayout((prefs) => dockPosition === 'bottom'
+            ? { ...prefs, panelHeight: EDITOR_PANEL_DEFAULT_H }
+            : { ...prefs, panelWidth: EDITOR_PANEL_DEFAULT_W })}
+          onResetTreeWidth={() => setEditorLayout((prefs) => ({ ...prefs, fileTreeWidth: EDITOR_TREE_DEFAULT_W }))}
           focusToken={codeEditor.focusToken}
           pendingClose={codeEditor.pendingClose}
           changedFiles={fc.changes?.files ?? []}
-          onToggleMaximize={() => codeEditor.setMaximized((v) => !v)}
+          onToggleMaximize={() => setEditorMaximized(!editorMaximized)}
           onSelectTab={codeEditor.selectTab}
           onSelectAdjacentTab={codeEditor.selectAdjacentTab}
           onOpenFile={codeEditor.openFile}
@@ -1004,7 +1086,7 @@ export function WorkbenchPage() {
           onExitDiff={codeEditor.exitDiff}
           onResolvePendingClose={(action) => void codeEditor.resolvePendingClose(action)}
           onReferenceToChat={({ path, realPath, lineRange }) => {
-            if (codeEditor.maximized) codeEditor.setMaximized(false)
+            if (editorMaximized) setEditorMaximized(false)
             setFileRefSeed((prior) => ({ seq: (prior?.seq ?? 0) + 1, path, realPath, lineRange }))
           }}
         />
@@ -1146,7 +1228,7 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
 
   return (
     <div ref={ref} className="no-drag relative">
-      <button onClick={() => setOpen((o) => !o)} className={pill + ' gap-1.5 pr-2.5 pl-1.5'} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
+      <button onClick={() => setOpen((o) => !o)} className={pill.replace('px-4', '') + ' gap-1.5 px-1 @min-[420px]:pr-2.5 @min-[420px]:pl-1.5'} title={`${t('wb.participantsHint')}\n${active.map((p) => p.name).join(' · ')}`}>
         {active[0] ? (
           <span className="relative">
             <ProfileAvatar profile={active.find((p) => p.id === driverId) ?? active[0]} size={22} />
@@ -1154,8 +1236,8 @@ function ParticipantsButton({ participants, driverId, onChange }: { participants
         ) : (
           <span className="h-[22px] w-[22px] rounded-[7px] border border-dashed border-black/20 dark:border-white/25" />
         )}
-        <span className="text-[13px] text-ink-2 tabular-nums">{active.length}</span>
-        <IconChevronDown size={13} className="text-ink-3" />
+        <span className="hidden text-[13px] text-ink-2 tabular-nums @min-[420px]:inline">{active.length}</span>
+        <IconChevronDown size={13} className="hidden text-ink-3 @min-[420px]:block" />
       </button>
       {open && (
         <div className={popover + ' absolute top-11 right-0 z-30 w-72'}>

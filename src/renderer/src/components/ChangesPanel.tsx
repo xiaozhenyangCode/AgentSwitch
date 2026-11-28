@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNo
 import { createPortal } from 'react-dom'
 import type { FileChange, FileChanges, GitCommitFile, GitStashDetail, GitStashEntry, GitStatus } from '@shared/types'
 import { useEscape } from '../lib/escStack'
+import { EDITOR_CHAT_MIN_W } from '../lib/editorLayout'
 import type { Thread } from '../state/chat'
 import { fmtAgo, t } from '../state/i18n'
 import { useApp } from '../state/AppContext'
@@ -133,7 +134,7 @@ export function Counts({ added, removed, className = '' }: { added: number; remo
 }
 
 const WIDTH_KEY = 'agentswitch.changesWidth'
-const MIN_W = 300
+export const CHANGES_PANEL_MIN_W = 300
 const MAX_W = 760
 type GitTools = ProjectGitTools
 
@@ -147,7 +148,8 @@ export function ChangesPanel({
   onViewHistory,
   onEditFile,
   gitTools,
-  gitRevision
+  gitRevision,
+  overlay
 }: {
   changes: FileChanges | null
   loading: boolean
@@ -159,19 +161,20 @@ export function ChangesPanel({
   onEditFile?: (absPath: string) => void
   gitTools: GitTools | null
   gitRevision: number
+  overlay: boolean
 }) {
   const tools = dir ? gitTools : null
   const [tab, setTab] = useState<'changes' | 'stashes'>('changes')
   const [repository, setRepository] = useState<'tags' | 'remotes' | null>(null)
   const [conflictPath, setConflictPath] = useState<string | null>(null)
-  const [width, setWidth] = useState(() => Math.min(MAX_W, Math.max(MIN_W, Number(localStorage.getItem(WIDTH_KEY)) || 400)))
+  const [width, setWidth] = useState(() => Math.min(MAX_W, Math.max(CHANGES_PANEL_MIN_W, Number(localStorage.getItem(WIDTH_KEY)) || 400)))
   const startDrag = (e: React.PointerEvent) => {
     e.preventDefault()
     const x0 = e.clientX
-    const w0 = width
+    const w0 = e.currentTarget.parentElement?.clientWidth ?? width
     let w = w0
     const move = (ev: PointerEvent) => {
-      w = Math.min(MAX_W, Math.max(MIN_W, w0 + (x0 - ev.clientX)))
+      w = Math.min(MAX_W, Math.max(CHANGES_PANEL_MIN_W, w0 + (x0 - ev.clientX)))
       setWidth(w)
     }
     const up = () => {
@@ -189,7 +192,12 @@ export function ChangesPanel({
   const conflictFiles = tools ? files.filter((file) => file.conflicted) : []
   const canShowHistory = !!dir && (!!gitTools || !!changes?.repo)
   return (
-    <aside className="relative flex h-full shrink-0 flex-col border-l border-hairline bg-surface/60" style={{ width }}>
+    <aside
+      className={`flex min-h-0 shrink-0 flex-col border-l border-hairline ${overlay
+        ? 'absolute top-[52px] right-0 bottom-0 z-20 bg-surface shadow-lg'
+        : 'relative h-full bg-surface/60'}`}
+      style={{ width, maxWidth: overlay ? '100%' : `calc(100% - ${EDITOR_CHAT_MIN_W}px)` }}
+    >
       <div
         className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize transition-colors hover:bg-accent/20"
         onPointerDown={startDrag}
@@ -199,7 +207,7 @@ export function ChangesPanel({
         }}
         title={t('chg.resize')}
       />
-      <div className="drag flex h-14 shrink-0 items-center gap-2 border-b border-hairline px-4">
+      <div className="drag flex h-[52px] shrink-0 items-center gap-2 border-b border-hairline px-4">
         <span className="text-[14px] font-semibold text-ink">{t('chg.title')}</span>
         {files.length > 0 && (
           <span className="text-[12px] text-ink-3">

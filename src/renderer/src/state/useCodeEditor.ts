@@ -89,7 +89,6 @@ export function useCodeEditor(projectDir: string | null) {
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
-  const [maximized, setMaximized] = useState(false)
   const [focusToken, setFocusToken] = useState(0)
   const [pendingClose, setPendingClose] = useState<PendingClosePrompt | null>(null)
 
@@ -150,7 +149,6 @@ export function useCodeEditor(projectDir: string | null) {
       setActiveId(null)
       if (closePanelWhenEmpty) {
         setOpen(false)
-        setMaximized(false)
       }
       return
     }
@@ -469,7 +467,6 @@ export function useCodeEditor(projectDir: string | null) {
       }
       if (!hasDirtyStale) {
         setOpen(false)
-        setMaximized(false)
       }
     }
 
@@ -549,13 +546,11 @@ export function useCodeEditor(projectDir: string | null) {
     }
     removeTabsNow(tabsRef.current.map((tab) => tab.id), true)
     setOpen(false)
-    setMaximized(false)
   }, [removeTabsNow])
 
   const togglePanel = useCallback(() => {
     if (openRef.current) {
       setOpen(false)
-      setMaximized(false)
     } else {
       setOpen(true)
       setFocusToken((n) => n + 1)
@@ -586,7 +581,6 @@ export function useCodeEditor(projectDir: string | null) {
     removeTabsNow(prompt.tabIds, prompt.kind !== 'tab')
     if (prompt.kind === 'panel') {
       setOpen(false)
-      setMaximized(false)
     }
   }, [pendingClose, saveTab, removeTabsNow])
 
@@ -596,11 +590,9 @@ export function useCodeEditor(projectDir: string | null) {
     tabs,
     activeTab,
     open,
-    maximized,
     focusToken,
     pendingClose,
     setOpen,
-    setMaximized,
     selectTab: (tabId: string) => {
       setActiveId(tabId)
       setFocusToken((n) => n + 1)

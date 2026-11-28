@@ -1,6 +1,7 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
 import { app, BrowserWindow, dialog, nativeImage, screen, shell } from 'electron'
 import { CHAT_CLOSE_EVENT } from '@shared/chat'
+import { IPC } from '@shared/types'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { readSettings, writeSettings } from './appSettings'
@@ -192,6 +193,7 @@ function createWindow(editorWatcher: EditorFileWatcher): void {
     backgroundColor: '#00000000',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 20, y: 19 },
+    ...(saved.fullScreen ? { fullscreen: true } : {}),
     vibrancy: 'sidebar',
     visualEffectState: 'followWindow',
     show: false,
@@ -205,6 +207,11 @@ function createWindow(editorWatcher: EditorFileWatcher): void {
     }
   })
 
+  const win = mainWindow
+  const sendFullScreen = () => win.webContents.send(IPC.windowFullScreenChanged, win.isFullScreen())
+  win.on('enter-full-screen', sendFullScreen)
+  win.on('leave-full-screen', sendFullScreen)
+
   trackWindowBounds(mainWindow)
   trackChatClose(mainWindow)
 
@@ -212,7 +219,7 @@ function createWindow(editorWatcher: EditorFileWatcher): void {
     if (!mainWindow || mainWindow.isDestroyed()) return
     if (saved.maximized && !saved.fullScreen) mainWindow.maximize()
     mainWindow.show()
-    if (saved.fullScreen) mainWindow.setFullScreen(true)
+    if (saved.fullScreen && !mainWindow.isFullScreen()) mainWindow.setFullScreen(true)
   })
   mainWindow.on('closed', () => {
     editorWatcher.unwatchAll()

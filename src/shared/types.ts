@@ -723,6 +723,8 @@ export const IPC = {
   finishThreadImport: 'threads:finish-import',
   threadTransferProgress: 'conversation:transferProgress',
   pathsExist: 'sys:paths-exist',
+  windowFullScreenGetSync: 'window:fullScreenGetSync',
+  windowFullScreenChanged: 'window:fullScreenChanged',
   extSkills: 'ext:skills',
   extMcp: 'ext:mcp',
   extOverview: 'ext:overview',

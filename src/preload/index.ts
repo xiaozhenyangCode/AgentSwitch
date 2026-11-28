@@ -243,6 +243,9 @@ const api = {
     mutate: (dir: string, op: GitMutation, _threadId?: string | null): Promise<GitMutationResult> => ipcRenderer.invoke(IPC.gitMutate, dir, op)
   },
   sys: {
+    platform: process.platform,
+    isFullScreen: (): boolean => ipcRenderer.sendSync(IPC.windowFullScreenGetSync),
+    onFullScreenChanged: (cb: (fullScreen: boolean) => void) => subscribe(IPC.windowFullScreenChanged, cb),
     copy: (text: string): Promise<void> => ipcRenderer.invoke(IPC.clipboardWrite, text),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.openExternal, url),
     openPath: (p: string): Promise<void> => ipcRenderer.invoke(IPC.openPath, p),
