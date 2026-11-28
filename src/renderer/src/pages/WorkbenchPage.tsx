@@ -1070,6 +1070,7 @@ export function WorkbenchPage() {
           focusToken={codeEditor.focusToken}
           pendingClose={codeEditor.pendingClose}
           changedFiles={fc.changes?.files ?? []}
+          onRefreshChangedFiles={fc.refresh}
           onToggleMaximize={() => setEditorMaximized(!editorMaximized)}
           onSelectTab={codeEditor.selectTab}
           onSelectAdjacentTab={codeEditor.selectAdjacentTab}

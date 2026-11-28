@@ -23,7 +23,7 @@ export function EditorImagePreview({ path, realPath, name, size, syncVersion, on
   const loaded = image?.src === src ? image : null
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-2/40">
+    <div className="flex h-full min-h-0 flex-col bg-editor-canvas">
       <div className="relative min-h-0 flex-1">
         {loaded && !loaded.dimensions ? (
           <div role="status" className="grid h-full place-items-center px-4 text-center text-[13px] text-ink-3">
@@ -42,7 +42,7 @@ export function EditorImagePreview({ path, realPath, name, size, syncVersion, on
           />
         )}
       </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-hairline bg-surface px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-editor-hairline bg-editor-chrome px-3 py-2">
         <span className="text-[11.5px] text-ink-3 tabular-nums">
           {[loaded?.dimensions, fmtBytes(size)].filter(Boolean).join(' · ')}
         </span>

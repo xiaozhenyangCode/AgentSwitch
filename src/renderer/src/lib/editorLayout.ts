@@ -1,6 +1,7 @@
 export type EditorDockPosition = 'right' | 'left' | 'bottom' | 'maximized'
 export type EditorNonMaximizedDock = Exclude<EditorDockPosition, 'maximized'>
 export type EditorFileTreePosition = 'left' | 'right'
+export type EditorSafeAreaTarget = 'none' | 'tree' | 'editor'
 export type TrafficLightOwner = 'none' | 'sidebar' | 'editor' | 'chat'
 
 export interface EditorLayoutPrefs {
@@ -42,6 +43,17 @@ export function resolveTrafficLightOwner({
   if (sidebarOpen) return 'sidebar'
   if (editorOpen && dockPosition === 'left') return 'editor'
   return 'chat'
+}
+
+export function resolveEditorSafeAreaTarget({
+  needsTrafficLightSafeArea, treeOpen, fileTreePosition
+}: {
+  needsTrafficLightSafeArea: boolean
+  treeOpen: boolean
+  fileTreePosition: EditorFileTreePosition
+}): EditorSafeAreaTarget {
+  if (!needsTrafficLightSafeArea) return 'none'
+  return treeOpen && fileTreePosition === 'left' ? 'tree' : 'editor'
 }
 
 function clampSize(raw: number, min: number, max: number, fallback: number, total: number | undefined, reserve: number): number {

@@ -103,9 +103,9 @@ export function QuickOpenModal({
       <div
         role="dialog"
         aria-label={t('editor.quickOpenTitle')}
-        className="flex max-h-[60vh] w-[540px] max-w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.24)]"
+        className="flex max-h-[60vh] w-[540px] max-w-full flex-col overflow-hidden rounded-lg border border-editor-hairline bg-editor-elevated shadow-[0_24px_64px_rgba(0,0,0,0.24)]"
       >
-        <div className="flex items-center gap-2.5 border-b border-hairline px-3.5 py-2.5">
+        <div className="flex items-center gap-2.5 border-b border-editor-hairline px-3.5 py-2.5">
           <IconSearch size={15} className="shrink-0 text-ink-3" />
           <input
             ref={inputRef}

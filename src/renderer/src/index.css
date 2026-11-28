@@ -38,6 +38,10 @@
   --canvas: #f5f5f7;
   --surface: #ffffff;
   --surface-2: #fafafb;
+  --editor-chrome: #f7f7f8;
+  --editor-canvas: #ffffff;
+  --editor-elevated: #ffffff;
+  --editor-hairline: rgba(0, 0, 0, 0.08);
   --fill: #f5f5f7;
   --fill-hover: #ebebf0;
   --hairline: rgba(0, 0, 0, 0.06);
@@ -78,6 +82,10 @@
   --canvas: #1c1c1e;
   --surface: #252528;
   --surface-2: #2c2c2e;
+  --editor-chrome: #18181b;
+  --editor-canvas: #1e1e22;
+  --editor-elevated: #26262b;
+  --editor-hairline: rgba(255, 255, 255, 0.08);
   --fill: #2c2c2e;
   --fill-hover: #3a3a3c;
   --hairline: rgba(255, 255, 255, 0.08);
@@ -117,6 +125,10 @@
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-editor-chrome: var(--editor-chrome);
+  --color-editor-canvas: var(--editor-canvas);
+  --color-editor-elevated: var(--editor-elevated);
+  --color-editor-hairline: var(--editor-hairline);
   --color-fill: var(--fill);
   --color-fill-hover: var(--fill-hover);
   --color-hairline: var(--hairline);

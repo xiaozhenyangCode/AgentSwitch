@@ -1405,10 +1405,15 @@ export const zhCN = {
   'hist.delFailed': '删除失败',
 
   // ---- code editor
-  'editor.empty': '从文件树选一个文件，或按 ⌘P 快速打开。',
+  'editor.empty': '选择一个文件开始查看或编辑',
+  'editor.emptyQuickOpen': '快速打开工作区文件',
+  'editor.emptyPickFromTree': '切换文件树，也可点击树中的文件打开',
+  'editor.emptyShowTree': '显示文件树后选择文件',
+  'editor.emptySave': '保存当前修改',
+  'editor.showTree': '显示文件树',
   'editor.panelShort': '文件',
   'editor.togglePanel': '切换工作区文件面板',
-  'editor.treeAll': '全部文件',
+  'editor.treeAll': '全部',
   'editor.treeModified': '已修改',
   'editor.treeModifiedEmpty': '没有修改过的文件',
   'editor.treeNoMatches': '没有匹配的文件',

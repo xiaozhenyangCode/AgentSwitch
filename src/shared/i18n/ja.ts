@@ -1381,10 +1381,15 @@ export const ja: Dict = {
   'hist.delFailed': '削除できませんでした',
 
   // ---- code editor
-  'editor.empty': 'ファイルツリーで選択するか、⌘P でファイルを開いてください。',
+  'editor.empty': '表示または編集するファイルを選択',
+  'editor.emptyQuickOpen': 'ワークスペースのファイルをすばやく開く',
+  'editor.emptyPickFromTree': 'ファイルツリーを切り替え、クリックして開く',
+  'editor.emptyShowTree': 'ファイルツリーを表示して選択',
+  'editor.emptySave': '現在のファイルの変更を保存',
+  'editor.showTree': 'ファイルツリーを表示',
   'editor.panelShort': 'ファイル',
   'editor.togglePanel': 'ワークスペースのファイルパネルを切り替え',
-  'editor.treeAll': 'すべてのファイル',
+  'editor.treeAll': 'すべて',
   'editor.treeModified': '変更済み',
   'editor.treeModifiedEmpty': '変更されたファイルはありません',
   'editor.treeNoMatches': '一致するファイルはありません',

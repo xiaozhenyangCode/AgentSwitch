@@ -298,7 +298,7 @@ export function CodeEditor({
           type="button"
           tabIndex={-1}
           aria-keyshortcuts="Meta+L Meta+Shift+L"
-          className="absolute z-10 flex max-w-full items-center gap-2 whitespace-nowrap rounded-md border border-hairline bg-surface px-2 py-1 text-xs text-ink shadow-sm hover:bg-surface-2"
+          className="absolute z-10 flex max-w-full items-center gap-2 whitespace-nowrap rounded-md border border-editor-hairline bg-editor-elevated px-2 py-1 text-xs text-ink shadow-sm hover:bg-fill"
           style={referencePosition ?? { visibility: 'hidden', pointerEvents: 'none' }}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => {

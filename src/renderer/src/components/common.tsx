@@ -104,6 +104,7 @@ export function Modal({
   closeOnCmdW = true,
   backdropClose = true,
   native = false,
+  surfaceClassName,
   label
 }: {
   children: ReactNode
@@ -113,6 +114,7 @@ export function Modal({
   closeOnCmdW?: boolean
   backdropClose?: boolean
   native?: boolean
+  surfaceClassName?: string
   label?: string
 }) {
   // Always occupy the topmost layer so Esc / ⌘W never leak to dialogs or the window underneath.
@@ -124,7 +126,7 @@ export function Modal({
     modal.showModal()
     return () => modal.close()
   }, [native])
-  const surface = 'max-h-[88vh] overflow-y-auto rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]'
+  const surface = 'max-h-[88vh] overflow-y-auto ' + (surfaceClassName ?? 'rounded-2xl bg-surface shadow-[0_0_0_1px_var(--ring),0_24px_64px_rgba(0,0,0,0.18),0_8px_24px_rgba(0,0,0,0.08)]')
   if (native) {
     return (
       <dialog ref={dialog} aria-label={label} className="no-drag fixed inset-0 m-auto max-w-[calc(100vw-32px)] overflow-visible rounded-2xl bg-transparent text-ink backdrop:bg-(--scrim)"

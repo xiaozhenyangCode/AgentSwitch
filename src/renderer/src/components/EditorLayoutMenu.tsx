@@ -55,24 +55,24 @@ export function EditorLayoutMenu({ dockPosition, treePosition, onDock, onTree }:
   )
 
   return (
-    <div ref={root} className="no-drag relative" onBlur={(event) => {
+    <div ref={root} className="no-drag" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
     }}>
       <button ref={trigger} type="button" aria-expanded={open}
         aria-label={t('editor.layoutMenu')} title={t('editor.layoutMenu')}
         onClick={() => setOpen((value) => !value)}
-        className={`no-drag grid h-7 w-7 shrink-0 place-items-center rounded-lg text-ink-3 hover:bg-fill hover:text-ink ${open ? 'bg-fill' : ''}`}>
+        className={`no-drag grid size-[22px] shrink-0 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink ${open ? 'bg-fill' : ''}`}>
         <IconLayout size={15} />
       </button>
       {open && (
-        <div className={`no-drag absolute right-0 z-30 w-48 overflow-y-auto rounded-lg bg-surface p-1
-          shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.2)] ${dockPosition === 'bottom'
+        <div className={`no-drag absolute right-1 z-30 w-[min(192px,calc(100%-8px))] overflow-y-auto rounded-lg border border-editor-hairline bg-editor-elevated p-1
+          shadow-[0_8px_24px_rgba(0,0,0,0.16)] ${dockPosition === 'bottom'
             ? 'bottom-full mb-1 max-h-[200px]' : 'top-full mt-1 max-h-[min(300px,calc(100vh-64px))]'}`}>
           <div role="group" aria-label={t('editor.layoutPanelGroup')}>
             <div className="px-2 py-1 text-[11px] text-ink-3">{t('editor.layoutPanelGroup')}</div>
             {docks.map(({ value, label, Icon }) => option(label, Icon, value === dockPosition, () => onDock(value)))}
           </div>
-          <div role="group" aria-label={t('editor.layoutTreeGroup')} className="mt-1 border-t border-hairline pt-1">
+          <div role="group" aria-label={t('editor.layoutTreeGroup')} className="mt-1 border-t border-editor-hairline pt-1">
             <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-ink-3">
               <IconFolderTree size={12} />{t('editor.layoutTreeGroup')}
             </div>

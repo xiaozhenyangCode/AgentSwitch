@@ -81,7 +81,7 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
     {
       '&': {
         height: '100%',
-        backgroundColor: 'var(--surface)',
+        backgroundColor: 'var(--editor-canvas)',
         color: 'var(--ink)',
         fontSize: '13px',
         fontFamily: 'var(--font-mono)'
@@ -105,9 +105,9 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
         borderLeftWidth: '1.8px'
       },
       '.cm-gutters': {
-        backgroundColor: 'var(--surface)',
+        backgroundColor: 'var(--editor-canvas)',
         color: 'var(--ink-3)',
-        borderRight: '1px solid var(--hairline)',
+        borderRight: '1px solid var(--editor-hairline)',
         paddingRight: '6px',
         userSelect: 'none'
       },
@@ -115,7 +115,8 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
         minWidth: '38px',
         paddingLeft: '10px',
         paddingRight: '8px',
-        fontSize: '11.5px'
+        fontSize: '11.5px',
+        fontVariantNumeric: 'tabular-nums'
       },
       '.cm-activeLine': {
         backgroundColor: dark ? 'rgba(255, 255, 255, 0.045)' : 'rgba(0, 0, 0, 0.03)'
@@ -144,16 +145,16 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
         backgroundColor: dark ? 'rgba(10, 132, 255, 0.48)' : 'rgba(0, 122, 255, 0.35)'
       },
       '.cm-panels': {
-        backgroundColor: 'var(--surface-2)',
+        backgroundColor: 'var(--editor-chrome)',
         color: 'var(--ink)',
-        borderColor: 'var(--hairline)',
+        borderColor: 'var(--editor-hairline)',
         fontFamily: 'var(--font-sans)'
       },
       '.cm-panels.cm-panels-top': {
-        borderBottom: '1px solid var(--hairline)'
+        borderBottom: '1px solid var(--editor-hairline)'
       },
       '.cm-panels.cm-panels-bottom': {
-        borderTop: '1px solid var(--hairline)'
+        borderTop: '1px solid var(--editor-hairline)'
       },
       '.cm-search': {
         padding: '6px 10px',
@@ -164,9 +165,9 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
         gap: '6px'
       },
       '.cm-search input.cm-textfield': {
-        backgroundColor: 'var(--surface)',
+        backgroundColor: 'var(--editor-canvas)',
         color: 'var(--ink)',
-        border: '1px solid var(--hairline)',
+        border: '1px solid var(--editor-hairline)',
         borderRadius: '6px',
         padding: '3px 8px',
         fontSize: '12px',
@@ -179,7 +180,7 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
         backgroundImage: 'none',
         backgroundColor: 'var(--fill)',
         color: 'var(--ink)',
-        border: '1px solid var(--hairline)',
+        border: '1px solid var(--editor-hairline)',
         borderRadius: '6px',
         padding: '3px 8px',
         fontSize: '11.5px',
@@ -239,8 +240,8 @@ export function buildEditorThemeExtension(dark: boolean): Extension {
       '.cm-collapsedLines': {
         background: dark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.035)',
         color: 'var(--ink-3)',
-        borderTop: '1px solid var(--hairline)',
-        borderBottom: '1px solid var(--hairline)',
+        borderTop: '1px solid var(--editor-hairline)',
+        borderBottom: '1px solid var(--editor-hairline)',
         padding: '2px 12px',
         fontFamily: 'var(--font-sans)',
         fontSize: '11.5px',

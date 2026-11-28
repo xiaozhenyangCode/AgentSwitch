@@ -1403,10 +1403,15 @@ export const zhTW: Dict = {
   'hist.delFailed': '刪除失敗',
 
   // ---- code editor
-  'editor.empty': '從檔案樹選擇檔案，或按 ⌘P 快速開啟。',
+  'editor.empty': '選擇一個檔案開始檢視或編輯',
+  'editor.emptyQuickOpen': '快速開啟工作區檔案',
+  'editor.emptyPickFromTree': '切換檔案樹，也可點選樹中的檔案開啟',
+  'editor.emptyShowTree': '顯示檔案樹後選擇檔案',
+  'editor.emptySave': '儲存目前的修改',
+  'editor.showTree': '顯示檔案樹',
   'editor.panelShort': '檔案',
   'editor.togglePanel': '切換工作區檔案面板',
-  'editor.treeAll': '全部檔案',
+  'editor.treeAll': '全部',
   'editor.treeModified': '已修改',
   'editor.treeModifiedEmpty': '沒有修改過的檔案',
   'editor.treeNoMatches': '沒有符合的檔案',

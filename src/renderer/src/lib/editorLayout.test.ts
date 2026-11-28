@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_LAYOUT_STORAGE_KEY, loadEditorLayoutPrefs,
-  resolveTrafficLightOwner, saveEditorLayoutPrefs, setEditorDockPosition, toggleEditorMaximized,
-  type EditorDockPosition, type TrafficLightOwner
+  resolveEditorSafeAreaTarget, resolveTrafficLightOwner, saveEditorLayoutPrefs, setEditorDockPosition, toggleEditorMaximized,
+  type EditorDockPosition, type EditorFileTreePosition, type TrafficLightOwner
 } from './editorLayout'
 
 const cases: Array<[boolean, boolean, EditorDockPosition, TrafficLightOwner]> = [
@@ -25,6 +25,21 @@ describe('resolveTrafficLightOwner', () => {
     expect(resolveTrafficLightOwner({ ...placement, platform: 'darwin', isFullScreen: true })).toBe('none')
     expect(resolveTrafficLightOwner({ ...placement, platform: 'win32', isFullScreen: false })).toBe('none')
     expect(resolveTrafficLightOwner({ ...placement, platform: 'linux', isFullScreen: false })).toBe('none')
+  })
+})
+
+describe('resolveEditorSafeAreaTarget', () => {
+  it.each(cases)('routes the safe area within the editor for sidebar=%s, editor=%s, dock=%s', (sidebarOpen, editorOpen, dockPosition, owner) => {
+    for (const treeOpen of [false, true]) {
+      for (const fileTreePosition of ['left', 'right'] as const satisfies readonly EditorFileTreePosition[]) {
+        const placement = { treeOpen, fileTreePosition }
+        const needsTrafficLightSafeArea = owner === 'editor'
+        expect(resolveEditorSafeAreaTarget({ ...placement, needsTrafficLightSafeArea })).toBe(
+          owner !== 'editor' ? 'none' : treeOpen && fileTreePosition === 'left' ? 'tree' : 'editor'
+        )
+        expect(resolveEditorSafeAreaTarget({ ...placement, needsTrafficLightSafeArea: false })).toBe('none')
+      }
+    }
   })
 })
 

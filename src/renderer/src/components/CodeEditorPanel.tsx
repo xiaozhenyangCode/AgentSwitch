@@ -3,7 +3,7 @@ import { openSearchPanel } from '@codemirror/search'
 import { EditorView } from '@codemirror/view'
 import type { FileChange } from '@shared/types'
 import { detectIndentInfo } from '../lib/codeEditorTheme'
-import { TRAFFIC_LIGHT_SAFE_LEFT_PX, type EditorDockPosition, type EditorFileTreePosition } from '../lib/editorLayout'
+import { resolveEditorSafeAreaTarget, TRAFFIC_LIGHT_SAFE_LEFT_PX, type EditorDockPosition, type EditorFileTreePosition } from '../lib/editorLayout'
 import { escLayers, useFocusCloseHandler } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { btnPrimary, btnSecondary } from '../lib/ui'
@@ -85,7 +85,7 @@ function breadcrumbSegments(filePath: string, projectDir: string | null): string
 }
 
 const iconBtn =
-  'no-drag grid h-7 w-7 shrink-0 place-items-center rounded-lg text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08] disabled:opacity-40'
+  'no-drag grid size-[22px] shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08] disabled:opacity-40'
 
 export interface CodeEditorPanelProps {
   tabs: EditorTab[]
@@ -112,6 +112,7 @@ export interface CodeEditorPanelProps {
   focusToken: number
   pendingClose: PendingClosePrompt | null
   changedFiles: readonly FileChange[]
+  onRefreshChangedFiles: () => void
   onToggleMaximize: () => void
   onSelectTab: (tabId: string) => void
   onSelectAdjacentTab: (delta: -1 | 1) => void
@@ -160,6 +161,7 @@ export function CodeEditorPanel({
   focusToken,
   pendingClose,
   changedFiles,
+  onRefreshChangedFiles,
   onToggleMaximize,
   onSelectTab,
   onSelectAdjacentTab,
@@ -180,7 +182,11 @@ export function CodeEditorPanel({
   const panelRef = useRef<HTMLElement>(null)
   const maximized = dockPosition === 'maximized'
   const dockedBottom = dockPosition === 'bottom'
-  const treeOpen = fileTreeVisible && !!projectDir
+  const treeOpen = fileTreeVisible && !!projectDir && fileTreeWidth > 0
+  const safeAreaTarget = resolveEditorSafeAreaTarget({ needsTrafficLightSafeArea, treeOpen, fileTreePosition })
+  const sidebarToggleInTree = showSidebarToggle && treeOpen && fileTreePosition === 'left'
+  const editorOwnsSafeArea = safeAreaTarget === 'editor'
+  const toolbarHeight = needsTrafficLightSafeArea ? 'h-[44px]' : 'h-[38px]'
   const [cursor, setCursor] = useState<EditorCursorStatus>({ line: 1, col: 1, selectedLines: 0, selectedChars: 0 })
 
   // Reset cursor readout when switching tabs.
@@ -201,12 +207,12 @@ export function CodeEditorPanel({
     return true
   })
 
-  // Keep an in-panel focus target if closing a tab removes the focused element.
+  // Keep focus in the panel when changing views removes the focused control.
   useEffect(() => {
     if (document.activeElement === document.body) {
       panelRef.current?.focus({ preventScroll: true })
     }
-  }, [activeTab?.id, activeTab?.status, activeTab?.viewMode])
+  }, [activeTab?.id, activeTab?.status, activeTab?.viewMode, activeTab?.diffMode])
 
   useEffect(() => {
     const panel = panelRef.current
@@ -335,7 +341,7 @@ export function CodeEditorPanel({
       data-editor-panel
       tabIndex={-1}
       onKeyDown={onPanelKeyDown}
-      className={`relative flex min-h-0 min-w-0 flex-col border-hairline bg-surface outline-none ${{
+      className={`relative flex min-h-0 min-w-0 flex-col border-editor-hairline bg-editor-canvas outline-none ${{
         left: 'shrink-0 border-r',
         right: 'shrink-0 border-l',
         bottom: 'order-1 shrink-0 border-t',
@@ -352,242 +358,8 @@ export function CodeEditorPanel({
         />
       )}
 
-      <div className={`flex shrink-0 items-center gap-1 border-b border-hairline bg-surface-2/80 px-2 ${dockedBottom ? 'h-10' : 'drag h-[52px]'}`}
-        style={needsTrafficLightSafeArea ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
-        {showSidebarToggle && (
-          <button type="button" onClick={onShowSidebar} className={iconBtn}
-            title={t('nav.showSidebar')} aria-label={t('nav.showSidebar')}>
-            <IconSidebar size={16} strokeWidth={1.7} />
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onToggleFileTree}
-          disabled={!projectDir}
-          className={`${iconBtn} ${treeOpen ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
-          title={`${t('editor.toggleTree')} (⌘B)`}
-          aria-label={t('editor.toggleTree')}
-          aria-pressed={treeOpen}
-        >
-          <IconFolderTree size={15} />
-        </button>
-
-        <div className="flex min-w-0 flex-1">
-          {tabs.length > 0 && (
-            <div className="no-drag flex min-w-0 max-w-full items-center gap-0.5 overflow-x-auto overflow-y-hidden py-1">
-              {tabs.map((tab) => {
-                const selected = activeTab?.id === tab.id
-                const tabDirty = isTabDirty(tab)
-                const meta = resolveFileTypeMeta(tab.name)
-                return (
-                  <div
-                    key={tab.id}
-                    title={tab.path}
-                    onMouseDown={(e) => {
-                      if (e.button === 1) {
-                        e.preventDefault()
-                        onCloseTab(tab.id)
-                      }
-                    }}
-                    className={`group flex h-8 max-w-[180px] shrink-0 items-center gap-1.5 rounded-lg pr-1 pl-2 text-[12px] transition-colors ${
-                      selected
-                        ? 'bg-surface font-medium text-ink shadow-[0_0_0_1px_var(--ring)]'
-                        : 'text-ink-2 hover:bg-black/[0.04] hover:text-ink dark:hover:bg-white/[0.06]'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectTab(tab.id)}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                    >
-                      <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
-                      <span className="truncate">{tab.name}</span>
-                    </button>
-                    {tabDirty && (
-                      <span
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent group-hover:hidden"
-                        title={t('editor.unsaved')}
-                      />
-                    )}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onCloseTab(tab.id)
-                      }}
-                      title={t('common.close')}
-                      aria-label={t('common.close')}
-                      className={`grid h-5 w-5 shrink-0 place-items-center rounded text-ink-3 transition-opacity hover:bg-black/[0.08] hover:text-ink dark:hover:bg-white/[0.12] ${
-                        tabDirty
-                          ? 'hidden group-hover:grid'
-                          : selected
-                            ? 'opacity-70 hover:opacity-100'
-                            : 'opacity-0 group-hover:opacity-80 hover:!opacity-100'
-                      }`}
-                    >
-                      <IconX size={11} />
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="no-drag flex shrink-0 items-center gap-0.5 border-l border-hairline pl-1.5">
-          <EditorLayoutMenu dockPosition={dockPosition}
-            treePosition={fileTreeVisible ? fileTreePosition : 'hidden'}
-            onDock={onChangeDockPosition} onTree={onChangeFileTreePosition} />
-          <button
-            type="button"
-            onClick={onToggleMaximize}
-            className={iconBtn}
-            title={t(maximized ? 'editor.restore' : 'editor.maximize')}
-            aria-label={t(maximized ? 'editor.restore' : 'editor.maximize')}
-          >
-            {maximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
-          </button>
-          <button type="button" onClick={onClosePanel} className={iconBtn} title={t('common.close')} aria-label={t('common.close')}>
-            <IconX size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Relative Path Breadcrumbs */}
-      {activeTab && (
-        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-hairline bg-surface px-3 text-[11.5px] text-ink-3">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden font-mono" title={activeTab.realPath ?? activeTab.path}>
-            {crumbs.map((seg, i) => (
-              <Fragment key={`${i}:${seg}`}>
-                {i > 0 && <IconChevronRight size={10} className="shrink-0 opacity-55" />}
-                <span className={`truncate ${i === crumbs.length - 1 ? 'font-medium text-ink-2' : ''}`}>{seg}</span>
-              </Fragment>
-            ))}
-          </div>
-          {activeTab?.status === 'ready' && (
-            <button
-              type="button"
-              onClick={() => onSaveTab(activeTab.id)}
-              disabled={activeTab.saving || (!dirty && !activeTab.conflictMtimeMs)}
-              title={`${t('common.save')} (⌘S)`}
-              aria-label={t('common.save')}
-              className={`${iconBtn} ${
-                dirty || activeTab.conflictMtimeMs
-                  ? 'bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
-                  : 'text-ink-3 disabled:opacity-45'
-              }`}
-            >
-              {activeTab.saving ? <Spinner size={12} /> : <IconCheck size={12} />}
-            </button>
-          )}
-          {activeTab?.status === 'ready' && (dirty || activeTab.diffMode === 'unsaved') && (
-            <button
-              type="button"
-              onClick={() => onToggleUnsavedDiff(activeTab.id)}
-              className={`${iconBtn} ${activeTab.diffMode === 'unsaved' ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
-              title={t('editor.compareSaved')}
-              aria-label={t('editor.compareSaved')}
-              aria-pressed={activeTab.diffMode === 'unsaved'}
-            >
-              <IconDiff size={14} />
-            </button>
-          )}
-          {canExternalAction && !showingImage && (
-            <>
-              <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
-                <IconFolder size={14} />
-              </button>
-              <button type="button" onClick={openExternal} className={iconBtn} title={t('editor.openExternal')} aria-label={t('editor.openExternal')}>
-                <IconExternal size={14} />
-              </button>
-            </>
-          )}
-          {canSwitchView && (
-            <div className="flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
-              {(['source', 'preview'] as const).map((mode) => (
-                <button key={mode} type="button" aria-pressed={activeTab.viewMode === mode}
-                  onClick={() => onSetTabViewMode(activeTab.id, mode)}
-                  className={`rounded px-2 text-[11px] ${activeTab.viewMode === mode ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink'}`}>
-                  {t(mode === 'source' ? 'editor.modeSource' : 'editor.modePreview')}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Save Conflict Banner */}
-      {activeTab?.conflictMtimeMs !== null && activeTab?.status === 'ready' && activeTab.diffMode !== 'conflict' && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-danger/25 bg-danger-soft px-3 py-2 text-[12px] text-danger">
-          <IconAlert size={14} className="shrink-0" />
-          <span className="min-w-0 flex-1 font-medium">{t('editor.conflictBanner')}</span>
-          <button
-            type="button"
-            disabled={activeTab.loadingDiff}
-            onClick={() => onOpenConflictDiff(activeTab.id)}
-            className="inline-flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2 disabled:opacity-50"
-          >
-            {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
-            {t('editor.viewDiff')}
-          </button>
-          <button
-            type="button"
-            onClick={() => onReloadTab(activeTab.id)}
-            className="rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2"
-          >
-            {t('editor.loadDisk')}
-          </button>
-          <button
-            type="button"
-            onClick={() => onSaveTab(activeTab.id, { force: true })}
-            className="rounded-md bg-danger px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
-          >
-            {t('editor.forceOverwrite')}
-          </button>
-        </div>
-      )}
-
-      {/* External Modification / Deletion Banner */}
-      {activeTab && activeTab.conflictMtimeMs === null && activeTab.externalChange && activeTab.status === 'ready' && activeTab.diffMode !== 'conflict' && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warn/30 bg-warn-soft px-3 py-2 text-[12px] text-warn">
-          <IconAlert size={14} className="shrink-0" />
-          <span className="min-w-0 flex-1 font-medium">
-            {t(activeTab.externalChange === 'deleted' ? 'editor.externalDeleted' : 'editor.externalModified')}
-          </span>
-          {activeTab.externalChange === 'modified' && (
-            <>
-              <button
-                type="button"
-                disabled={activeTab.loadingDiff}
-                onClick={() => onOpenConflictDiff(activeTab.id)}
-                className="inline-flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2 disabled:opacity-50"
-              >
-                {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
-                {t('editor.viewDiff')}
-              </button>
-              <button
-                type="button"
-                onClick={() => onReloadTab(activeTab.id)}
-                className="flex items-center gap-1 rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2"
-              >
-                <IconRefresh size={11} />
-                {t('editor.reload')}
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => onDismissExternalChange(activeTab.id)}
-            className="rounded-md px-2 py-1 text-[11.5px] font-medium text-warn hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
-          >
-            {t('editor.keepMine')}
-          </button>
-        </div>
-      )}
-
-      {/* Main Workspace Split: Optional File Tree + Code/Diff Editor */}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {treeOpen && fileTreeWidth > 0 && (
+      <div className="flex min-h-0 flex-1">
+        {treeOpen && (
           <EditorFileTree
             projectDir={projectDir}
             activeFilePath={activeTab?.path ?? null}
@@ -599,117 +371,372 @@ export function CodeEditorPanel({
             onResizeWidth={onResizeTreeWidth}
             onResetWidth={onResetTreeWidth}
             onOpenFile={onOpenFile}
+            toolbarHeight={toolbarHeight}
+            draggableToolbar={!dockedBottom}
+            needsTrafficLightSafeArea={safeAreaTarget === 'tree'}
+            onShowSidebar={sidebarToggleInTree ? onShowSidebar : undefined}
+            onHideTree={() => {
+              panelRef.current?.focus({ preventScroll: true })
+              onToggleFileTree()
+            }}
+            onRefreshChangedFiles={onRefreshChangedFiles}
           />
         )}
+        <div className="@container flex min-h-0 min-w-0 flex-1 flex-col bg-editor-canvas">
+          <div data-editor-toolbar className={`relative grid shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center bg-editor-chrome shadow-[inset_0_-1px_var(--editor-hairline)] ${toolbarHeight} ${dockedBottom ? '' : 'drag'} ${editorOwnsSafeArea && tabs.length > 0 ? '@max-[260px]:h-auto @max-[260px]:grid-rows-[44px_36px]' : ''}`}>
+            <div className="col-start-1 row-start-1 flex items-center gap-0.5"
+              style={editorOwnsSafeArea ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX } : undefined}>
+              {showSidebarToggle && !sidebarToggleInTree && (
+                <button type="button" onClick={onShowSidebar} className={iconBtn}
+                  title={t('nav.showSidebar')} aria-label={t('nav.showSidebar')}>
+                  <IconSidebar size={15} strokeWidth={1.7} />
+                </button>
+              )}
+              {!treeOpen && projectDir && (
+                <button type="button" onClick={onToggleFileTree} className={`${iconBtn} ml-1`}
+                  title={`${t('editor.showTree')} (⌘B)`} aria-label={t('editor.showTree')}>
+                  <IconFolderTree size={15} />
+                </button>
+              )}
+            </div>
 
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          {!activeTab ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-ink-3">
-              <IconFile size={24} className="opacity-50" />
-              <span>{t(projectDir ? 'editor.empty' : 'editor.treeNoWorkspace')}</span>
+            {tabs.length > 0 && (
+              <div className={`col-start-2 row-start-1 flex h-full min-w-0 ${editorOwnsSafeArea ? '@max-[260px]:col-span-3 @max-[260px]:col-start-1 @max-[260px]:row-start-2 @max-[260px]:border-t @max-[260px]:border-editor-hairline' : ''}`}>
+                <div className="no-drag flex h-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden">
+                  {tabs.map((tab) => {
+                    const selected = activeTab?.id === tab.id
+                    const tabDirty = isTabDirty(tab)
+                    const meta = resolveFileTypeMeta(tab.name)
+                    return (
+                      <div
+                        key={tab.id}
+                        title={tab.path}
+                        onMouseDown={(e) => {
+                          if (e.button === 1) {
+                            e.preventDefault()
+                            onCloseTab(tab.id)
+                          }
+                        }}
+                        className={`group flex h-full max-w-[180px] shrink-0 items-center gap-1.5 border-r border-editor-hairline pr-1 pl-2 text-[12px] ${
+                          selected
+                            ? 'bg-editor-canvas font-medium text-ink'
+                            : 'text-ink-2 transition-colors hover:bg-black/[0.04] hover:text-ink dark:hover:bg-white/[0.06]'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSelectTab(tab.id)}
+                          aria-current={selected || undefined}
+                          className="no-drag flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+                        >
+                          <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
+                          <span className="truncate">{tab.name}</span>
+                          {tabDirty && <span className="sr-only">{t('editor.unsaved')}</span>}
+                        </button>
+                        <div className="group/close relative grid size-[20px] shrink-0 place-items-center">
+                          {tabDirty && (
+                            <span
+                              className="pointer-events-none absolute size-[5px] rounded-full bg-muted-dot group-hover:opacity-0 group-focus-within/close:opacity-0"
+                              title={t('editor.unsaved')}
+                            />
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onCloseTab(tab.id)
+                            }}
+                            title={t('common.close')}
+                            aria-label={t('common.close')}
+                            className={`no-drag grid size-[20px] place-items-center rounded text-ink-3 transition-opacity hover:bg-black/[0.08] hover:text-ink dark:hover:bg-white/[0.12] ${selected && !tabDirty ? 'opacity-60' : 'opacity-0'} group-hover:opacity-100 focus-visible:opacity-100`}
+                          >
+                            <IconX size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="no-drag col-start-3 row-start-1 flex items-center gap-0.5 px-1">
+              <EditorLayoutMenu dockPosition={dockPosition}
+                treePosition={fileTreeVisible ? fileTreePosition : 'hidden'}
+                onDock={onChangeDockPosition} onTree={onChangeFileTreePosition} />
+              <button type="button" onClick={onToggleMaximize} className={iconBtn}
+                title={t(maximized ? 'editor.restore' : 'editor.maximize')}
+                aria-label={t(maximized ? 'editor.restore' : 'editor.maximize')}>
+                {maximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
+              </button>
+              <button type="button" onClick={onClosePanel} className={iconBtn} title={t('common.close')} aria-label={t('common.close')}>
+                <IconX size={14} />
+              </button>
             </div>
-          ) : activeTab.status === 'loading' ? (
-            <div className="flex h-full items-center justify-center gap-2 text-[13px] text-ink-3">
-              <Spinner size={16} />
-              <span>{t('ext.loading')}</span>
+          </div>
+
+          {/* Relative Path Breadcrumbs */}
+          {activeTab && (
+            <div className="flex min-h-[28px] shrink-0 flex-wrap items-center gap-x-1 border-b border-editor-hairline bg-editor-canvas px-2 text-[11.5px] text-ink-3">
+              <div className="flex min-w-[32px] flex-1 items-center gap-0.5 overflow-hidden font-mono" title={activeTab.realPath ?? activeTab.path}>
+                {crumbs.map((seg, i) => (
+                  <Fragment key={`${i}:${seg}`}>
+                    {i > 0 && <IconChevronRight size={10} className="shrink-0 opacity-55" />}
+                    <span className={`truncate ${i === crumbs.length - 1 ? 'font-medium text-ink-2' : ''}`}>{seg}</span>
+                  </Fragment>
+                ))}
+              </div>
+              {activeTab?.status === 'ready' && (
+                <button
+                  type="button"
+                  onClick={() => onSaveTab(activeTab.id)}
+                  disabled={activeTab.saving || (!dirty && !activeTab.conflictMtimeMs)}
+                  title={`${t('common.save')} (⌘S)`}
+                  aria-label={t('common.save')}
+                  className={`${iconBtn} ${
+                    dirty || activeTab.conflictMtimeMs
+                      ? 'bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
+                      : 'text-ink-3 disabled:opacity-45'
+                  }`}
+                >
+                  {activeTab.saving ? <Spinner size={12} /> : <IconCheck size={12} />}
+                </button>
+              )}
+              {activeTab?.status === 'ready' && (dirty || activeTab.diffMode === 'unsaved') && (
+                <button
+                  type="button"
+                  onClick={() => onToggleUnsavedDiff(activeTab.id)}
+                  className={`${iconBtn} ${activeTab.diffMode === 'unsaved' ? 'bg-black/[0.06] text-accent dark:bg-white/[0.08]' : ''}`}
+                  title={t('editor.compareSaved')}
+                  aria-label={t('editor.compareSaved')}
+                  aria-pressed={activeTab.diffMode === 'unsaved'}
+                >
+                  <IconDiff size={14} />
+                </button>
+              )}
+              {canExternalAction && !showingImage && (
+                <>
+                  <button type="button" onClick={revealInFinder} className={iconBtn} title={t('common.showInFinder')} aria-label={t('common.showInFinder')}>
+                    <IconFolder size={14} />
+                  </button>
+                  <button type="button" onClick={openExternal} className={iconBtn} title={t('editor.openExternal')} aria-label={t('editor.openExternal')}>
+                    <IconExternal size={14} />
+                  </button>
+                </>
+              )}
+              {canSwitchView && (
+                <div className="flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
+                  {(['source', 'preview'] as const).map((mode) => (
+                    <button key={mode} type="button" aria-pressed={activeTab.viewMode === mode}
+                      onClick={() => onSetTabViewMode(activeTab.id, mode)}
+                      className={`rounded px-2 text-[11px] ${activeTab.viewMode === mode ? 'bg-editor-canvas font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink'}`}>
+                      {t(mode === 'source' ? 'editor.modeSource' : 'editor.modePreview')}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : activeTab.status === 'error' ? (
-            <EditorBlockedState
-              tab={activeTab}
-              canExternalAction={canExternalAction}
-              onReveal={revealInFinder}
-              onOpenExternal={openExternal}
-            />
-          ) : showingDiff ? (
-            <CodeDiffView
-              mode={activeTab.diffMode === 'conflict' ? 'conflict' : 'unsaved'}
-              original={activeTab.diffMode === 'conflict' ? (activeTab.diskContent ?? activeTab.savedContent) : activeTab.savedContent}
-              modified={activeTab.content}
-              language={activeTab.language}
-              saving={activeTab.saving}
-              onAcceptDisk={activeTab.diffMode === 'conflict' ? () => onReloadTab(activeTab.id) : undefined}
-              onKeepMineAndSave={activeTab.diffMode === 'conflict' ? () => onSaveTab(activeTab.id, { force: true }) : undefined}
-              onExit={() => onExitDiff(activeTab.id)}
-            />
-          ) : showingImage ? (
-            <EditorImagePreview
-              key={activeTab.id}
-              path={activeTab.path}
-              realPath={activeTab.realPath}
-              name={activeTab.name}
-              size={activeTab.size}
-              syncVersion={activeTab.syncVersion}
-              onReveal={revealInFinder}
-              onOpenExternal={openExternal}
-            />
-          ) : showingPreview ? (
-            <div data-editor-markdown-preview tabIndex={0} className="h-full overflow-auto p-4 text-[13px] outline-none select-text">
-              <MarkdownBase.Provider value={{ baseDir: markdownDir, home, projectDir, onOpenEditorFile: onOpenFile }}>
-                <Markdown text={activeTab.content} />
-              </MarkdownBase.Provider>
+          )}
+
+          {/* Save Conflict Banner */}
+          {activeTab?.conflictMtimeMs !== null && activeTab?.status === 'ready' && activeTab.diffMode !== 'conflict' && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-editor-hairline bg-danger-soft px-3 py-2 text-[12px] text-danger">
+              <IconAlert size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1 font-medium">{t('editor.conflictBanner')}</span>
+              <button
+                type="button"
+                disabled={activeTab.loadingDiff}
+                onClick={() => onOpenConflictDiff(activeTab.id)}
+                className="inline-flex items-center gap-1 rounded-md bg-editor-canvas px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--editor-hairline)] hover:bg-editor-chrome disabled:opacity-50"
+              >
+                {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
+                {t('editor.viewDiff')}
+              </button>
+              <button
+                type="button"
+                onClick={() => onReloadTab(activeTab.id)}
+                className="rounded-md bg-editor-canvas px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--editor-hairline)] hover:bg-editor-chrome"
+              >
+                {t('editor.loadDisk')}
+              </button>
+              <button
+                type="button"
+                onClick={() => onSaveTab(activeTab.id, { force: true })}
+                className="rounded-md bg-danger px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+              >
+                {t('editor.forceOverwrite')}
+              </button>
             </div>
-          ) : (
-            <CodeEditor
-              fileKey={activeTab.id}
-              value={activeTab.content}
-              language={activeTab.language}
-              syncVersion={activeTab.syncVersion}
-              focusToken={focusToken}
-              onChange={(next) => onChangeContent(activeTab.id, next)}
-              onSave={() => onSaveTab(activeTab.id)}
-              onCursorChange={setCursor}
-              addToChatLabel={t('editor.addToChat')}
-              onReferenceToChat={onReferenceToChat && ((lineRange) => onReferenceToChat({
-                path: activeTab.path,
-                realPath: activeTab.realPath,
-                workspaceDir: activeTab.workspaceDir,
-                lineRange
-              }))}
-            />
+          )}
+
+          {/* External Modification / Deletion Banner */}
+          {activeTab && activeTab.conflictMtimeMs === null && activeTab.externalChange && activeTab.status === 'ready' && activeTab.diffMode !== 'conflict' && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-editor-hairline bg-warn-soft px-3 py-2 text-[12px] text-warn">
+              <IconAlert size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1 font-medium">
+                {t(activeTab.externalChange === 'deleted' ? 'editor.externalDeleted' : 'editor.externalModified')}
+              </span>
+              {activeTab.externalChange === 'modified' && (
+                <>
+                  <button
+                    type="button"
+                    disabled={activeTab.loadingDiff}
+                    onClick={() => onOpenConflictDiff(activeTab.id)}
+                    className="inline-flex items-center gap-1 rounded-md bg-editor-canvas px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--editor-hairline)] hover:bg-editor-chrome disabled:opacity-50"
+                  >
+                    {activeTab.loadingDiff ? <Spinner size={11} /> : <IconDiff size={12} />}
+                    {t('editor.viewDiff')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReloadTab(activeTab.id)}
+                    className="flex items-center gap-1 rounded-md bg-editor-canvas px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--editor-hairline)] hover:bg-editor-chrome"
+                  >
+                    <IconRefresh size={11} />
+                    {t('editor.reload')}
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => onDismissExternalChange(activeTab.id)}
+                className="rounded-md px-2 py-1 text-[11.5px] font-medium text-warn hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+              >
+                {t('editor.keepMine')}
+              </button>
+            </div>
+          )}
+
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-editor-canvas">
+            {!activeTab ? (
+              <div className="flex h-full flex-col overflow-auto px-3 py-3">
+                <div className="m-auto flex max-w-full flex-col items-center gap-2 text-center">
+                  <div className="grid size-[34px] place-items-center rounded-md bg-editor-chrome text-ink-2">
+                    <IconFile size={17} aria-hidden />
+                  </div>
+                  <p className="text-[13px] font-medium text-ink">{t(projectDir ? 'editor.empty' : 'editor.treeNoWorkspace')}</p>
+                  {projectDir && (
+                    <ul className="grid max-w-full gap-1.5 text-left text-[11.5px] text-ink-2">
+                      {([
+                        ['P', 'editor.emptyQuickOpen'],
+                        ['B', treeOpen ? 'editor.emptyPickFromTree' : 'editor.emptyShowTree'],
+                        ['S', 'editor.emptySave']
+                      ] as const).map(([key, label]) => (
+                        <li key={key} className="flex items-start gap-2 leading-5">
+                          <kbd className="min-w-[29px] shrink-0 rounded border border-editor-hairline bg-editor-chrome px-1 text-center font-mono text-[11px]">
+                            {window.agentswitch.sys.platform === 'darwin' ? '⌘' : 'Ctrl+'}{key}
+                          </kbd>
+                          <span>{t(label)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            ) : activeTab.status === 'loading' ? (
+              <div className="flex h-full items-center justify-center gap-2 text-[13px] text-ink-3">
+                <Spinner size={16} />
+                <span>{t('ext.loading')}</span>
+              </div>
+            ) : activeTab.status === 'error' ? (
+              <EditorBlockedState
+                tab={activeTab}
+                canExternalAction={canExternalAction}
+                onReveal={revealInFinder}
+                onOpenExternal={openExternal}
+              />
+            ) : showingDiff ? (
+              <CodeDiffView
+                mode={activeTab.diffMode === 'conflict' ? 'conflict' : 'unsaved'}
+                original={activeTab.diffMode === 'conflict' ? (activeTab.diskContent ?? activeTab.savedContent) : activeTab.savedContent}
+                modified={activeTab.content}
+                language={activeTab.language}
+                saving={activeTab.saving}
+                onAcceptDisk={activeTab.diffMode === 'conflict' ? () => onReloadTab(activeTab.id) : undefined}
+                onKeepMineAndSave={activeTab.diffMode === 'conflict' ? () => onSaveTab(activeTab.id, { force: true }) : undefined}
+                onExit={() => onExitDiff(activeTab.id)}
+              />
+            ) : showingImage ? (
+              <EditorImagePreview
+                key={activeTab.id}
+                path={activeTab.path}
+                realPath={activeTab.realPath}
+                name={activeTab.name}
+                size={activeTab.size}
+                syncVersion={activeTab.syncVersion}
+                onReveal={revealInFinder}
+                onOpenExternal={openExternal}
+              />
+            ) : showingPreview ? (
+              <div data-editor-markdown-preview tabIndex={0} className="h-full overflow-auto p-4 text-[13px] outline-none select-text">
+                <MarkdownBase.Provider value={{ baseDir: markdownDir, home, projectDir, onOpenEditorFile: onOpenFile }}>
+                  <Markdown text={activeTab.content} />
+                </MarkdownBase.Provider>
+              </div>
+            ) : (
+              <CodeEditor
+                fileKey={activeTab.id}
+                value={activeTab.content}
+                language={activeTab.language}
+                syncVersion={activeTab.syncVersion}
+                focusToken={focusToken}
+                onChange={(next) => onChangeContent(activeTab.id, next)}
+                onSave={() => onSaveTab(activeTab.id)}
+                onCursorChange={setCursor}
+                addToChatLabel={t('editor.addToChat')}
+                onReferenceToChat={onReferenceToChat && ((lineRange) => onReferenceToChat({
+                  path: activeTab.path,
+                  realPath: activeTab.realPath,
+                  workspaceDir: activeTab.workspaceDir,
+                  lineRange
+                }))}
+              />
+            )}
+          </div>
+
+          {/* Compact Single-Row Bottom Status Bar (25px) */}
+          {activeTab?.status === 'ready' && !showingImage && (
+            <div className="flex h-[25px] shrink-0 items-center justify-between overflow-hidden tabular-nums gap-3 border-t border-editor-hairline bg-editor-chrome px-3 text-[11px] text-ink-3 select-none">
+              <div className="flex min-w-0 items-center gap-2">
+                {!showingDiff && !showingPreview && (
+                  <>
+                    <span className="truncate">{t('editor.statusCursor', { line: cursor.line, col: cursor.col })}</span>
+                    {cursor.selectedChars > 0 && (
+                      <span className="truncate text-ink-2">
+                        · {t('editor.statusSelection', { lines: cursor.selectedLines, chars: cursor.selectedChars })}
+                      </span>
+                    )}
+                  </>
+                )}
+                {showingDiff && (
+                  <span className="truncate font-medium text-accent">{t('editor.statusDiff')}</span>
+                )}
+              </div>
+              <div className="flex min-w-0 items-center justify-end gap-2.5 whitespace-nowrap">
+                {activeTab.conflictMtimeMs !== null && (
+                  <span className="rounded bg-danger-soft px-1.5 py-px font-medium text-danger">{t('editor.statusConflict')}</span>
+                )}
+                {activeTab.conflictMtimeMs === null && activeTab.externalChange && (
+                  <span className="rounded bg-warn-soft px-1.5 py-px font-medium text-warn">{t('editor.statusModified')}</span>
+                )}
+                {(showingDiff || showingPreview) && (
+                  <span className="rounded bg-fill px-1.5 py-px text-ink-2">{t('editor.statusReadOnly')}</span>
+                )}
+                <span className="truncate">{LANGUAGE_LABELS[activeTab.language] ?? activeTab.language}</span>
+                {indentInfo && (
+                  <span className="hidden @min-[250px]:inline">{indentInfo.kind === 'tabs' ? `Tabs: ${indentInfo.size}` : `Spaces: ${indentInfo.size}`}</span>
+                )}
+                <span>{activeTab.eol}</span>
+              </div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Compact Single-Row Bottom Status Bar (25px) */}
-      {activeTab?.status === 'ready' && !showingImage && (
-        <div className="flex h-[25px] shrink-0 items-center justify-between gap-3 border-t border-hairline bg-surface-2/75 px-3 text-[11px] text-ink-3 select-none">
-          <div className="flex min-w-0 items-center gap-2 tabular-nums">
-            {!showingDiff && !showingPreview && (
-              <>
-                <span className="truncate">{t('editor.statusCursor', { line: cursor.line, col: cursor.col })}</span>
-                {cursor.selectedChars > 0 && (
-                  <span className="truncate text-ink-2">
-                    · {t('editor.statusSelection', { lines: cursor.selectedLines, chars: cursor.selectedChars })}
-                  </span>
-                )}
-              </>
-            )}
-            {showingDiff && (
-              <span className="truncate font-medium text-accent">{t('editor.statusDiff')}</span>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2.5 tabular-nums">
-            {activeTab.conflictMtimeMs !== null && (
-              <span className="rounded bg-danger-soft px-1.5 py-px font-medium text-danger">{t('editor.statusConflict')}</span>
-            )}
-            {activeTab.conflictMtimeMs === null && activeTab.externalChange && (
-              <span className="rounded bg-warn-soft px-1.5 py-px font-medium text-warn">{t('editor.statusModified')}</span>
-            )}
-            {(showingDiff || showingPreview) && (
-              <span className="rounded bg-fill px-1.5 py-px text-ink-2">{t('editor.statusReadOnly')}</span>
-            )}
-            <span>{LANGUAGE_LABELS[activeTab.language] ?? activeTab.language}</span>
-            {indentInfo && (
-              <span>{indentInfo.kind === 'tabs' ? `Tabs: ${indentInfo.size}` : `Spaces: ${indentInfo.size}`}</span>
-            )}
-            <span>{activeTab.eol}</span>
-          </div>
-        </div>
-      )}
-
       {/* Unsaved Changes Confirmation Modal */}
       {pendingClose && (
-        <Modal onClose={() => onResolvePendingClose('cancel')} width={420}>
+        <Modal onClose={() => onResolvePendingClose('cancel')} width={420}
+          surfaceClassName="rounded-lg border border-editor-hairline bg-editor-elevated shadow-[0_16px_44px_rgba(0,0,0,0.2)]">
           <div role="alertdialog" aria-label={t('editor.unsavedTitle')} className="space-y-4 p-6">
             <div className="space-y-1.5">
               <h2 className="text-[15px] font-semibold text-ink">{t('editor.unsavedTitle')}</h2>

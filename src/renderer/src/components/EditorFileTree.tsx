@@ -7,18 +7,18 @@ import { useEscape } from '../lib/escStack'
 import { resolveFileTypeMeta } from '../lib/fileTypeMeta'
 import { useApp } from '../state/AppContext'
 import { t } from '../state/i18n'
-import type { EditorFileTreePosition } from '../lib/editorLayout'
+import { EDITOR_TREE_MIN_W, TRAFFIC_LIGHT_SAFE_LEFT_PX, type EditorFileTreePosition } from '../lib/editorLayout'
 import { EditorResizeHandle } from './EditorResizeHandle'
 import { FileTypeIcon } from './AttachmentBar'
-import { IconChevronRight, IconCopy, IconExternal, IconFolder, IconRefresh, IconSearch, IconX, Spinner } from './icons'
+import { IconChevronRight, IconCopy, IconExternal, IconFolder, IconFolderTree, IconRefresh, IconSearch, IconSidebar, IconX, Spinner } from './icons'
 
 const GIT_STATUS_STYLE: Partial<Record<FileChange['status'], { label: string; cls: string }>> = {
-  M: { label: 'M', cls: 'text-info' },
-  A: { label: 'A', cls: 'text-ok' },
-  U: { label: 'U', cls: 'text-ok' },
-  R: { label: 'R', cls: 'text-accent' },
-  C: { label: 'C', cls: 'text-accent' },
-  D: { label: 'D', cls: 'text-danger' }
+  M: { label: 'M', cls: 'text-[#896221] dark:text-[#d4a853]' },
+  A: { label: 'A', cls: 'text-[#2f7d57] dark:text-[#63b286]' },
+  U: { label: 'U', cls: 'text-[#2f7d57] dark:text-[#63b286]' },
+  R: { label: 'R', cls: 'text-[#4a74a8] dark:text-[#7da5d4]' },
+  C: { label: 'C', cls: 'text-[#4a74a8] dark:text-[#7da5d4]' },
+  D: { label: 'D', cls: 'text-[#b54c4c] dark:text-[#d67a7a]' }
 }
 
 export interface EditorFileTreeProps {
@@ -29,14 +29,22 @@ export interface EditorFileTreeProps {
   changedFiles: readonly FileChange[]
   width: number
   position: EditorFileTreePosition
+  toolbarHeight: 'h-[38px]' | 'h-[44px]'
+  draggableToolbar: boolean
+  needsTrafficLightSafeArea: boolean
+  onShowSidebar?: () => void
+  onHideTree: () => void
+  onRefreshChangedFiles: () => void
   onResetWidth: () => void
   onResizeWidth: (width: number) => void
   onOpenFile: (absPath: string) => void
 }
 
 type TreeMenu = { entry: EditorDirEntry; x: number; y: number; trigger: HTMLElement }
-const rowClass = 'flex h-6.5 w-full min-w-0 items-center gap-1.5 rounded-md pr-1 text-left text-[12px] transition-colors'
-const rowHover = 'text-ink-2 hover:bg-fill hover:text-ink'
+const rowClass = 'no-drag flex h-[27px] min-w-0 flex-1 items-center gap-1.5 rounded-md pr-1 text-left text-[12.5px]'
+const rowGroup = 'group relative mx-1.5 flex items-center rounded-md'
+const rowHover = 'text-ink-2 transition-colors hover:bg-black/[0.045] hover:text-ink dark:hover:bg-white/[0.06]'
+const toolbarButton = 'no-drag grid size-[22px] shrink-0 place-items-center rounded-md text-ink-2 hover:bg-black/[0.06] hover:text-ink dark:hover:bg-white/[0.08]'
 const menuItem = 'flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-[12px] text-ink hover:bg-fill focus:bg-fill focus:outline-none'
 
 export function EditorFileTree({
@@ -47,6 +55,12 @@ export function EditorFileTree({
   changedFiles,
   width,
   position,
+  toolbarHeight,
+  draggableToolbar,
+  needsTrafficLightSafeArea,
+  onShowSidebar,
+  onHideTree,
+  onRefreshChangedFiles,
   onResetWidth,
   onResizeWidth,
   onOpenFile
@@ -124,7 +138,7 @@ export function EditorFileTree({
   const menuButton = (entry: EditorDirEntry) => (
     <button
       type="button" aria-haspopup="menu" aria-label={t('editor.fileActions')} title={t('editor.fileActions')}
-      className="mr-1 grid size-6 shrink-0 place-items-center rounded text-ink-3 opacity-0 group-hover:opacity-100 hover:bg-fill focus-visible:opacity-100"
+      className="no-drag mr-1 grid size-[20px] shrink-0 place-items-center rounded text-ink-3 opacity-0 group-hover:opacity-100 hover:bg-fill focus-visible:opacity-100"
       onClick={(event) => {
         const trigger = event.currentTarget
         const r = trigger.getBoundingClientRect()
@@ -254,21 +268,21 @@ export function EditorFileTree({
     const meta = resolveFileTypeMeta(entry.name)
     const badge = gitStatus && GIT_STATUS_STYLE[gitStatus]
     return (
-      <div key={entry.relPath} className="group flex items-center" onContextMenu={(event) => openContextMenu(event, entry)}>
+      <div key={entry.relPath} className={`${rowGroup} ${isActive ? 'bg-black/[0.07] font-medium text-ink dark:bg-white/[0.10]' : rowHover}`} onContextMenu={(event) => openContextMenu(event, entry)}>
         <button
           type="button" onClick={() => onOpenFile(entry.path)} title={entry.relPath}
-          style={{ paddingLeft: (parentDir === undefined ? 20 : 8) + depth * 13 }}
-          className={rowClass + (isActive ? ' bg-accent/12 font-medium text-ink dark:bg-accent/20' : ' ' + rowHover)}
+          style={{ paddingLeft: (parentDir === undefined ? 23 : 6) + depth * 14 }}
+          className={rowClass}
           aria-current={isActive || undefined}
         >
-          <FileTypeIcon kind={meta.icon} size={13} className={`shrink-0 ${meta.color}`} />
+          <FileTypeIcon kind={meta.icon} size={14} className={`shrink-0 ${meta.color}`} />
           <span className="min-w-0 truncate">{entry.name}</span>
           {parentDir && <span className="min-w-0 truncate text-[10.5px] text-ink-3">{parentDir}</span>}
           <span className="flex-1" />
           {normalizedDirty.has(normEntry) && (
-            <span className="size-1.5 shrink-0 rounded-full bg-accent" title={t('editor.unsaved')} />
+            <span className="size-[5px] shrink-0 rounded-full bg-muted-dot" title={t('editor.unsaved')} />
           )}
-          {badge && <span className={`shrink-0 font-mono text-[10.5px] font-semibold ${badge.cls}`}>{badge.label}</span>}
+          {badge && <span className={`shrink-0 font-mono text-[11px] font-medium tabular-nums ${badge.cls}`}>{badge.label}</span>}
         </button>
         {menuButton(entry)}
       </div>
@@ -287,12 +301,12 @@ export function EditorFileTree({
         const hasChanges = dirHasGitChange.has(entry.relPath)
         return (
           <div key={entry.path}>
-            <div className="group flex items-center" onContextMenu={(event) => openContextMenu(event, entry)}>
+            <div className={`${rowGroup} ${rowHover}`} onContextMenu={(event) => openContextMenu(event, entry)}>
               <button
                 type="button"
                 onClick={() => toggleDir(entry.path)}
-                style={{ paddingLeft: 8 + depth * 13 }}
-                className={rowClass + ' ' + rowHover}
+                style={{ paddingLeft: 6 + depth * 14 }}
+                className={rowClass}
                 title={entry.relPath}
                 disabled={cycle}
                 aria-expanded={expanded}
@@ -305,13 +319,19 @@ export function EditorFileTree({
                     className={`shrink-0 text-ink-3 transition-transform duration-100 ${expanded ? 'rotate-90' : ''}`}
                   />
                 )}
-                <IconFolder size={13} className="shrink-0 text-ink-3" />
+                <IconFolder size={14} className="shrink-0 text-ink-2" />
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                {hasChanges && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info/70" />}
+                {hasChanges && <span className="size-[5px] shrink-0 rounded-full bg-amber-600/65 dark:bg-amber-400/60" />}
               </button>
               {menuButton(entry)}
             </div>
-            {expanded && children.length > 0 && renderNodes(children, [...parents, entry.path])}
+            {expanded && children.length > 0 && (
+              <div className="relative">
+                <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-black/[0.06] dark:bg-white/[0.06]"
+                  style={{ left: 16 + depth * 14 }} />
+                {renderNodes(children, [...parents, entry.path])}
+              </div>
+            )}
           </div>
         )
       }
@@ -323,60 +343,83 @@ export function EditorFileTree({
   const rootLoading = !!projectDir && loadingDirs.has(projectDir) && rootEntries.length === 0
   const modifiedFiles = mode === 'modified' ? changedFiles.filter((file) => file.path.toLowerCase().includes(query)) : []
 
+  // The chat can constrain the tree below its preferred 160px minimum.
+  const compact = width < EDITOR_TREE_MIN_W
+  const toolbarActions = (
+    <div className="flex shrink-0 items-center">
+      <button type="button" className={toolbarButton} title={t('editor.treeRefresh')} aria-label={t('editor.treeRefresh')}
+        onClick={() => {
+          if (mode === 'all') refreshTree()
+          onRefreshChangedFiles()
+        }}>
+        <IconRefresh size={13} />
+      </button>
+      <button type="button" className={toolbarButton} title={`${t('editor.treeHide')} (⌘B)`}
+        aria-label={t('editor.treeHide')} onClick={onHideTree}>
+        <IconFolderTree size={14} />
+      </button>
+    </div>
+  )
+  const tabs = (
+    <div className="flex h-full min-w-0 flex-1 items-stretch gap-2">
+      {(['all', 'modified'] as const).map((item) => {
+        const label = t(item === 'all' ? 'editor.treeAll' : 'editor.treeModified')
+        return (
+          <button key={item} type="button" onClick={() => setMode(item)} title={label} aria-pressed={mode === item}
+            className={`no-drag flex min-w-0 items-center gap-1 border-b-[1.5px] text-[11.5px] ${mode === item
+              ? 'border-ink-2 font-medium text-ink' : 'border-transparent text-ink-2 hover:text-ink'}`}>
+            <span className="truncate">{label}</span>
+            {item === 'modified' && changedFiles.length > 0 && (
+              <span className="shrink-0 text-[11px] font-normal text-ink-2 tabular-nums">{changedFiles.length}</span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+
   return (
     <div
       data-editor-file-tree
-      className={`relative flex h-full min-w-0 shrink-0 flex-col border-hairline bg-surface-2/40 select-none ${position === 'left' ? 'border-r' : 'order-1 border-l'}`}
+      className={`relative flex min-w-0 shrink-0 flex-col border-editor-hairline bg-editor-chrome select-none ${position === 'left' ? 'border-r' : 'order-1 border-l'}`}
       style={{ width }}
     >
-      <div className="mx-2 mt-2 flex shrink-0 gap-0.5 rounded-md bg-fill p-0.5">
-        {(['all', 'modified'] as const).map((item) => (
-          <button
-            key={item} type="button" onClick={() => setMode(item)} aria-pressed={mode === item}
-            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 py-0.5 text-[11px] ${mode === item ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink'}`}
-          >
-            <span className="truncate">{t(item === 'all' ? 'editor.treeAll' : 'editor.treeModified')}</span>
-            {item === 'modified' && changedFiles.length > 0 && (
-              <span className="rounded bg-fill px-1 font-mono text-[10px]">{changedFiles.length}</span>
-            )}
+      <div data-editor-tree-toolbar className={`flex shrink-0 items-center justify-between gap-1 border-b border-editor-hairline px-2 ${toolbarHeight} ${draggableToolbar ? 'drag' : ''}`}
+        style={needsTrafficLightSafeArea ? { paddingLeft: TRAFFIC_LIGHT_SAFE_LEFT_PX, paddingRight: 4 } : undefined}>
+        {onShowSidebar && (
+          <button type="button" className={toolbarButton} title={t('nav.showSidebar')} aria-label={t('nav.showSidebar')}
+            onClick={onShowSidebar}>
+            <IconSidebar size={15} strokeWidth={1.7} />
           </button>
-        ))}
+        )}
+        {!needsTrafficLightSafeArea && tabs}
+        {!compact && toolbarActions}
       </div>
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md bg-surface px-1.5 py-0.5 shadow-[inset_0_0_0_1px_var(--ring)] focus-within:shadow-[inset_0_0_0_1px_var(--accent)]">
-          <IconSearch size={11} className="shrink-0 text-ink-3" />
+      {needsTrafficLightSafeArea && <div className="flex h-[32px] shrink-0 border-b border-editor-hairline px-2">{tabs}</div>}
+      <div className="flex shrink-0 items-center gap-1 px-2 py-1.5">
+        <div className="no-drag flex h-[28px] min-w-0 flex-1 items-center gap-1.5 rounded-md bg-black/[0.04] px-2 focus-within:ring-1 focus-within:ring-accent/45 dark:bg-white/[0.05]">
+          <IconSearch size={12} className="shrink-0 text-ink-2" />
           <input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder={t('editor.treeFilterPlaceholder')}
-            className="min-w-0 flex-1 bg-transparent text-[11.5px] text-ink outline-none placeholder:text-ink-3"
+            aria-label={t('editor.treeFilterPlaceholder')}
+            className="min-w-0 flex-1 bg-transparent text-[11.5px] text-ink outline-none placeholder:text-ink-2"
           />
           {filter && (
-            <button
-              type="button"
-              onClick={() => setFilter('')}
-              className="grid h-4 w-4 shrink-0 place-items-center rounded text-ink-3 hover:text-ink"
-              aria-label={t('common.close')}
-            >
+            <button type="button" onClick={() => setFilter('')}
+              className="no-drag grid size-[16px] shrink-0 place-items-center rounded text-ink-2 hover:text-ink"
+              aria-label={t('common.close')}>
               <IconX size={10} />
             </button>
           )}
         </div>
-        {mode === 'all' && <button
-          type="button"
-          onClick={refreshTree}
-          disabled={!projectDir}
-          title={t('editor.treeRefresh')}
-          aria-label={t('editor.treeRefresh')}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-black/[0.06] hover:text-ink disabled:opacity-40 dark:hover:bg-white/[0.08]"
-        >
-          <IconRefresh size={12} />
-        </button>}
+        {compact && toolbarActions}
       </div>
 
       {/* Tree body */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1">
         {!projectDir ? (
           <div className="px-2.5 py-6 text-center text-[11.5px] text-ink-3">{t('editor.treeNoWorkspace')}</div>
         ) : mode === 'modified' ? (
@@ -407,7 +450,7 @@ export function EditorFileTree({
         onResize={onResizeWidth} onReset={onResetWidth} />
       {menu && createPortal(
         <div ref={menuRef} role="menu" aria-label={t('editor.fileActions')} data-editor-panel
-          className="fixed z-[80] w-52 rounded-lg bg-surface p-1 shadow-[0_0_0_1px_var(--ring),0_8px_24px_rgba(0,0,0,0.2)]"
+          className="no-drag fixed z-[80] w-52 rounded-lg border border-editor-hairline bg-editor-elevated p-1 shadow-[0_8px_24px_rgba(0,0,0,0.16)]"
           onContextMenu={(event) => event.preventDefault()}
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)) closeMenu(false)

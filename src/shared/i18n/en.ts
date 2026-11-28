@@ -1381,10 +1381,15 @@ export const en: Dict = {
   'hist.delFailed': 'Couldn\'t delete',
 
   // ---- code editor
-  'editor.empty': 'Select a file in the tree or press ⌘P to open one.',
+  'editor.empty': 'Choose a file to view or edit',
+  'editor.emptyQuickOpen': 'Quickly open a workspace file',
+  'editor.emptyPickFromTree': 'Toggle the file tree and select a file',
+  'editor.emptyShowTree': 'Show the file tree',
+  'editor.emptySave': 'Save changes to the current file',
+  'editor.showTree': 'Show file tree',
   'editor.panelShort': 'Files',
   'editor.togglePanel': 'Toggle workspace file panel',
-  'editor.treeAll': 'All files',
+  'editor.treeAll': 'All',
   'editor.treeModified': 'Modified',
   'editor.treeModifiedEmpty': 'No modified files',
   'editor.treeNoMatches': 'No matching files',

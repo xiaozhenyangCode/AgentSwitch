@@ -87,9 +87,9 @@ export function CodeDiffView({
   const modifiedLabel = t('editor.diffCurrentLabel')
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface">
+    <div className="flex h-full min-h-0 flex-col bg-editor-canvas">
       {/* Diff Header Bar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-2/85 px-3 py-1.5 text-[12px]">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-editor-hairline bg-editor-chrome px-3 py-1.5 text-[12px]">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="inline-flex items-center gap-1 rounded bg-danger-soft px-1.5 py-0.5 text-[11px] font-medium text-danger">
             − {originalLabel}
@@ -100,13 +100,13 @@ export function CodeDiffView({
           </span>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1.5">
           <div className="flex items-center rounded-md bg-fill p-0.5 text-[11px]">
             <button
               type="button"
               onClick={() => setLayout('unified')}
               className={`rounded px-2 py-0.5 font-medium transition-colors ${
-                layout === 'unified' ? 'bg-surface text-ink shadow-xs' : 'text-ink-3 hover:text-ink'
+                layout === 'unified' ? 'bg-editor-canvas text-ink shadow-xs' : 'text-ink-3 hover:text-ink'
               }`}
             >
               {t('editor.diffUnified')}
@@ -115,7 +115,7 @@ export function CodeDiffView({
               type="button"
               onClick={() => setLayout('split')}
               className={`rounded px-2 py-0.5 font-medium transition-colors ${
-                layout === 'split' ? 'bg-surface text-ink shadow-xs' : 'text-ink-3 hover:text-ink'
+                layout === 'split' ? 'bg-editor-canvas text-ink shadow-xs' : 'text-ink-3 hover:text-ink'
               }`}
             >
               {t('editor.diffSplit')}
@@ -127,7 +127,7 @@ export function CodeDiffView({
               type="button"
               disabled={saving}
               onClick={onAcceptDisk}
-              className="rounded-md bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--ring)] hover:bg-surface-2 disabled:opacity-50"
+              className="rounded-md bg-editor-canvas px-2.5 py-1 text-[11.5px] font-medium text-ink shadow-[0_0_0_1px_var(--editor-hairline)] hover:bg-editor-chrome disabled:opacity-50"
             >
               {t('editor.acceptDisk')}
             </button>
@@ -155,8 +155,8 @@ export function CodeDiffView({
 
       {/* Column labels for side-by-side layout */}
       {layout === 'split' && (
-        <div className="grid shrink-0 grid-cols-2 border-b border-hairline bg-surface-2/40 text-[11px] font-medium text-ink-3">
-          <div className="truncate border-r border-hairline px-3 py-1">{originalLabel}</div>
+        <div className="grid shrink-0 grid-cols-2 border-b border-editor-hairline bg-editor-chrome text-[11px] font-medium text-ink-3">
+          <div className="truncate border-r border-editor-hairline px-3 py-1">{originalLabel}</div>
           <div className="truncate px-3 py-1">{modifiedLabel}</div>
         </div>
       )}
