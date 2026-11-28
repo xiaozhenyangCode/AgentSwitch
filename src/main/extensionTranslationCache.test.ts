@@ -28,6 +28,7 @@ describe('extension metadata', () => {
     const frontmatter = '\uFEFF---\r\nname: keep-name\r\ndescription: { en: "Original # text", zh-CN: 简体, ja: 日本語 }\r\ndescription_zh-tw: >-\r\n  繁體中文\r\n  說明\r\nuser-invocable: false\r\n---\r\nBody'
     expect(parseLocalizedFrontmatter(frontmatter)).toEqual({
       fields: parseFrontmatter(frontmatter),
+      labels: {},
       descriptions: {
         description: 'Original # text',
         nativeDescriptions: { en: 'Original # text', 'zh-CN': '简体', 'zh-TW': '繁體中文 說明', ja: '日本語' }

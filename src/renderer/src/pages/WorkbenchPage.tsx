@@ -10,7 +10,7 @@ import { usePins, useSkills } from '../state/extensions'
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp, useSortedAccounts } from '../state/AppContext'
-import { filterSkills, groupQuickSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
+import { buildQuickSkillsView, filterSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
 import {
   clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_CHAT_MIN_W, EDITOR_PANEL_DEFAULT_H,
   EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
@@ -97,7 +97,7 @@ import {
   composerDraft,
   saveComposerDraft
 } from '../state/chat'
-import { fmtDuration, t, tNode } from '../state/i18n'
+import { fmtDuration, t, tNode, useI18n } from '../state/i18n'
 import { isPendingPermission } from '../state/permissionState'
 import { stripLatest } from '@shared/i18n'
 import { patchDraft, pickDriver, useDraft, type DraftCtx } from '../state/draft'
@@ -2125,7 +2125,7 @@ function Composer({
   const [slash, setSlash] = useState<(
     | ({ mode: 'inline' } & SlashTrigger)
     | { mode: 'picker'; query: string }
-  ) & { index: number } | null>(null)
+  ) & { index: number; packFilter?: string; collapsedPacks?: ReadonlySet<string> } | null>(null)
   const [file, setFile] = useState<{ trigger: FileTrigger; index: number } | null>(null)
   const fileMenuId = useId()
   const cliSkillsEnabled = !driver || !!getProviderCapabilities(driver.kind).skillTriggerPrefix
@@ -2134,10 +2134,15 @@ function Composer({
   const compactDesc = t('wb.compactSlashDesc')
   const builtinSlash = useMemo(() => [makeCompactSlashItem(compactDesc)], [compactDesc])
   const pins = usePins(driver?.kind)
+  const { locale: skillLocale } = useI18n()
   const slashQuery = slash?.query
+  const packFilter = slash?.packFilter
+  const collapsedPacks = slash?.collapsedPacks
   const slashGroups = useMemo(
-    () => slashQuery === undefined ? null : groupQuickSkills(skillItems ?? [], builtinSlash, slashQuery, pins),
-    [skillItems, builtinSlash, slashQuery, pins]
+    () => slashQuery === undefined ? null : buildQuickSkillsView(skillItems ?? [], builtinSlash, {
+      query: slashQuery, pinned: pins, packFilter, collapsedPacks, locale: skillLocale
+    }),
+    [skillItems, builtinSlash, slashQuery, pins, packFilter, collapsedPacks, skillLocale]
   )
   const slashActive = Math.min(slash?.index ?? 0, Math.max(0, (slashGroups?.flat.length ?? 0) - 1))
   const fileOpen = !mention && !slash && !!file
@@ -2379,14 +2384,16 @@ function Composer({
           const items = [...(skillItems ?? []), ...builtinSlash]
           const firstWord = phrase.query.split(/\s+/u)[0].toLowerCase()
           // A completed command followed by prompt text still dismisses the inline menu.
-          if (!items.some((item) => item.name.toLowerCase() === firstWord) && filterSkills(items, phrase.query, 1).length) {
+          if (!items.some((item) => item.name.toLowerCase() === firstWord) && filterSkills(items, phrase.query, 1, skillLocale).length) {
             trigger = phrase
           }
         }
       }
       return setSlash((current) => {
         if (!trigger) return null
-        if (current?.mode === 'inline' && current.start === trigger.start && current.query === trigger.query) return current
+        if (current?.mode === 'inline' && current.start === trigger.start) {
+          return current.query === trigger.query ? current : { ...current, ...trigger, index: 0 }
+        }
         return { mode: 'inline', ...trigger, index: 0 }
       })
     }
@@ -2748,6 +2755,14 @@ function Composer({
               mode={slash.mode}
               query={slash.query}
               groups={slashGroups}
+              packFilter={packFilter}
+              onPackFilter={(id) => setSlash((current) => current && { ...current, packFilter: id, index: 0 })}
+              onTogglePack={(id) => setSlash((current) => {
+                if (!current) return current
+                const next = new Set(current.collapsedPacks)
+                if (!next.delete(id)) next.add(id)
+                return { ...current, collapsedPacks: next, index: 0 }
+              })}
               kind={driver?.kind}
               pins={pins}
               loading={skills.loading}
@@ -2956,9 +2971,11 @@ function Composer({
                 const el = e.currentTarget
                 if (!composingRef.current) syncCompletion(el.value, el.selectionStart === el.selectionEnd ? el.selectionStart : null)
               }}
-              onBlur={() => {
+              onBlur={(event) => {
                 setMention(null)
-                setSlash((current) => current?.mode === 'inline' ? null : current)
+                if (!event.relatedTarget?.closest('[data-quick-skills-popover]')) {
+                  setSlash((current) => current?.mode === 'inline' ? null : current)
+                }
                 setFile(null)
               }}
               onKeyDown={onKey}

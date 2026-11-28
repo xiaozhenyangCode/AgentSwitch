@@ -19,6 +19,8 @@ export function makeCompactSlashItem(description: string): SkillItem {
     name: COMPACT_COMMAND_NAME,
     description,
     source: 'builtin',
+    packId: 'builtin',
+    packKind: 'builtin',
     kind: 'command',
     insert: COMPACT_COMMAND_INSERT
   }

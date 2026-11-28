@@ -2,12 +2,15 @@ import { i18nState, t } from './i18n'
 import { translate, type Locale, type MsgKey } from '@shared/i18n'
 import { JSON_SCHEMA, load as parseYaml } from 'js-yaml'
 import { getCachedTranslation, needsTranslation } from './extensionTranslationCache'
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { parse as parseToml } from 'smol-toml'
 import type {
   AgentItem,
   ExtDescription,
+  ExtDetail,
+  ExtPackMeta,
   ExtFileText,
   ExtOverview,
   ExtSource,
@@ -199,53 +202,147 @@ export function extractDescriptions(metadata: Record<string, unknown>): Descript
   return { description, nativeDescriptions }
 }
 
-export function parseLocalizedFrontmatter(text: string): { fields: Record<string, string>; descriptions: DescriptionMetadata } {
-  const fields = parseFrontmatter(text)
+function splitFrontmatter(text: string): { metadata: string; body: string } | undefined {
   const header = /^\uFEFF?---[ \t]*\r?\n/.exec(text)
-  const rest = header ? text.slice(header[0].length) : ''
-  const end = /^---[ \t]*\r?$/m.exec(rest)?.index
-  if (end !== undefined) {
+  if (!header) return
+  const rest = text.slice(header[0].length)
+  const end = /^(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/m.exec(rest)
+  if (end) return { metadata: rest.slice(0, end.index), body: rest.slice(end.index + end[0].length) }
+}
+
+function packLabels(metadata: Record<string, unknown>): Pick<ExtPackMeta, 'category' | 'tags'> {
+  const category = readDescription(metadata.category) || readDescription(metadata.group)
+  const values = Array.isArray(metadata.tags) ? metadata.tags : typeof metadata.tags === 'string' ? metadata.tags.split(',') : []
+  const tags = [...new Set(values.map(readDescription).filter(Boolean))].slice(0, 8)
+  return { ...(category ? { category } : {}), ...(tags.length ? { tags } : {}) }
+}
+
+export function parseLocalizedFrontmatter(text: string): {
+  fields: Record<string, string>
+  descriptions: DescriptionMetadata
+  labels: Pick<ExtPackMeta, 'category' | 'tags'>
+} {
+  const fields = parseFrontmatter(text)
+  const split = splitFrontmatter(text)
+  if (split) {
     try {
-      const metadata = parseYaml(rest.slice(0, end), { schema: JSON_SCHEMA })
+      const metadata = parseYaml(split.metadata, { schema: JSON_SCHEMA })
       if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
-        return { fields, descriptions: extractDescriptions(metadata as Record<string, unknown>) }
+        const record = metadata as Record<string, unknown>
+        return { fields, descriptions: extractDescriptions(record), labels: packLabels(record) }
       }
     } catch {
       // Preserve the existing best-effort scalar reader for malformed local metadata.
     }
   }
-  return { fields, descriptions: extractDescriptions(fields) }
+  return { fields, descriptions: extractDescriptions(fields), labels: packLabels(fields) }
+}
+
+export interface SkillLockEntry {
+  source: string
+  pluginName?: string
+}
+
+/** Decode the installed skills index. Local and URL-only records don't establish a repo identity. */
+export function parseSkillLock(value: unknown): Map<string, SkillLockEntry> {
+  const result = new Map<string, SkillLockEntry>()
+  if (!value || typeof value !== 'object' || !('skills' in value) || !value.skills || typeof value.skills !== 'object' || Array.isArray(value.skills)) return result
+  for (const [key, row] of Object.entries(value.skills)) {
+    if (!key || key === '.' || key === '..' || /[\\/]/.test(key) || !row || typeof row !== 'object') continue
+    if (typeof row.source !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(row.source.trim())) continue
+    if (row.sourceType && !['github', 'gitlab', 'bitbucket', 'git'].includes(row.sourceType)) continue
+    const source = row.source.trim().replace(/\.git$/i, '')
+    result.set(key, { source, pluginName: readDescription(row.pluginName) || undefined })
+  }
+  return result
+}
+
+export function formatRepoPackName(source: string): string {
+  const repo = source.split('/').at(-1) ?? source
+  return /^(?:skills|agent-skills|claude-skills)$/i.test(repo) ? source : repo
+}
+
+export function inferExtPack(
+  item: ExtPackMeta & { source: ExtSource; plugin?: string; path?: string },
+  projectRoot?: string,
+  lock?: SkillLockEntry
+): ExtPackMeta {
+  const { source, plugin, tags } = item
+  const category = item.category || lock?.pluginName
+  const labels = { ...(category ? { category } : {}), ...(tags?.length ? { tags } : {}) }
+  if (source === 'plugin' || plugin) {
+    const name = plugin || 'plugin'
+    return { packKind: 'plugin', packId: `plugin:${name.toLowerCase()}`, packName: plugin, ...labels }
+  }
+  if (source === 'builtin') return { packKind: 'builtin', packId: 'builtin', ...labels }
+  if (source === 'project' && projectRoot) {
+    return { packKind: 'project', packId: `project:${resolve(projectRoot)}`, packName: basename(projectRoot), ...labels }
+  }
+  if (lock) return { packKind: 'plugin', packId: `repo:${lock.source.toLowerCase()}`, packName: formatRepoPackName(lock.source), ...labels }
+  if (item.packName) {
+    return { packKind: 'global', packId: `global:dir:${item.packName.toLowerCase()}`, packName: item.packName, ...labels }
+  }
+  return { packKind: 'global', packId: 'global:personal', ...labels }
+}
+
+function directoryLabels(root: string, path: string, source: ExtSource, skill = false): Pick<ExtPackMeta, 'packName' | 'category'> {
+  const sub = relative(root, dirname(skill ? dirname(path) : path))
+  if (!sub || sub === '..' || sub.startsWith(`..${sep}`) || isAbsolute(sub)) return {}
+  const parts = sub.split(sep)
+  if (source === 'global') return { packName: parts[0], category: parts.slice(1).join(' / ') || undefined }
+  return { category: parts.join(' / ') }
+}
+
+function lockIndex(root: string, files: string[]): Map<string, SkillLockEntry> {
+  const index = new Map<string, SkillLockEntry>()
+  for (const file of files) {
+    for (const [key, entry] of parseSkillLock(readJson(join(root, file), { errors: 0 }))) {
+      const skill = join(root, '.agents', 'skills', key, 'SKILL.md')
+      if (isFile(skill)) {
+        index.set(realKey(skill), entry)
+        // A differently authored skill with the same name is not part of this repository.
+        continue
+      }
+      // Projects can install straight into a provider directory instead of using .agents/skills.
+      for (const provider of ['.claude', '.gemini/config', '.codex', '.agent', '_agents', '_agent']) {
+        const copy = join(root, provider, 'skills', key, 'SKILL.md')
+        if (isFile(copy)) index.set(realKey(copy), entry)
+      }
+    }
+  }
+  return index
 }
 
 // ---- skills ----------------------------------------------------------------------------
 
-type Push = (name: string, descriptions: DescriptionMetadata, source: ExtSource, extra?: { plugin?: string; kind?: 'skill' | 'command'; path?: string }) => void
+type Push = (name: string, descriptions: DescriptionMetadata, source: ExtSource, extra?: { plugin?: string; kind?: 'skill' | 'command'; path?: string; pack?: ExtPackMeta }) => void
 
 /** `<dir>/<name>/SKILL.md`; dirs without one are searched one level deeper (e.g. Codex `.system`). */
-function scanSkillDir(dir: string, push: Push, source: ExtSource, opts: { plugin?: string; depth?: number; skip?: (p: string) => boolean; sourceOf?: (sub: string) => ExtSource } = {}): void {
+function scanSkillDir(dir: string, push: Push, source: ExtSource, opts: { plugin?: string; depth?: number; skip?: (p: string) => boolean; sourceOf?: (sub: string) => ExtSource; root?: string } = {}): void {
   for (const n of list(dir)) {
     const sub = join(dir, n)
     if (!isDir(sub)) continue
     const md = join(sub, 'SKILL.md')
     if (isFile(md)) {
       if (opts.skip?.(md)) continue
-      const { fields: fm, descriptions } = parseLocalizedFrontmatter(readHead(md))
+      const { fields: fm, descriptions, labels } = parseLocalizedFrontmatter(readHead(md))
       if (fm['user-invocable'] === 'false') continue
-      push(fm.name || n, descriptions, opts.sourceOf?.(n) ?? source, { plugin: opts.plugin, path: md })
+      const origin = opts.sourceOf?.(n) ?? source
+      push(fm.name || n, descriptions, origin, { plugin: opts.plugin, path: md, pack: { ...directoryLabels(opts.root ?? dir, md, origin, true), ...labels } })
     } else if ((opts.depth ?? 1) > 0) {
-      scanSkillDir(sub, push, opts.sourceOf?.(n) ?? source, { ...opts, depth: (opts.depth ?? 1) - 1, sourceOf: undefined })
+      scanSkillDir(sub, push, opts.sourceOf?.(n) ?? source, { ...opts, root: opts.root ?? dir, depth: (opts.depth ?? 1) - 1, sourceOf: undefined })
     }
   }
 }
 
 /** Claude custom commands: `<dir>/**\/<name>.md`, the file name is the command. */
-function scanCommandDir(dir: string, push: Push, source: ExtSource, plugin?: string, depth = 3): void {
+function scanCommandDir(dir: string, push: Push, source: ExtSource, plugin?: string, depth = 3, root = dir): void {
   for (const n of list(dir)) {
     const p = join(dir, n)
     if (n.endsWith('.md') && isFile(p)) {
-      const { descriptions } = parseLocalizedFrontmatter(readHead(p))
-      push(n.slice(0, -3), descriptions, source, { plugin, kind: 'command', path: p })
-    } else if (depth > 0 && isDir(p)) scanCommandDir(p, push, source, plugin, depth - 1)
+      const { descriptions, labels } = parseLocalizedFrontmatter(readHead(p))
+      push(n.slice(0, -3), descriptions, source, { plugin, kind: 'command', path: p, pack: { ...directoryLabels(root, p, source), ...labels } })
+    } else if (depth > 0 && isDir(p)) scanCommandDir(p, push, source, plugin, depth - 1, root)
   }
 }
 
@@ -344,8 +441,8 @@ function collector(display: (name: string, plugin?: string) => string, trigger: 
     const shown = display(name, extra.plugin)
     if (!shown || seen.has(shown)) return
     seen.add(shown)
-    if (extra.path) allow(extra.path)
-    skills.push({ name: shown, ...descriptions, source, plugin: extra.plugin, kind: extra.kind ?? 'skill', insert: trigger(shown), ...(extra.path ? { path: extra.path } : {}) })
+    if (extra.path) allow(extra.path, true)
+    skills.push({ name: shown, ...descriptions, ...extra.pack, source, plugin: extra.plugin, kind: extra.kind ?? 'skill', insert: trigger(shown), ...(extra.path ? { path: extra.path } : {}) })
   }
   return { skills, push }
 }
@@ -362,9 +459,15 @@ const namesOf =
 
 /** Only files a scan listed can be read or revealed (never an arbitrary path). */
 const allowed = new Set<string>()
-const allow = (p: string): void => {
-  if (allowed.size > 50_000) allowed.clear()
-  allowed.add(resolve(p))
+const allowedDetails = new Map<string, string>()
+const allow = (p: string, detail = false): void => {
+  if (allowed.size > 50_000) {
+    allowed.clear()
+    allowedDetails.clear()
+  }
+  const path = resolve(p)
+  allowed.add(path)
+  if (detail && isFile(path)) allowedDetails.set(path, realKey(path))
 }
 
 /** Only global/project rule files (scanned or explicitly prepared) may be written from the UI. */
@@ -394,6 +497,36 @@ export function readExtFile(path: string): ExtFileText {
 
 export const canRevealExtFile = (path: string): boolean => allowed.has(resolve(path)) && existsSync(resolve(path))
 
+const DETAIL_MAX = 128 * 1024
+
+/** Resolve only files registered for the workbench, and reject links retargeted since discovery. */
+export function openExtFile(path: string): string {
+  const p = resolve(path)
+  const target = allowedDetails.get(p)
+  if (!target || !canRevealExtFile(p) || realKey(p) !== target || !isFile(target)) throw new Error('not available')
+  return target
+}
+
+export function readExtDetail(path: string): ExtDetail {
+  const p = resolve(path)
+  const target = openExtFile(p)
+  const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const file = fstatSync(fd)
+    const visible = statSync(p)
+    if (!file.isFile() || visible.dev !== file.dev || visible.ino !== file.ino || realKey(p) !== target) throw new Error('not available')
+    const buf = Buffer.alloc(Math.min(file.size, DETAIL_MAX))
+    const bytesRead = readSync(fd, buf, 0, buf.length, 0)
+    const truncated = file.size > bytesRead
+    // StringDecoder omits an incomplete UTF-8 character at the clipping boundary.
+    const raw = truncated ? new StringDecoder('utf8').write(buf.subarray(0, bytesRead)) : buf.subarray(0, bytesRead).toString('utf8')
+    const body = splitFrontmatter(raw)?.body ?? raw
+    return { path: p, display: tilde(p), raw, body, bytes: file.size, truncated }
+  } finally {
+    closeSync(fd)
+  }
+}
+
 /** Resolves and allow-lists the canonical global or project rule file for an account. */
 export function prepareRuleTarget(id: ProfileId, cwd: string | null, scope: 'global' | 'project'): RuleTarget {
   const cfg = getConfig(id)
@@ -414,7 +547,7 @@ export function prepareRuleTarget(id: ProfileId, cwd: string | null, scope: 'glo
   const p = resolve(target)
   allowWriteRule(p)
   const exists = isFile(p)
-  if (exists) allow(p)
+  if (exists) allow(p, true)
   return { path: p, display: tilde(p), exists }
 }
 
@@ -425,7 +558,7 @@ export function writeRuleFile(path: string, content: string): { bytes: number; l
   if (Buffer.byteLength(content, 'utf8') > RULE_WRITE_MAX) throw new Error('rule file too large')
   mkdirSync(dirname(p), { recursive: true })
   writeFileSync(p, content, 'utf8')
-  allow(p)
+  allow(p, true)
   cache.clear()
   const bytes = Buffer.byteLength(content, 'utf8')
   const lines = content ? content.split('\n').length - (content.endsWith('\n') ? 1 : 0) : 0
@@ -452,12 +585,14 @@ const manifestPaths = (base: string, v: unknown, def: string | null): string[] =
   return [...new Set([...(def ? [join(base, def)] : []), ...paths])]
 }
 
-function agentFromMd(p: string, source: ExtSource, plugin?: string): Scanned<AgentItem> {
-  const { fields: fm, descriptions } = parseLocalizedFrontmatter(readHead(p))
-  allow(p)
+function agentFromMd(p: string, source: ExtSource, plugin?: string, root = dirname(p)): Scanned<AgentItem> {
+  const { fields: fm, descriptions, labels } = parseLocalizedFrontmatter(readHead(p))
+  allow(p, true)
   return {
     name: fm.name || basename(p, '.md'),
     ...descriptions,
+    ...directoryLabels(root, p, source),
+    ...labels,
     source,
     ...(plugin ? { plugin } : {}),
     model: fm.model || null,
@@ -471,7 +606,7 @@ function claudeAgents(paths: string[], source: ExtSource, plugin?: string): Scan
   const out: Scanned<AgentItem>[] = []
   for (const p of paths) {
     if (isFile(p) && p.endsWith('.md')) out.push(agentFromMd(p, source, plugin))
-    else for (const f of mdFiles(p)) out.push(agentFromMd(f, source, plugin))
+    else for (const f of mdFiles(p)) out.push(agentFromMd(f, source, plugin, p))
   }
   return out
 }
@@ -494,7 +629,7 @@ function ruleFile(p: string, scope: RuleScope, extra: Partial<RuleFile> = {}): R
       /* unreadable: size only */
     }
   }
-  allow(p)
+  allow(p, true)
   if (scope === 'global' || scope === 'project') allowWriteRule(p)
   return { path: p, display: tilde(p), scope, bytes, lines, ...extra }
 }
@@ -801,13 +936,16 @@ function newestDir(base: string): string | null {
 function codexAgents(cfg: Record<string, any>, cfgDir: string, rolesDir: string, source: ExtSource, ctx: Ctx): Scanned<AgentItem>[] {
   const out: Scanned<AgentItem>[] = []
   const fromRole = (name: string, role: Record<string, any>, file: string, extra: Record<string, any> = {}) => {
-    allow(file)
+    allow(file, true)
     const roleDescription = extractDescriptions(role)
     const override = extractDescriptions(extra)
     out.push({
       name: String(role.name ?? name),
       description: extra.description == null ? roleDescription.description || override.description : override.description,
       nativeDescriptions: { ...roleDescription.nativeDescriptions, ...override.nativeDescriptions },
+      ...directoryLabels(rolesDir, file, source),
+      ...packLabels(role),
+      ...packLabels(extra),
       source,
       model: typeof role.model === 'string' ? role.model : null,
       tools: null,
@@ -1038,6 +1176,15 @@ function scan(id: ProfileId, cwd: string | null, refresh: boolean): { scan: Scan
     console.warn('[extensions] scan failed', e)
     result = emptyScan(cfg.kind === 'gemini' ? join(dir, '.gemini') : dir)
     ctx.errors++
+  }
+  const chain = projectChain(cwd)
+  const root = chain.at(-1)
+  const globalLocks = lockIndex(realHome, ['.agents/.skill-lock.json'])
+  const projectLocks = new Map(chain.slice().reverse().flatMap((p) => [...lockIndex(p, ['skills-lock.json', '.agents/.skill-lock.json'])]))
+  for (const item of [...result.skills, ...result.agents]) {
+    const locks = item.source === 'project' ? projectLocks : item.source === 'global' ? globalLocks : undefined
+    const locked = locks?.size && item.path ? locks.get(realKey(item.path)) : undefined
+    Object.assign(item, inferExtPack(item, root, locked))
   }
   const entry = { at: Date.now(), scan: result, errors: ctx.errors }
   cache.set(key, entry)

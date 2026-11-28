@@ -752,6 +752,8 @@ export const IPC = {
   extCancelTranslate: 'extensions:cancelTranslate',
   extTranslateProgress: 'extensions:translateProgress',
   extRead: 'ext:read',
+  extReadDetail: 'extensions:readDetail',
+  extOpenFile: 'extensions:openFile',
   extReveal: 'ext:reveal',
   extPrepareRule: 'ext:prepare-rule',
   extWriteRule: 'ext:write-rule',
@@ -891,7 +893,17 @@ export interface ExtTranslateProgressEvent extends Omit<ExtTranslateResult, 'sta
   status: 'running' | 'done' | 'cancelled' | 'error'
 }
 
-export interface SkillItem extends ExtDescription {
+export type ExtPackKind = 'project' | 'plugin' | 'global' | 'builtin'
+
+export interface ExtPackMeta {
+  packId?: string
+  packName?: string
+  packKind?: ExtPackKind
+  category?: string
+  tags?: string[]
+}
+
+export interface SkillItem extends ExtDescription, ExtPackMeta {
   /** As the CLI shows it, e.g. `review` or `figma:figma-use` (plugin skills in Claude). */
   name: string
   source: ExtSource
@@ -948,7 +960,7 @@ export interface McpList {
 }
 
 /** A custom subagent definition (Claude agents/*.md, Codex agent roles). */
-export interface AgentItem extends ExtDescription {
+export interface AgentItem extends ExtDescription, ExtPackMeta {
   name: string
   source: ExtSource
   plugin?: string
@@ -1025,6 +1037,15 @@ export interface ExtOverview extends ExtTranslationSummary {
   remoteNote: boolean
   /** agy defines subagents at run time: there are no definition files to list. */
   agentsDynamic: boolean
+}
+
+export interface ExtDetail {
+  path: string
+  display: string
+  raw: string
+  body: string
+  bytes: number
+  truncated: boolean
 }
 
 export interface ExtFileText {

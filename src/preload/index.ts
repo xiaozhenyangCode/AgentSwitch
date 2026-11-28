@@ -36,6 +36,7 @@ import {
   type ExtTranslateResult,
   type AttachmentText,
   type ExtFileText,
+  type ExtDetail,
   type RuleTarget,
   type OnboardingState,
   type SkillList,
@@ -211,6 +212,8 @@ const api = {
     onTranslateProgress: (cb: (event: ExtTranslateProgressEvent) => void) => subscribe(IPC.extTranslateProgress, cb),
     /** Only files listed by a scan (64 KB max). */
     read: (path: string): Promise<ExtFileText> => ipcRenderer.invoke(IPC.extRead, path),
+    readDetail: (path: string): Promise<ExtDetail> => ipcRenderer.invoke(IPC.extReadDetail, path),
+    openFile: (path: string): Promise<void> => ipcRenderer.invoke(IPC.extOpenFile, path),
     reveal: (path: string): Promise<void> => ipcRenderer.invoke(IPC.extReveal, path),
     prepareRule: (id: ProfileId, cwd: string | null, scope: 'global' | 'project'): Promise<RuleTarget> =>
       ipcRenderer.invoke(IPC.extPrepareRule, id, cwd, scope),

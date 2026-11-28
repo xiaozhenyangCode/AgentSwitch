@@ -332,6 +332,7 @@ export function SettingsDialog() {
       onExited={() => setQ('')}
       ariaLabel={t('set.title')}
       bodyClassName="overflow-hidden"
+      panelClassName={fillSection ? 'w-[min(1280px,calc(100vw-32px))]! h-[min(820px,calc(100dvh-48px))]!' : undefined}
     >
       <aside className="flex w-[min(224px,30%)] shrink-0 flex-col border-r border-hairline bg-surface-2/70">
         <div className="shrink-0 px-3 pt-3.5 pb-2.5">
@@ -383,7 +384,7 @@ export function SettingsDialog() {
           <SheetCloseButton onClick={closeSettings} label={t('set.close')} />
         </header>
         <div className={fillSection ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'min-h-0 flex-1 overflow-y-auto'}>
-          <div className={fillSection ? 'mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col px-7 py-6' : 'mx-auto w-full max-w-[760px] px-7 py-6'}>
+          <div className={fillSection ? 'flex min-h-0 w-full flex-1 flex-col' : 'mx-auto w-full max-w-[760px] px-7 py-6'}>
             {searching ? <Results hits={hits} query={query} onClear={clearSearch} onOpen={go} /> : <Section id={section} />}
           </div>
         </div>

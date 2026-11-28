@@ -54,7 +54,7 @@ import {
   updateKindConfig,
   updateProfile
 } from './profiles'
-import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, readExtFile, writeRuleFile } from './extensions'
+import { canRevealExtFile, extOverview, listMcp, listSkills, openExtFile, prepareRuleTarget, readExtDetail, readExtFile, writeRuleFile } from './extensions'
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
 import { LOCALES, type Locale } from '@shared/i18n'
@@ -824,6 +824,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   ipcMain.handle(IPC.extRead, (_e, p: unknown) => {
     if (typeof p !== 'string') throw new Error('bad path')
     return readExtFile(p)
+  })
+  ipcMain.handle(IPC.extReadDetail, (_e, p: unknown) => {
+    if (typeof p !== 'string') throw new Error('bad path')
+    return readExtDetail(p)
+  })
+  ipcMain.handle(IPC.extOpenFile, async (_e, p: unknown) => {
+    if (typeof p !== 'string') throw new Error('bad path')
+    const error = await shell.openPath(openExtFile(p))
+    if (error) throw new Error(error)
   })
   ipcMain.handle(IPC.extReveal, (_e, p: unknown) => {
     if (typeof p === 'string' && canRevealExtFile(p)) shell.showItemInFolder(p)
