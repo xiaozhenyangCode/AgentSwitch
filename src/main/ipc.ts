@@ -856,7 +856,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   ipcMain.handle(IPC.extPinsSet, (_e, kind: unknown, names: unknown) => {
     const k = pinKind(kind)
-    const list = Array.isArray(names) ? [...new Set(names.filter((n): n is string => typeof n === 'string' && n.length < 200))].slice(0, 200) : []
+    const list = Array.isArray(names) ? [...new Set(names.filter((n): n is string => typeof n === 'string' && n.length < 240))].slice(0, 400) : []
     const cur = readSettings().skillPins
     writeSettings({ skillPins: { ...(cur && typeof cur === 'object' ? cur : {}), [k]: list } })
   })

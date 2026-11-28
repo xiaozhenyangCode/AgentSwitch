@@ -3,14 +3,14 @@ import type { CheckpointStatus, RewindPlan } from '@shared/checkpoints'
 import type { OutputFileRef } from '@shared/chat'
 import { deriveRelativePath, extractMarkdownImageTargets, findMatchingOutputFile, isPreviewableImagePath, joinPosixRelative, outputRefsForMessage, resolveOutputFileCandidates } from '@shared/fileResolve'
 import { defaultContextWindowFor, getProviderCapabilities } from '@shared/providerCapabilities'
-import type { ModelOption, ProfileId, ProfileState, SkillItem } from '@shared/types'
+import type { ModelOption, ProfileId, ProfileState } from '@shared/types'
 import { QuickSkillsButton, QuickSkillsPopover } from '../components/Extensions'
 import { FileSearchMenu } from '../components/FileSearchMenu'
-import { usePins, useSkills } from '../state/extensions'
+import { useOverview, usePins } from '../state/extensions'
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp, useSortedAccounts } from '../state/AppContext'
-import { buildQuickSkillsView, filterSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
+import { applyCapabilityInsert, buildCapabilityInsert, buildQuickCapabilitiesView, cycleCapabilityTab, extensionPinKey, matchSlashTrigger, type ExtTabId, type QuickCapabilityItem, type SlashTrigger } from '../lib/slashTrigger'
 import {
   clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_CHAT_MIN_W, EDITOR_PANEL_DEFAULT_H,
   EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
@@ -47,7 +47,6 @@ import { scrollListTo } from '../lib/scrollList'
 import { shouldShowTaskSummaryBar, TASK_SUMMARY_IDLE_MS } from '../lib/taskSummaryNotice'
 import { loadInputHistory, pushInputHistory, stepInputHistory, type HistoryCursor } from '../lib/inputHistory'
 import {
-  COMPACT_COMMAND_INSERT,
   computeContextNotice,
   computeContextState,
   isCompactCommand,
@@ -2121,30 +2120,41 @@ function Composer({
   const [drag, setDrag] = useState(false)
   /** @ menu: `sub` = index of the account whose sub-model list is open. */
   const [mention, setMention] = useState<{ start: number; query: string; index: number; sub: number | null; subIndex: number } | null>(null)
-  /** / menu: AgentSwitch built-in commands + skills/commands of the lead account in this project. */
+  /** / menu: AgentSwitch built-in commands and the lead account’s capabilities in this project. */
   const [slash, setSlash] = useState<(
     | ({ mode: 'inline' } & SlashTrigger)
     | { mode: 'picker'; query: string }
-  ) & { index: number; packFilter?: string; collapsedPacks?: ReadonlySet<string> } | null>(null)
+  ) & { tab: ExtTabId; index: number; activePinKey?: string; packFilter?: string; collapsedPacks?: ReadonlySet<string> } | null>(null)
   const [file, setFile] = useState<{ trigger: FileTrigger; index: number } | null>(null)
   const fileMenuId = useId()
-  const cliSkillsEnabled = !driver || !!getProviderCapabilities(driver.kind).skillTriggerPrefix
-  const skills = useSkills(cliSkillsEnabled ? (driver?.id ?? null) : null, projectDir, !!slash && cliSkillsEnabled)
-  const skillItems = skills.data?.items
+  const [lastPickerTab, setLastPickerTab] = useState<ExtTabId>('skills')
+  const extensionsEnabled = !!driver && getProviderCapabilities(driver.kind).supportsExtensions
+  const overview = useOverview(extensionsEnabled ? driver.id : null, projectDir, !!slash && extensionsEnabled)
   const compactDesc = t('wb.compactSlashDesc')
   const builtinSlash = useMemo(() => [makeCompactSlashItem(compactDesc)], [compactDesc])
   const pins = usePins(driver?.kind)
   const { locale: skillLocale } = useI18n()
   const slashQuery = slash?.query
+  const slashTab = slash?.tab
   const packFilter = slash?.packFilter
   const collapsedPacks = slash?.collapsedPacks
   const slashGroups = useMemo(
-    () => slashQuery === undefined ? null : buildQuickSkillsView(skillItems ?? [], builtinSlash, {
-      query: slashQuery, pinned: pins, packFilter, collapsedPacks, locale: skillLocale
+    () => slashTab === undefined || slashQuery === undefined ? null : buildQuickCapabilitiesView(overview.data, builtinSlash, {
+      tab: slashTab, query: slashQuery, pinned: pins, packFilter, collapsedPacks, locale: skillLocale
     }),
-    [skillItems, builtinSlash, slashQuery, pins, packFilter, collapsedPacks, skillLocale]
+    [overview.data, builtinSlash, slashTab, slashQuery, pins, packFilter, collapsedPacks, skillLocale]
   )
-  const slashActive = Math.min(slash?.index ?? 0, Math.max(0, (slashGroups?.flat.length ?? 0) - 1))
+  const slashIndex = Math.min(slash?.index ?? 0, Math.max(0, (slashGroups?.flat.length ?? 0) - 1))
+  const entryAtIndex = slashGroups?.flat[slashIndex]
+  const activeKey = slash?.activePinKey
+  const movedIndex = activeKey && entryAtIndex && extensionPinKey(entryAtIndex) !== activeKey
+    ? slashGroups?.flat.findIndex((entry) => extensionPinKey(entry) === activeKey) ?? -1 : -1
+  const slashActive = movedIndex >= 0 ? movedIndex : slashIndex
+  const highlightCapability = (index: number) => {
+    const entry = slashGroups?.flat[index]
+    if (!entry) return
+    setSlash((current) => current && { ...current, index, activePinKey: extensionPinKey(entry) })
+  }
   const fileOpen = !mention && !slash && !!file
   const fileSearch = useFileSearch(projectDir, fileOpen ? file.trigger : null, atts)
   const fileActive = Math.min(file?.index ?? 0, Math.max(0, fileSearch.items.length - 1))
@@ -2361,9 +2371,15 @@ function Composer({
       setSlash(null)
       return
     }
-    // closed with Esc: stay closed until the text or the caret changes
+    // Ignore transient selection events while applying an insertion to the controlled textarea.
+    if (pendingReferenceFocus.current?.value === value) return
     const d = dismissed.current
-    if (d && d.value === value && d.caret === caret) return
+    if (d && d.value === value && d.caret === caret) {
+      setSlash(null)
+      setMention(null)
+      setFile(null)
+      return
+    }
     dismissed.current = null
     const fileTrigger = matchFileTrigger(value, caret)
     if (fileTrigger) {
@@ -2378,23 +2394,32 @@ function Composer({
     if (!m) {
       setMention(null)
       let trigger = matchSlashTrigger(value, caret)
+      if (!trigger && slash?.mode === 'inline' && slash.tab !== 'skills') {
+        const query = value.slice(slash.start + 1, caret)
+        const queryEnd = caret - (/[ \t\u3000]+$/u.exec(query)?.[0].length ?? 0)
+        const prior = matchSlashTrigger(value, queryEnd, true) ?? matchSlashTrigger(value, queryEnd)
+        if (prior?.start === slash.start && query !== prior.query && query.length <= 48) trigger = { ...prior, query }
+      }
       if (!trigger) {
         const phrase = matchSlashTrigger(value, caret, true)
         if (phrase) {
-          const items = [...(skillItems ?? []), ...builtinSlash]
+          const items = [...(overview.data?.skills ?? []), ...builtinSlash]
           const firstWord = phrase.query.split(/\s+/u)[0].toLowerCase()
           // A completed command followed by prompt text still dismisses the inline menu.
-          if (!items.some((item) => item.name.toLowerCase() === firstWord) && filterSkills(items, phrase.query, 1, skillLocale).length) {
-            trigger = phrase
+          if (!items.some((item) => item.name.toLowerCase() === firstWord)) {
+            const { tabCounts } = buildQuickCapabilitiesView(overview.data, builtinSlash, {
+              tab: slash?.tab ?? 'skills', query: phrase.query, pinned: [], locale: skillLocale
+            })
+            if (Object.values(tabCounts).some(Boolean)) trigger = phrase
           }
         }
       }
       return setSlash((current) => {
         if (!trigger) return null
         if (current?.mode === 'inline' && current.start === trigger.start) {
-          return current.query === trigger.query ? current : { ...current, ...trigger, index: 0 }
+          return current.query === trigger.query ? current : { ...current, ...trigger, index: 0, activePinKey: undefined }
         }
-        return { mode: 'inline', ...trigger, index: 0 }
+        return { mode: 'inline', ...trigger, tab: 'skills', index: 0 }
       })
     }
     setSlash(null)
@@ -2461,22 +2486,23 @@ function Composer({
     setSlash(null)
   }, [])
 
-  /** Inserts a skill using its provider's trigger, or runs the standalone built-in command. */
-  const insertSkill = (it: SkillItem, trigger: 'click' | 'enter' | 'tab' = 'click') => {
+  const selectCapabilityTab = (tab: ExtTabId) => {
+    if (!slash || slash.tab === tab) return
+    if (slash.mode === 'picker') setLastPickerTab(tab)
+    setSlash({ ...slash, tab, index: 0, activePinKey: undefined, packFilter: undefined, collapsedPacks: undefined })
+  }
+
+  /** Inserts a CLI token or localized reference, or runs standalone /compact. */
+  const insertCapability = (entry: QuickCapabilityItem) => {
     const el = ta.current
     if (!slash || !el) return
     const picker = slash.mode === 'picker'
     const start = picker ? el.selectionStart : slash.start
     const end = picker ? el.selectionEnd : el.selectionStart
-    const before = el.value.slice(0, start)
-    const after = el.value.slice(end)
-    const standalone = picker ? !el.value.trim() : !before.trim() && !after.trim()
+    const standalone = picker ? !el.value.trim() : !el.value.slice(0, start).trim() && !el.value.slice(end).trim()
+    const insert = buildCapabilityInsert(entry, driver?.kind, skillLocale)
 
-    if (it.source === 'builtin' && it.insert === COMPACT_COMMAND_INSERT && standalone) {
-      if (trigger === 'tab') {
-        applyReferenceEdit(el, { value: COMPACT_COMMAND_INSERT, caret: COMPACT_COMMAND_INSERT.length })
-        return
-      }
+    if (insert.isCompact && standalone) {
       setSlash(null)
       setText('')
       if (!atts.length && !quote) clearComposerDraft(draftKey)
@@ -2485,10 +2511,7 @@ function Composer({
       return
     }
 
-    const prefix = picker && before && !/\s$/u.test(before) ? ' ' : ''
-    const suffix = picker && /^\s/u.test(after) ? '' : ' '
-    const token = prefix + it.insert + suffix
-    applyReferenceEdit(el, { value: before + token + after, caret: start + token.length })
+    applyReferenceEdit(el, applyCapabilityInsert(el.value, start, end, insert, picker))
   }
 
   const focusReference = useCallback((el: HTMLTextAreaElement, next: { value: string; caret: number }) => {
@@ -2666,16 +2689,20 @@ function Composer({
         return insertMention(p, inSub ? opts[mention.subIndex] : null)
       }
     }
-    if (slash?.mode === 'inline' && slashGroups && !composing) {
+    if (slash?.mode === 'inline' && slashGroups && !composing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        return selectCapabilityTab(cycleCapabilityTab(slash.tab, e.shiftKey ? -1 : 1))
+      }
       const n = slashGroups.flat.length
       if (n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault()
         const d = e.key === 'ArrowDown' ? 1 : -1
-        return setSlash((x) => x && { ...x, index: (slashActive + d + n) % n })
+        return highlightCapability((slashActive + d + n) % n)
       }
-      if (n && (e.key === 'Enter' || e.key === 'Tab')) {
+      if (n && e.key === 'Enter') {
         e.preventDefault()
-        return insertSkill(slashGroups.flat[slashActive], e.key === 'Tab' ? 'tab' : 'enter')
+        return insertCapability(slashGroups.flat[slashActive])
       }
     }
     if (fileOpen && !composing && fileSearch.items.length && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -2755,21 +2782,22 @@ function Composer({
               mode={slash.mode}
               query={slash.query}
               groups={slashGroups}
-              packFilter={packFilter}
-              onPackFilter={(id) => setSlash((current) => current && { ...current, packFilter: id, index: 0 })}
+              tab={slash.tab}
+              onTab={selectCapabilityTab}
+              onPackFilter={(id) => setSlash((current) => current && { ...current, packFilter: id, index: 0, activePinKey: undefined })}
               onTogglePack={(id) => setSlash((current) => {
                 if (!current) return current
                 const next = new Set(current.collapsedPacks)
                 if (!next.delete(id)) next.add(id)
-                return { ...current, collapsedPacks: next, index: 0 }
+                return { ...current, collapsedPacks: next, index: 0, activePinKey: undefined }
               })}
-              kind={driver?.kind}
+              kind={extensionsEnabled ? driver?.kind : undefined}
               pins={pins}
-              loading={skills.loading}
+              loading={overview.loading}
               active={slashActive}
-              onQuery={(query) => setSlash((current) => current?.mode === 'picker' ? { ...current, query, index: 0 } : current)}
-              onPick={insertSkill}
-              onHover={(index) => setSlash((current) => current && { ...current, index })}
+              onQuery={(query) => setSlash((current) => current?.mode === 'picker' ? { ...current, query, index: 0, activePinKey: undefined } : current)}
+              onPick={insertCapability}
+              onHover={highlightCapability}
               onDismiss={dismissQuickSkills}
               onCancel={() => {
                 dismissQuickSkills()
@@ -3005,7 +3033,7 @@ function Composer({
                 }
                 setMention(null)
                 setFile(null)
-                setSlash({ mode: 'picker', query: '', index: 0 })
+                setSlash({ mode: 'picker', query: '', tab: lastPickerTab, index: 0 })
               }}
             />
             <div className="mx-1.5 h-4 w-px bg-black/[0.08]" />

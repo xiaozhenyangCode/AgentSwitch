@@ -4,9 +4,13 @@ import { isSignedIn } from '../lib/ui'
 import { useApp, useSortedAccounts } from '../state/AppContext'
 import { activeThread, useChat } from '../state/chat'
 import { pickDriver, useDraft } from '../state/draft'
-import { ALL_PACKS_ID, PINNED_PACK_ID, extensionPack, extensionPackLabel, groupExtensionPacks, matchesExtensionSearch, type buildQuickSkillsView, type ExtensionPack, type ExtensionPackFilter } from '../lib/slashTrigger'
+import {
+  EXT_TABS, PINNED_PACK_ID, capabilityLabel, cycleCapabilityTab, extensionPack, extensionPackLabel, extensionPinKey,
+  groupExtensionPacks, matchesExtensionSearch, type buildQuickCapabilitiesView, type ExtensionPack,
+  type ExtensionPackFilter, type ExtTabId, type QuickCapabilityItem
+} from '../lib/slashTrigger'
 import type { Locale, MsgKey } from '@shared/i18n'
-import type { AgentItem, ExtDescription, ExtDetail, ExtOverview, ExtPackMeta, ExtSource, HookItem, McpServer, PluginItem, ProfileKind, ProfileState, RuleFile, RuleScope, SkillItem } from '@shared/types'
+import type { ExtDescription, ExtDetail, ExtOverview, ExtPackMeta, ExtSource, McpServer, ProfileKind, ProfileState, RuleFile, RuleScope } from '@shared/types'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
 import {
   displayExtDescription, invalidateExtCache, pinnedFirst, setShowOriginalDesc, togglePin,
@@ -18,34 +22,23 @@ import { IconChevronDown, IconCopy, IconExternal, IconFile, IconFolder, IconFold
 
 const SOURCE_KEY = { project: 'ext.src.project', global: 'ext.src.global', plugin: 'ext.src.plugin', builtin: 'ext.src.builtin' } as const
 export const sourceLabel = (s: ExtSource): string => t(SOURCE_KEY[s])
-type TabId = 'skills' | 'agents' | 'plugins' | 'mcp' | 'context'
-const TABS: TabId[] = ['skills', 'agents', 'plugins', 'mcp', 'context']
 const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`)
 const SCOPE_KEY: Record<RuleScope, MsgKey> = { managed: 'ext.scope.managed', global: 'ext.src.global', project: 'ext.src.project', plugin: 'ext.src.plugin' }
 const STATE_DOT: Record<McpServer['state'], string> = { on: 'bg-ok', off: 'bg-ink-3/40', pending: 'bg-warn' }
 const Chevron = ({ open }: { open: boolean }) => <IconChevronDown size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? '' : '-rotate-90'}`} />
 const actionClass = 'inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-2 hover:bg-fill hover:text-ink'
 
-type InventoryData =
-  | { type: 'skills'; item: SkillItem }
-  | { type: 'agents'; item: AgentItem }
-  | { type: 'plugins'; item: PluginItem }
-  | { type: 'mcp'; item: McpServer }
-  | { type: 'rules'; item: RuleFile }
-  | { type: 'hooks'; item: HookItem }
-
-type InventoryRow = InventoryData & { id: string; label: string; subtitle?: string }
+type InventoryRow = QuickCapabilityItem & { id: string; label: string; subtitle?: string }
 interface InventorySection {
   pack: ExtensionPack
   rows: InventoryRow[]
 }
 
-function inventorySections(data: ExtOverview, tab: TabId, q: string, pins: string[], pinnedOnly: boolean, original: boolean, locale: Locale): InventorySection[] {
+function inventorySections(data: ExtOverview, tab: ExtTabId, q: string, original: boolean, locale: Locale): InventorySection[] {
   const matches = matchesExtensionSearch
   if (tab === 'skills') {
-    const items = pinnedFirst(data.skills.filter((item) =>
-      (!pinnedOnly || pins.includes(item.name)) &&
-      matches(q, item.name, item.insert, item.description, item.translatedDescription, item.path, item.plugin, extensionPackLabel(extensionPack(item), locale), item.category, ...(item.tags ?? []))), pins)
+    const items = data.skills.filter((item) =>
+      matches(q, item.name, item.insert, item.description, item.translatedDescription, item.path, item.plugin, extensionPackLabel(extensionPack(item), locale), item.category, ...(item.tags ?? [])))
     return groupExtensionPacks(items).map(({ pack, items }) => ({
       pack,
       rows: items.map((item) => ({ type: tab, item, id: item.insert, label: item.insert, subtitle: displayExtDescription(item, original) }))
@@ -100,7 +93,7 @@ function inventorySections(data: ExtOverview, tab: TabId, q: string, pins: strin
   return [...sections.values()]
 }
 
-function InventoryGuide({ tab, message }: { tab: TabId; message?: string }) {
+function InventoryGuide({ tab, message }: { tab: ExtTabId; message?: string }) {
   return (
     <div className="m-auto flex max-w-[32ch] flex-col items-center gap-2 px-4 py-5 text-center">
       <IconFolderTree size={22} className="mb-1 text-ink-2" />
@@ -189,6 +182,66 @@ function DetailFields({ fields }: { fields: [string, string | undefined | null][
   )
 }
 
+function CapabilityInfo({ entry, original, quick = false }: {
+  entry: QuickCapabilityItem
+  original: boolean
+  quick?: boolean
+}) {
+  const { type, item } = entry
+  if (type === 'skills' || type === 'agents') {
+    return (
+      <>
+        <PackBadges item={item} showSource />
+        <DescriptionPreview item={item} original={original} />
+        {type === 'agents' && <DetailFields fields={[[t('ext.detail.model'), item.model], [t('ext.detail.tools'), item.tools]]} />}
+      </>
+    )
+  }
+  if (type === 'plugins') {
+    return (
+      <>
+        <MetadataBadges labels={[item.marketplace, sourceLabel(item.source), item.version, !item.enabled && t('ext.disabled')]} />
+        <DescriptionPreview item={item} original={original} />
+        <DetailFields fields={[
+          [t('ext.tab.skills'), item.skills.join('\n')], [t('ext.tab.agents'), item.agents.join('\n')], [t('ext.tab.mcp'), item.mcp.join('\n')],
+          [t('ext.hooks'), item.hooks.join('\n')], [t('ext.rules'), item.rules.join('\n')]
+        ]} />
+      </>
+    )
+  }
+  if (type === 'mcp') {
+    const status = item.state === 'off' ? t('ext.mcpOff') : item.state === 'pending' ? t('ext.mcpPending') : t('ext.mcpOn')
+    const fields: [string, string | undefined][] = [
+      [t('ext.mcpCmd'), item.command], [t('ext.mcpUrl'), item.url], [t('ext.mcpCwd'), quick ? undefined : item.cwd],
+      [t('ext.mcpEnv'), item.envKeys?.join(', ')], [t('ext.mcpHeaders'), item.headerKeys?.join(', ')]
+    ]
+    return (
+      <>
+        <PackBadges item={item} labels={[item.transport, status, item.local && t('ext.mcpLocal'), item.managed && t('ext.mcpManaged')]} showSource />
+        {fields.some(([, value]) => value) ? <DetailFields fields={fields} /> : <p className="text-[12px] text-ink-2">{t('ext.mcpNoDetail')}</p>}
+      </>
+    )
+  }
+  if (type === 'rules') {
+    return (
+      <>
+        <MetadataBadges labels={[t(SCOPE_KEY[item.scope]), item.plugin]} />
+        <p className="break-all text-[12px] tabular-nums text-ink-2">
+          {[t('ext.ruleMeta', { size: fmtBytes(item.bytes), lines: item.lines }), item.importedBy && t('ext.importedBy', { file: item.importedBy }),
+            item.truncated && t('ext.ruleTruncated')].filter(Boolean).join(' · ')}
+        </p>
+      </>
+    )
+  }
+  return (
+    <>
+      <PackBadges item={item} labels={[item.event, item.type, item.off && t('ext.disabled')]} showSource />
+      {item.matcher && <p className="font-mono text-[12px] break-all text-ink-2">{item.matcher}</p>}
+      <pre className="font-mono text-[12px] break-all whitespace-pre-wrap text-ink select-text">{item.summary}</pre>
+    </>
+  )
+}
+
 function InventoryDetail({ row, kind, pins, original, revision, onEdit }: {
   row: InventoryRow
   kind: ProfileKind
@@ -199,83 +252,27 @@ function InventoryDetail({ row, kind, pins, original, revision, onEdit }: {
 }) {
   const { copy } = useDetailActions()
   const { type, item } = row
-  if (type === 'skills' || type === 'agents') {
-    return (
-      <>
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <h2 className={`text-[18px] font-semibold break-all text-ink ${type === 'skills' ? 'font-mono' : ''}`}>{row.label}</h2>
-          {type === 'skills' && <SkillPin kind={kind} skill={item} pinned={pins.includes(item.name)} />}
-        </div>
-        <PackBadges item={item} showSource />
-        <DescriptionPreview item={item} original={original} />
-        {type === 'agents' && <DetailFields fields={[[t('ext.detail.model'), item.model], [t('ext.detail.tools'), item.tools]]} />}
-        {(type === 'skills' || item.path) && (
-          <div className="flex flex-wrap items-center gap-1">
-            {type === 'skills' && <button type="button" className={actionClass} onClick={() => void copy(item.insert)}><IconCopy size={13} />{t('ext.detail.copyCommand')}</button>}
-            {item.path && <DetailFileActions path={item.path} />}
-          </div>
-        )}
-        {item.path && <><DetailPath path={item.path} /><DetailFile key={`${item.path}:${revision}`} path={item.path} /></>}
-      </>
-    )
-  }
-  if (type === 'plugins') {
-    return (
-      <>
-        <h2 className="text-[18px] font-semibold break-words text-ink">{item.name}</h2>
-        <p className="text-[12px] tabular-nums text-ink-2">{[item.version, item.marketplace || sourceLabel(item.source), !item.enabled && t('ext.disabled')].filter(Boolean).join(' · ')}</p>
-        <DescriptionPreview item={item} original={original} />
-        <DetailFields fields={[
-          [t('ext.tab.skills'), item.skills.join('\n')], [t('ext.tab.agents'), item.agents.join('\n')], ['MCP', item.mcp.join('\n')],
-          [t('ext.hooks'), item.hooks.join('\n')], [t('ext.rules'), item.rules.join('\n')]
-        ]} />
-        <DetailPath path={item.path} />
-      </>
-    )
-  }
-  if (type === 'mcp') {
-    const status = item.state === 'off' ? t('ext.mcpOff') : item.state === 'pending' ? t('ext.mcpPending')
-      : item.local ? t('ext.mcpLocal') : item.managed ? t('ext.mcpManaged') : ''
-    const fields: [string, string | undefined][] = [
-      [t('ext.mcpCmd'), item.command], [t('ext.mcpUrl'), item.url], [t('ext.mcpCwd'), item.cwd],
-      [t('ext.mcpEnv'), item.envKeys?.join(', ')], [t('ext.mcpHeaders'), item.headerKeys?.join(', ')]
-    ]
-    return (
-      <>
-        <h2 className="text-[18px] font-semibold break-words text-ink">{item.name}</h2>
-        <p className="flex items-center gap-2 text-[12px] text-ink-2">
-          <span className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[item.state]}`} />
-          {[item.transport, item.plugin || sourceLabel(item.source), status].filter(Boolean).join(' · ')}
-        </p>
-        {fields.some(([, value]) => value) ? <DetailFields fields={fields} /> : <p className="text-[12px] text-ink-2">{t('ext.mcpNoDetail')}</p>}
-        {item.configPath && <><DetailFileActions path={item.configPath} editable={false} /><DetailPath path={item.configPath} /></>}
-      </>
-    )
-  }
-  if (type === 'rules') {
-    return (
-      <>
-        <h2 className="font-mono text-[16px] font-semibold break-all text-ink">{item.display}</h2>
-        <p className="text-[12px] tabular-nums text-ink-2">
-          {[t(SCOPE_KEY[item.scope]), item.plugin, t('ext.ruleMeta', { size: fmtBytes(item.bytes), lines: item.lines }),
-            item.importedBy && t('ext.importedBy', { file: item.importedBy }), item.truncated && t('ext.ruleTruncated')].filter(Boolean).join(' · ')}
-        </p>
-        <div className="flex flex-wrap items-center gap-1">
-          {(item.scope === 'global' || item.scope === 'project') && <button type="button" className={actionClass} onClick={() => onEdit(item)}>{t('ext.ruleEdit')}</button>}
-          <DetailFileActions path={item.path} />
-        </div>
-        <DetailPath path={item.path} />
-        <DetailFile key={`${item.path}:${revision}`} path={item.path} />
-      </>
-    )
-  }
+  const path = type === 'mcp' ? item.configPath : type === 'hooks' ? item.file : item.path
+  const document = type === 'skills' || type === 'agents' || type === 'rules'
+  const key = extensionPinKey(row)
   return (
     <>
-      <h2 className="text-[18px] font-semibold break-words text-ink">{item.name || item.event}</h2>
-      <p className="text-[12px] text-ink-2">{[item.event, item.type, item.plugin || sourceLabel(item.source), item.off && t('ext.disabled')].filter(Boolean).join(' · ')}</p>
-      {item.matcher && <p className="font-mono text-[12px] break-all text-ink-2">{item.matcher}</p>}
-      <pre className="font-mono text-[12px] break-all whitespace-pre-wrap text-ink select-text">{item.summary}</pre>
-      {item.file && <DetailPath path={item.file} />}
+      <div className="flex items-start justify-between gap-2">
+        <h2 className={`text-[18px] font-semibold break-all text-ink ${type === 'skills' || type === 'rules' ? 'font-mono' : ''}`}>
+          {type === 'hooks' ? item.name || item.event : row.label}
+        </h2>
+        <CapabilityPin kind={kind} pinKey={key} pinned={pins.includes(key)} />
+      </div>
+      <CapabilityInfo entry={row} original={original} />
+      {(type === 'skills' || (path && (document || type === 'mcp'))) && (
+        <div className="flex flex-wrap items-center gap-1">
+          {type === 'skills' && <button type="button" className={actionClass} onClick={() => void copy(item.insert)}><IconCopy size={13} />{t('ext.detail.copyCommand')}</button>}
+          {type === 'rules' && (item.scope === 'global' || item.scope === 'project') && <button type="button" className={actionClass} onClick={() => onEdit(item)}>{t('ext.ruleEdit')}</button>}
+          {path && <DetailFileActions path={path} editable={document} />}
+        </div>
+      )}
+      {path && <DetailPath path={path} />}
+      {document && path && <DetailFile key={`${path}:${revision}`} path={path} />}
     </>
   )
 }
@@ -283,7 +280,7 @@ function InventoryDetail({ row, kind, pins, original, revision, onEdit }: {
 function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload }: {
   account: ProfileState
   data: ExtOverview
-  tab: TabId
+  tab: ExtTabId
   projectDir: string | null
   revision: number
   onReload: () => void
@@ -299,7 +296,10 @@ function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload
   const [editing, setEditing] = useState<{ path: string; display: string; exists: boolean } | null>(null)
   const preparation = useRef(0)
   const q = query.trim()
-  const sections = inventorySections(data, tab, q, pins, pinnedOnly, original, locale)
+  const sections = inventorySections(data, tab, q, original, locale).flatMap(({ pack, rows }) => {
+    const selectedRows = pinnedOnly ? rows.filter((row) => pins.includes(extensionPinKey(row))) : rows
+    return selectedRows.length ? [{ pack: { ...pack, count: selectedRows.length }, rows: pinnedFirst(selectedRows, pins, extensionPinKey) }] : []
+  })
   const allRows = sections.flatMap((section) => section.rows)
   const visibleRows = sections.flatMap((section) => (!q && collapsed.has(section.pack.id)) ? [] : section.rows)
   const selected = allRows.find((row) => row.id === selection) ?? visibleRows[0] ?? allRows[0]
@@ -318,7 +318,7 @@ function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload
       if (request === preparation.current) toast({ kind: 'error', title: t('ext.detail.openFailed') })
     }
   }
-  const empty = q ? 'ext.noMatchAny' : tab === 'skills' ? (pinnedOnly ? 'ext.noPinned' : 'ext.noSkills')
+  const empty = q ? 'ext.noMatchAny' : pinnedOnly ? 'ext.noPinned' : tab === 'skills' ? 'ext.noSkills'
     : tab === 'agents' ? (data.agentsDynamic ? 'ext.agentsDynamic' : 'ext.noAgents')
     : tab === 'plugins' ? 'ext.noPlugins' : tab === 'mcp' ? 'ext.mcpEmpty' : 'ext.noRules'
   return (
@@ -330,16 +330,14 @@ function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload
             placeholder={t('ext.search')} spellCheck={false}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-2" />
         </div>
-        {tab === 'skills' && (
-          <div className="flex shrink-0 gap-1 px-2 pt-1 text-[11.5px]">
-            {[false, true].map((value) => (
-              <button key={String(value)} type="button" aria-pressed={pinnedOnly === value} onClick={() => setPinnedOnly(value)}
-                className={`rounded-md px-2 py-1 hover:bg-fill ${pinnedOnly === value ? 'bg-accent/10 text-accent' : 'text-ink-2'}`}>
-                {t(value ? 'ext.filter.pinned' : 'ext.filter.all')}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex shrink-0 gap-1 px-2 pt-1 text-[11.5px]">
+          {[false, true].map((value) => (
+            <button key={String(value)} type="button" aria-pressed={pinnedOnly === value} onClick={() => setPinnedOnly(value)}
+              className={`rounded-md px-2 py-1 hover:bg-fill ${pinnedOnly === value ? 'bg-accent/10 text-accent' : 'text-ink-2'}`}>
+              {t(value ? 'ext.filter.pinned' : 'ext.filter.all')}
+            </button>
+          ))}
+        </div>
         {(createGlobal || createProject) && <div className="flex shrink-0 flex-wrap gap-1 px-2 pt-1">
           {createGlobal && <button type="button" className={actionClass} onClick={() => void startCreate('global')}>{t('ext.newGlobalRule')}</button>}
           {createProject && <button type="button" className={actionClass} onClick={() => void startCreate('project')}>{t('ext.newProjectRule')}</button>}
@@ -357,8 +355,10 @@ function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload
                     return next
                   })
                 }} />
-                {expanded && rows.map((row) => (
-                  <div key={row.id} className={`group flex min-h-7 min-w-0 items-center rounded-md pl-3 ${row.id === activeId ? 'bg-accent/10' : 'hover:bg-fill'}`}>
+                {expanded && rows.map((row) => {
+                  const pinKey = extensionPinKey(row)
+                  const pinned = pins.includes(pinKey)
+                  return <div key={row.id} className={`group flex min-h-7 min-w-0 items-center rounded-md pl-3 ${row.id === activeId ? 'bg-accent/10' : 'hover:bg-fill'}`}>
                     <button type="button" aria-pressed={row.id === activeId} onClick={() => {
                       preparation.current++
                       setSelection(row.id)
@@ -370,10 +370,10 @@ function ExtensionWorkspace({ account, data, tab, projectDir, revision, onReload
                         {row.subtitle && <span className="block truncate text-[11.5px] leading-4 text-ink-2">{row.subtitle}</span>}
                       </span>
                     </button>
-                    {row.type === 'skills' && <SkillPin kind={account.kind} skill={row.item} pinned={pins.includes(row.item.name)}
-                      className={`mr-1 ${pins.includes(row.item.name) ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`} />}
+                    <CapabilityPin kind={account.kind} pinKey={pinKey} pinned={pinned}
+                      className={`mr-1 ${pinned || row.id === activeId ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`} />
                   </div>
-                ))}
+                })}
               </div>
             )
           })}
@@ -574,41 +574,59 @@ function DescriptionPreview({ item, original }: { item: ExtDescription; original
   )
 }
 
-function PackBadges({ item, showSource = false }: { item: ExtPackMeta & { source: ExtSource; plugin?: string }; showSource?: boolean }) {
-  const { locale } = useI18n()
-  const pack = extensionPackLabel(extensionPack(item), locale)
-  const source = sourceLabel(item.source)
-  const labels = new Set([pack, ...(showSource ? [source] : []), item.category, ...(item.tags ?? [])].filter(Boolean))
+function MetadataBadges({ labels }: { labels: (string | false | null | undefined)[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
-      {[...labels].map((label) => <span key={label} className="max-w-full rounded-md bg-fill px-1.5 py-0.5 text-[11px] break-words text-ink-2">{label}</span>)}
+      {[...new Set(labels.filter((label): label is string => typeof label === 'string' && !!label))].map((label) => (
+        <span key={label} className="max-w-full rounded-md bg-fill px-1.5 py-0.5 text-[11px] break-words text-ink-2 tabular-nums">{label}</span>
+      ))}
     </div>
   )
 }
+function PackBadges({ item, labels = [], showSource = false }: {
+  item: ExtPackMeta & { source: ExtSource; plugin?: string }
+  labels?: (string | false | null | undefined)[]
+  showSource?: boolean
+}) {
+  const { locale } = useI18n()
+  const pack = extensionPack(item)
+  const source = showSource && pack.id !== 'global:personal' ? sourceLabel(item.source) : undefined
+  return <MetadataBadges labels={[extensionPackLabel(pack, locale), source, item.category, ...(item.tags ?? []), ...labels]} />
+}
 
-function SkillPin({ kind, skill, pinned, className = '' }: { kind: ProfileKind; skill: SkillItem; pinned: boolean; className?: string }) {
+function CapabilityPin({ kind, pinKey, pinned, onToggle, className = '' }: { kind: ProfileKind; pinKey: string; pinned: boolean; onToggle?: () => void; className?: string }) {
   return (
     <button
       type="button"
       aria-label={t(pinned ? 'ext.unpin' : 'ext.pin')}
       aria-pressed={pinned}
+      disabled={pinKey.length >= 240}
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => togglePin(kind, skill.name)}
-      className={`shrink-0 rounded-md p-1 hover:bg-fill ${pinned ? 'text-warn' : 'text-ink-2'} ${className}`}
+      onClick={() => { onToggle?.(); togglePin(kind, pinKey) }}
+      className={`shrink-0 rounded-md p-1 hover:bg-fill disabled:opacity-40 ${pinned ? 'text-warn' : 'text-ink-2'} ${className}`}
     >
       <IconStar size={14} filled={pinned} />
     </button>
   )
 }
 
+function capabilitySubtitle(entry: QuickCapabilityItem, original: boolean): string {
+  const { type, item } = entry
+  if (type === 'skills' || type === 'agents' || type === 'plugins') return displayExtDescription(item, original)
+  if (type === 'mcp') return item.command || item.url || item.transport
+  if (type === 'rules') return t(SCOPE_KEY[item.scope])
+  return item.summary
+}
+
 export function QuickSkillsPopover({
-  mode, query, groups, packFilter, onPackFilter, onTogglePack,
+  mode, query, groups, tab, onTab, onPackFilter, onTogglePack,
   kind, pins, loading, active, onQuery, onPick, onHover, onDismiss, onCancel, onManage
 }: {
   mode: 'inline' | 'picker'
   query: string
-  groups: ReturnType<typeof buildQuickSkillsView>
-  packFilter?: string
+  groups: ReturnType<typeof buildQuickCapabilitiesView>
+  tab: ExtTabId
+  onTab: (tab: ExtTabId) => void
   onPackFilter: (id: string) => void
   onTogglePack: (id: string) => void
   kind: ProfileKind | undefined
@@ -616,7 +634,7 @@ export function QuickSkillsPopover({
   loading: boolean
   active: number
   onQuery: (query: string) => void
-  onPick: (skill: SkillItem) => void
+  onPick: (entry: QuickCapabilityItem) => void
   onHover: (index: number) => void
   onDismiss: () => void
   onCancel: () => void
@@ -625,10 +643,11 @@ export function QuickSkillsPopover({
   const root = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const filters = useRef<HTMLDivElement>(null)
+  const tabs = useRef<HTMLDivElement>(null)
   const picker = mode === 'picker'
   const { locale } = useI18n()
   const original = useShowOriginalDesc()
-  const { packs, sections, flat } = groups
+  const { packs, sections, flat, showPackBar, packFilter, tabCounts } = groups
   const searching = !!query.trim()
   const selected = flat[active]
   const selectedFilter = packs.findIndex((pack) => pack.id === packFilter)
@@ -640,7 +659,10 @@ export function QuickSkillsPopover({
   }, [active, flat])
   useEffect(() => {
     filters.current?.querySelector('[aria-pressed=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [filterIndex])
+  }, [filterIndex, showPackBar])
+  useEffect(() => {
+    tabs.current?.querySelector('[aria-pressed=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [tab])
   useEffect(() => {
     const outside = (event: PointerEvent) => {
       const target = event.target
@@ -654,9 +676,28 @@ export function QuickSkillsPopover({
 
   return (
     <div ref={root} data-quick-skills-popover onKeyDown={(event) => {
-      if (!picker && event.key === 'Escape' && !event.nativeEvent.isComposing) {
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+      if (!picker && event.key === 'Escape') {
         event.preventDefault()
         onCancel()
+        return
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        onTab(cycleCapabilityTab(tab, event.shiftKey ? -1 : 1))
+      } else if (picker && !query.trim() && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        event.preventDefault()
+        const direction = event.key === 'ArrowLeft' ? -1 : 1
+        if (showPackBar) onPackFilter(packs[(filterIndex + direction + packs.length) % packs.length].id)
+        else onTab(cycleCapabilityTab(tab, direction))
+      } else if (flat.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault()
+        const direction = event.key === 'ArrowDown' ? 1 : -1
+        onHover((active + direction + flat.length) % flat.length)
+      } else if (event.key === 'Enter' && selected && !(event.target instanceof HTMLButtonElement)) {
+        event.preventDefault()
+        onPick(selected)
       }
     }} className="@container flex h-[min(410px,calc(100dvh-12rem))] w-[min(660px,100%,calc(100vw-32px))] flex-col overflow-hidden rounded-xl border border-editor-hairline bg-elevated shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
       {picker && (
@@ -669,82 +710,72 @@ export function QuickSkillsPopover({
             placeholder={t('ext.quickSearchPlaceholder')}
             spellCheck={false}
             onChange={(event) => onQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
-              if (!query && ['Tab', 'ArrowLeft', 'ArrowRight'].includes(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
-                const delta = event.key === 'ArrowLeft' || (event.key === 'Tab' && event.shiftKey) ? -1 : 1
-                const next = filterIndex + delta
-                if (event.key !== 'Tab' || (next >= 0 && next < packs.length)) {
-                  event.preventDefault()
-                  onPackFilter(packs[(next + packs.length) % packs.length].id)
-                }
-                return
-              }
-              if (!flat.length) return
-              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                event.preventDefault()
-                const delta = event.key === 'ArrowDown' ? 1 : -1
-                onHover((active + delta + flat.length) % flat.length)
-              } else if (event.key === 'Enter' && selected) {
-                event.preventDefault()
-                onPick(selected)
-              }
-            }}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3"
           />
         </div>
       )}
-      <div ref={filters} role="group" aria-label={t('ext.pack.filter')} className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-hairline px-2">
-        {packs.map((pack, index) => (
-          <button
-            key={pack.id}
-            type="button"
-            aria-pressed={index === filterIndex}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onPackFilter(pack.id)}
-            className={`flex h-6 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11.5px] hover:bg-fill ${index === filterIndex ? 'bg-accent/10 font-medium text-accent' : 'text-ink-2'}`}
-          >
-            {extensionPackLabel(pack, locale)} <span className="tabular-nums opacity-80">{pack.count}</span>
+      <div ref={tabs} role="group" aria-label={t('set.extensions')} className="flex h-[34px] shrink-0 items-stretch gap-1 overflow-x-auto border-b border-hairline px-2">
+        {EXT_TABS.map((id) => (
+          <button key={id} type="button" aria-pressed={tab === id} onMouseDown={(event) => event.preventDefault()} onClick={() => onTab(id)}
+            className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2 text-[12px] whitespace-nowrap ${tab === id ? 'border-accent font-medium text-accent' : 'border-transparent text-ink-2 hover:text-ink'}`}>
+            {t(`ext.tab.${id}`)} <span className="text-[11px] tabular-nums opacity-80">{tabCounts[id]}</span>
           </button>
         ))}
       </div>
+      {showPackBar && (
+        <div ref={filters} role="group" aria-label={t('ext.pack.filter')} className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-hairline px-2">
+          {packs.map((pack, index) => (
+            <button
+              key={pack.id}
+              type="button"
+              aria-pressed={index === filterIndex}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onPackFilter(pack.id)}
+              className={`flex h-6 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11.5px] hover:bg-fill ${index === filterIndex ? 'bg-accent/10 font-medium text-accent' : 'text-ink-2'}`}
+            >
+              {extensionPackLabel(pack, locale)} <span className="tabular-nums opacity-80">{pack.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className={`grid min-h-0 flex-1 grid-cols-1 ${selected ? '@[560px]:grid-cols-[minmax(0,52fr)_minmax(0,48fr)]' : ''}`}>
         <div ref={list} tabIndex={-1} className="min-h-0 min-w-0 overflow-y-auto overscroll-contain bg-editor-canvas p-1.5">
           {sections.map(({ pack, items, expanded }) => (
             <div key={pack.id} className="pb-1">
               <PackHeading pack={pack} expanded={expanded} locked={searching} onToggle={() => { if (!searching) onTogglePack(pack.id) }} />
-              {expanded && items.map((skill) => {
-                const index = rowIndices.get(skill)!
-                const starred = pins.includes(skill.name)
-                const description = displayExtDescription(skill, original)
+              {expanded && items.map((entry) => {
+                const index = rowIndices.get(entry)!
+                const pinKey = extensionPinKey(entry)
+                const starred = pins.includes(pinKey)
+                const description = capabilitySubtitle(entry, original)
+                const label = capabilityLabel(entry)
                 return (
-                  <div key={`${skill.insert}:${skill.path ?? ''}`} data-skill-index={index} onMouseEnter={() => onHover(index)}
+                  <div key={`${pinKey}:${index}`} data-skill-index={index} onMouseEnter={() => onHover(index)}
                     className={`group relative rounded-md ${index === active ? 'bg-accent/10' : 'hover:bg-fill'}`}>
                     <button type="button" aria-pressed={index === active} onFocus={() => onHover(index)} onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => onPick(skill)} className={`block w-full min-w-0 px-2 py-1 text-left ${kind ? 'pr-8' : ''}`}>
-                      <span className="block truncate font-mono text-[12.5px] leading-4 text-ink">{skill.insert}</span>
+                      onClick={() => onPick(entry)} className={`block w-full min-w-0 px-2 py-1 text-left ${kind ? 'pr-8' : ''}`}>
+                      <span className={`block truncate text-[12.5px] leading-4 text-ink ${entry.type === 'skills' || entry.type === 'rules' ? 'font-mono' : ''}`}>{label}</span>
                       {description && <span className="block truncate text-[11.5px] leading-4 text-ink-2">{description}</span>}
                     </button>
-                    {kind && <SkillPin kind={kind} skill={skill} pinned={starred} className={`absolute top-1 right-1.5 ${starred || index === active ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`} />}
+                    {kind && <CapabilityPin kind={kind} pinKey={pinKey} pinned={starred} className={`absolute top-1 right-1.5 ${starred || index === active ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`} />}
                   </div>
                 )
               })}
             </div>
           ))}
-          {!sections.length && <div className="px-2.5 py-3 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : searching ? 'ext.noMatch' : filterIndex === 1 ? 'ext.noPinned' : 'ext.quickEmpty')}</div>}
-          {filterIndex === 0 && !searching && sections.length > 0 && packs[0].count === 1 && packs.some((pack) => pack.id === 'builtin') && (
+          {!sections.length && <div className="px-2.5 py-3 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : searching ? 'ext.quickNoMatch' : packFilter === PINNED_PACK_ID ? 'ext.noPinned' : 'ext.quickEmpty')}</div>}
+          {tab === 'skills' && !searching && !showPackBar && flat.length === 1 && packs.some((pack) => pack.id === 'builtin') && (
             <p className="px-2.5 py-2 text-[12px] text-ink-2">{t(loading ? 'ext.quickLoading' : 'ext.quickEmpty')}</p>
           )}
         </div>
         {selected && (
           <aside className="hidden min-h-0 min-w-0 flex-col border-l border-hairline bg-editor-chrome @[560px]:flex">
-            <div key={active} tabIndex={-1} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-3">
+            <div key={`${tab}:${active}:${extensionPinKey(selected)}`} tabIndex={-1} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-3">
               <div className="flex items-start justify-between gap-2">
-                <h2 className="min-w-0 font-mono text-[15px] font-semibold break-all text-ink">{selected.insert}</h2>
-                {kind && <SkillPin kind={kind} skill={selected} pinned={pins.includes(selected.name)} />}
+                <h2 className={`min-w-0 text-[15px] font-semibold break-words text-ink ${selected.type === 'skills' || selected.type === 'rules' ? 'font-mono' : ''}`}>{capabilityLabel(selected)}</h2>
+                {kind && <CapabilityPin kind={kind} pinKey={extensionPinKey(selected)} pinned={pins.includes(extensionPinKey(selected))} onToggle={() => onHover(active)} />}
               </div>
-              <PackBadges item={selected} />
-              <DescriptionPreview item={selected} original={original} />
+              <CapabilityInfo entry={selected} original={original} quick />
             </div>
             <div className="flex shrink-0 justify-end border-t border-hairline px-2.5 py-1">
               <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => onPick(selected)}
@@ -774,7 +805,7 @@ export function ExtensionsSettingsView() {
   const [accountId, setAccountId] = useState('')
   const account = accounts.find((item) => item.id === accountId) ?? pickDriver(context, accounts, participants)
   const { data, loading, reload } = useOverview(account?.id ?? null, projectDir)
-  const [tab, setTab] = useState<TabId>('skills')
+  const [tab, setTab] = useState<ExtTabId>('skills')
   const [revision, setRevision] = useState(0)
   const refresh = () => {
     void reload().then(() => setRevision((current) => current + 1))
@@ -845,7 +876,7 @@ export function ExtensionsSettingsView() {
           </select>
         </label>
         <div role="group" aria-label={t('set.extensions')} className="flex h-full shrink-0 items-stretch gap-1">
-          {TABS.map((id) => (
+          {EXT_TABS.map((id) => (
             <button key={id} type="button" aria-pressed={tab === id} onClick={() => setTab(id)}
               className={`border-b-2 px-1.5 pt-0.5 text-[12px] ${tab === id ? 'border-accent font-medium text-accent' : 'border-transparent text-ink-2 hover:text-ink'}`}>
               {t(`ext.tab.${id}`)}

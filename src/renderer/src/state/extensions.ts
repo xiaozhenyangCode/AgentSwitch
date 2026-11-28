@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { ExtDescription, ExtOverview, ExtTranslateProgressEvent, ProfileId, ProfileKind, SkillItem, SkillList } from '@shared/types'
+import type { ExtDescription, ExtOverview, ExtTranslateProgressEvent, ProfileId, ProfileKind, SkillList } from '@shared/types'
 import type { Locale } from '@shared/i18n'
 import { useI18n } from './i18n'
 
@@ -108,7 +108,7 @@ window.agentswitch.ext.onTranslateProgress((event) => {
   for (const cb of progressSubs) cb()
 })
 
-// ---- pinned skills (per CLI kind, stored in userData) ------------------------------------------
+// ---- pinned capabilities (per CLI kind, stored in userData) ------------------------------------------
 
 let pins: Partial<Record<ProfileKind, string[]>> = {}
 const pinSubs = new Set<() => void>()
@@ -123,20 +123,20 @@ void window.agentswitch.ext
 const subscribePins = (cb: () => void) => (pinSubs.add(cb), () => void pinSubs.delete(cb))
 const EMPTY: string[] = []
 
-/** Pinned skill names for a CLI kind (pinned ones lead the / menu). */
+/** Pinned capability keys for a CLI kind (pinned ones lead the / menu). */
 export const usePins = (kind: ProfileKind | null | undefined): string[] => useSyncExternalStore(subscribePins, () => (kind ? (pins[kind] ?? EMPTY) : EMPTY))
 
-export function togglePin(kind: ProfileKind, name: string): void {
+export function togglePin(kind: ProfileKind, key: string): void {
   const cur = pins[kind] ?? []
-  const next = cur.includes(name) ? cur.filter((n) => n !== name) : [name, ...cur]
+  const next = cur.includes(key) ? cur.filter((entry) => entry !== key) : [key, ...cur].filter((entry) => entry.length < 240).slice(0, 400)
   pins = { ...pins, [kind]: next }
   for (const cb of pinSubs) cb()
   void window.agentswitch.ext.setPins(kind, next)
 }
 
 /** Pinned first (in pin order), the rest unchanged. */
-export function pinnedFirst(items: SkillItem[], pinned: string[]): SkillItem[] {
+export function pinnedFirst<T>(items: T[], pinned: string[], key: (item: T) => string): T[] {
   if (!pinned.length) return items
   const rank = new Map(pinned.map((n, i) => [n, i]))
-  return [...items].sort((a, b) => (rank.get(a.name) ?? 1e9) - (rank.get(b.name) ?? 1e9))
+  return [...items].sort((a, b) => (rank.get(key(a)) ?? 1e9) - (rank.get(key(b)) ?? 1e9))
 }
