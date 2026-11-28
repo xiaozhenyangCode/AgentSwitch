@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import type { ChatChanges, OpenChats } from '@shared/chat'
 import type { EditorActionResult, EditorFileChangedEvent, EditorListDirRequest, EditorListDirResult, EditorReadRequest, EditorReadResult, EditorSaveRequest, EditorSaveResult, EditorWatchRequest } from '@shared/editor'
 import type { CommitImportRequest, CommitImportResult, ImportPreviewResult, ThreadBundle, TransferExportResult, TransferImportResult, TransferProgressEvent } from '@shared/transfer'
-import type { I18nState, LanguagePref } from '@shared/i18n'
+import type { I18nState, LanguagePref, Locale } from '@shared/i18n'
 import {
   IPC,
   type CliUpdatedEvent,
@@ -31,6 +31,9 @@ import {
   type MenuCommand,
   type McpList,
   type ExtOverview,
+  type ExtTranslateProgressEvent,
+  type ExtTranslateRequest,
+  type ExtTranslateResult,
   type AttachmentText,
   type ExtFileText,
   type RuleTarget,
@@ -200,9 +203,12 @@ const api = {
   onMenu: (cb: (cmd: MenuCommand) => void) => subscribe(IPC.menuCommand, cb),
   /** Skills / MCP servers an account would load in a project (read from local config files). */
   ext: {
-    skills: (id: ProfileId, cwd: string | null, refresh = false): Promise<SkillList> => ipcRenderer.invoke(IPC.extSkills, id, cwd, refresh),
+    skills: (id: ProfileId, cwd: string | null, refresh = false, locale?: Locale): Promise<SkillList> => ipcRenderer.invoke(IPC.extSkills, id, cwd, refresh, locale),
     mcp: (id: ProfileId, cwd: string | null, refresh = false): Promise<McpList> => ipcRenderer.invoke(IPC.extMcp, id, cwd, refresh),
-    overview: (id: ProfileId, cwd: string | null, refresh = false): Promise<ExtOverview> => ipcRenderer.invoke(IPC.extOverview, id, cwd, refresh),
+    overview: (id: ProfileId, cwd: string | null, refresh = false, locale?: Locale): Promise<ExtOverview> => ipcRenderer.invoke(IPC.extOverview, id, cwd, refresh, locale),
+    translateDescriptions: (request: ExtTranslateRequest): Promise<ExtTranslateResult> => ipcRenderer.invoke(IPC.extTranslateDescriptions, request),
+    cancelTranslate: (): Promise<void> => ipcRenderer.invoke(IPC.extCancelTranslate),
+    onTranslateProgress: (cb: (event: ExtTranslateProgressEvent) => void) => subscribe(IPC.extTranslateProgress, cb),
     /** Only files listed by a scan (64 KB max). */
     read: (path: string): Promise<ExtFileText> => ipcRenderer.invoke(IPC.extRead, path),
     reveal: (path: string): Promise<void> => ipcRenderer.invoke(IPC.extReveal, path),

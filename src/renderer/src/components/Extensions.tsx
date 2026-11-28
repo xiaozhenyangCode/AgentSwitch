@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEscape } from '../lib/escStack'
 import { isSignedIn } from '../lib/ui'
-import { useSortedAccounts } from '../state/AppContext'
+import { useApp, useSortedAccounts } from '../state/AppContext'
 import { activeThread, useChat } from '../state/chat'
 import { pickDriver, useDraft } from '../state/draft'
-import type { groupQuickSkills } from '../lib/slashTrigger'
+import { matchesExtensionSearch, type groupQuickSkills } from '../lib/slashTrigger'
 import { isCliCompactCommand } from '../lib/compactCommand'
 import type { MsgKey } from '@shared/i18n'
 import type { ExtFileText, ExtOverview, ExtSource, McpServer, ProfileKind, ProfileState, RuleScope, SkillItem } from '@shared/types'
 import { getProviderCapabilities } from '@shared/providerCapabilities'
-import { pinnedFirst, togglePin, useOverview, usePins } from '../state/extensions'
-import { t } from '../state/i18n'
+import {
+  displayExtDescription, invalidateExtCache, pinnedFirst, setShowOriginalDesc, togglePin,
+  useOverview, usePins, useShowOriginalDesc, useTranslateProgress
+} from '../state/extensions'
+import { t, useI18n } from '../state/i18n'
 import { IconChevronDown, IconFile, IconFolder, IconRefresh, IconSearch, IconSlash, IconStar, Spinner } from './icons'
 
 const SOURCE_KEY = { project: 'ext.src.project', global: 'ext.src.global', plugin: 'ext.src.plugin', builtin: 'ext.src.builtin' } as const
@@ -77,7 +80,7 @@ const TABS: TabId[] = ['skills', 'agents', 'plugins', 'mcp', 'context']
 type SkillFilter = 'all' | 'pinned' | ExtSource
 const SKILL_FILTERS: SkillFilter[] = ['all', 'pinned', 'project', 'global', 'plugin', 'builtin']
 
-const has = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some((f) => f && f.toLowerCase().includes(q))
+const has = matchesExtensionSearch
 const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`)
 const SCOPE_KEY: Record<RuleScope, MsgKey> = {
   managed: 'ext.scope.managed',
@@ -140,10 +143,11 @@ const Section = ({ children, n }: { children: string; n?: number }) => (
 
 function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind | null; q: string }) {
   const [filter, setFilter] = useState<SkillFilter>('all')
+  const original = useShowOriginalDesc()
   const [open, setOpen] = useState<string | null>(null)
   const pins = usePins(kind)
   const list = pinnedFirst(
-    items.filter((it) => (filter === 'all' ? true : filter === 'pinned' ? pins.includes(it.name) : it.source === filter) && has(q, it.name, it.description, it.path, it.plugin)),
+    items.filter((it) => (filter === 'all' ? true : filter === 'pinned' ? pins.includes(it.name) : it.source === filter) && has(q, it.name, it.insert, it.description, it.translatedDescription, it.path, it.plugin)),
     pins
   )
   return (
@@ -161,6 +165,7 @@ function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind |
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1">
         {list.map((it) => {
+          const description = displayExtDescription(it, original)
           const id = it.insert + it.source + (it.plugin ?? '')
           const pinned = pins.includes(it.name)
           const expanded = open === id
@@ -173,7 +178,7 @@ function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind |
                 <button className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left" onClick={() => it.path && setOpen(expanded ? null : id)}>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-mono text-[13px] leading-5 text-ink">{it.insert}</span>
-                    {it.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{it.description}</span>}
+                    {description && <span className="block truncate text-[11.5px] leading-4 text-ink-3" title={description}>{description}</span>}
                   </span>
                   {it.kind === 'command' && <Tag>{t('ext.command')}</Tag>}
                   <Tag title={it.plugin}>{it.plugin ? `${sourceLabel(it.source)} · ${it.plugin}` : sourceLabel(it.source)}</Tag>
@@ -191,11 +196,13 @@ function SkillsTab({ items, kind, q }: { items: SkillItem[]; kind: ProfileKind |
 }
 
 function AgentsTab({ data, q }: { data: ExtOverview; q: string }) {
+  const original = useShowOriginalDesc()
   const [open, setOpen] = useState<string | null>(null)
-  const list = data.agents.filter((a) => has(q, a.name, a.description, a.path, a.plugin))
+  const list = data.agents.filter((a) => has(q, a.name, a.description, a.translatedDescription, a.path, a.plugin))
   return (
     <>
       {list.map((a) => {
+        const description = displayExtDescription(a, original)
         const id = a.path + a.name
         const expanded = open === id
         return (
@@ -204,7 +211,7 @@ function AgentsTab({ data, q }: { data: ExtOverview; q: string }) {
               <button className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left" onClick={() => setOpen(expanded ? null : id)}>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] leading-5 font-medium text-ink">{a.name}</span>
-                  {a.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{a.description}</span>}
+                  {description && <span className="block truncate text-[11.5px] leading-4 text-ink-3" title={description}>{description}</span>}
                 </span>
                 {a.model && <Tag>{a.model}</Tag>}
                 <Tag title={a.plugin}>{a.plugin ? `${sourceLabel(a.source)} · ${a.plugin}` : sourceLabel(a.source)}</Tag>
@@ -226,8 +233,9 @@ function AgentsTab({ data, q }: { data: ExtOverview; q: string }) {
 }
 
 function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
+  const original = useShowOriginalDesc()
   const [open, setOpen] = useState<string | null>(null)
-  const list = data.plugins.filter((p) => has(q, p.name, p.key, p.description, p.path))
+  const list = data.plugins.filter((p) => has(q, p.name, p.key, p.description, p.translatedDescription, p.path))
   const groups: {
     key: 'skills' | 'agents' | 'mcp' | 'hooks' | 'rules'
     label: string
@@ -241,6 +249,7 @@ function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
   return (
     <>
       {list.map((p) => {
+        const description = displayExtDescription(p, original)
         const expanded = open === p.key
         const parts = groups.filter((g) => p[g.key].length).map((g) => `${g.label} ${p[g.key].length}`)
         return (
@@ -252,7 +261,7 @@ function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
                   <span className="truncate text-[13px] leading-5 font-medium text-ink">{p.name}</span>
                   {p.version && <span className="shrink-0 font-mono text-[10.5px] text-ink-3">{p.version}</span>}
                 </span>
-                <span className="block truncate text-[11.5px] leading-4 text-ink-3">{parts.length ? parts.join(' · ') : p.description || t('ext.pluginNoContent')}</span>
+                <span className="block truncate text-[11.5px] leading-4 text-ink-3 tabular-nums" title={description || undefined}>{description || (parts.length ? parts.join(' · ') : t('ext.pluginNoContent'))}</span>
               </span>
               {!p.enabled && <Tag>{t('ext.disabled')}</Tag>}
               <Tag title={p.key}>{p.marketplace ?? sourceLabel(p.source)}</Tag>
@@ -260,7 +269,7 @@ function PluginsTab({ data, q }: { data: ExtOverview; q: string }) {
             </button>
             {expanded && (
               <div className="mx-2.5 mt-0.5 mb-2 space-y-1 rounded-[10px] bg-black/[0.035] px-2.5 py-2 text-[12px] shadow-[inset_0_0_0_1px_var(--ring)]">
-                {p.description && <div className="text-ink-2">{p.description}</div>}
+                {description && <div className="text-ink-2">{description}</div>}
                 {groups.map(
                   (g) =>
                     p[g.key].length > 0 && (
@@ -638,6 +647,7 @@ export function QuickSkillsPopover({
   const root = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const picker = mode === 'picker'
+  const original = useShowOriginalDesc()
   const { pinned, all, flat } = groups
   const searching = !!query.trim()
   const showEmpty = searching ? !flat.length : !flat.some((item) => !isCliCompactCommand(item))
@@ -658,6 +668,7 @@ export function QuickSkillsPopover({
   useEscape(() => query ? onQuery('') : onCancel(), picker, onCancel)
 
   const renderSkill = (skill: SkillItem, index: number) => {
+    const description = displayExtDescription(skill, original)
     const starred = pins.includes(skill.name)
     const starLabel = t(starred ? 'ext.unpin' : 'ext.pin')
     return (
@@ -674,7 +685,7 @@ export function QuickSkillsPopover({
           onClick={() => onPick(skill)}
         >
           <span className={`block truncate font-mono text-[13px] leading-5 text-ink ${kind ? 'pr-7' : ''}`}>{skill.insert}</span>
-          {skill.description && <span className="block truncate text-[11.5px] leading-4 text-ink-3">{skill.description}</span>}
+          {description && <span className="block truncate text-[11.5px] leading-4 text-ink-3" title={description}>{description}</span>}
         </button>
         {kind && (
           <button
@@ -745,6 +756,8 @@ export function QuickSkillsPopover({
 }
 
 export function ExtensionsSettingsView() {
+  const { toast } = useApp()
+  const { locale } = useI18n()
   const chat = useChat()
   const draft = useDraft()
   const accounts = useSortedAccounts()
@@ -756,31 +769,97 @@ export function ExtensionsSettingsView() {
   const { data, loading, reload } = useOverview(account?.id ?? null, projectDir)
   const [tab, setTab] = useState<TabId>('skills')
   const [query, setQuery] = useState('')
-  const q = query.trim().toLowerCase()
+  const q = query.trim()
+  const original = useShowOriginalDesc()
+  const progress = useTranslateProgress()
+  const [launching, setLaunching] = useState(false)
+  const running = progress?.status === 'running'
+  const count = data?.untranslatedCount ?? 0
+  const translateLabel = running ? t('ext.translate.running', { done: progress.done, total: progress.total })
+    : !data ? t('ext.translate.button')
+      : count ? t('ext.translate.count', { n: count }) : t('ext.translate.complete')
+  const translateDescriptions = async () => {
+    if (running) {
+      await window.agentswitch.ext.cancelTranslate().catch(() => {
+        toast({ kind: 'error', title: t('ext.translate.cancelFailed') })
+      })
+      return
+    }
+    if (!account || !count || launching) return
+    setLaunching(true)
+    try {
+      const result = await window.agentswitch.ext.translateDescriptions({ profileId: account.id, cwd: projectDir, locale })
+      if (result.status === 'noop') invalidateExtCache()
+      if (result.status === 'busy') toast({ kind: 'info', title: t('ext.translate.busy') })
+      if (result.status === 'error') {
+        toast({
+          kind: 'error',
+          title: t(result.error === 'cache-write' ? 'ext.translate.cacheWrite' : 'ext.translate.unavailable'),
+          desc: result.translated ? t('ext.translate.partial', { n: result.translated }) : undefined
+        })
+      }
+      if (result.status === 'cancelled' && result.translated) {
+        toast({ kind: 'info', title: t('ext.translate.cancelledPartial', { n: result.translated }) })
+      }
+    } catch {
+      toast({ kind: 'error', title: t('ext.translate.unavailable') })
+    } finally {
+      setLaunching(false)
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-2">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5">
-        <label className="flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
+      <div className="flex h-[38px] shrink-0 items-center justify-between gap-2 border-b border-hairline px-3.5">
+        <label className="flex min-w-0 items-center gap-2 whitespace-nowrap text-[12px] text-ink-3">
           {t('ext.accountSelect')}
           <select
             value={account?.id ?? ''}
+            title={account?.name}
             disabled={!accounts.length}
             onChange={(event) => setAccountId(event.target.value)}
-            className="min-w-0 max-w-52 rounded-md bg-fill px-2 py-1.5 text-[13px] text-ink"
+            className="min-w-0 max-w-52 rounded-md bg-fill px-2 py-1 text-[13px] text-ink"
           >
             {!accounts.length && <option value="">{t('ext.noAccount')}</option>}
             {accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
         </label>
-        <button
-          onClick={() => void reload()}
-          disabled={loading || !account}
-          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[12px] text-ink-2 hover:bg-fill hover:text-ink disabled:opacity-60"
-          title={t('ext.reload')}
-        >
-          {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
-        </button>
+        <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+          {data?.hasTranslations && (
+            <div role="group" className="flex items-center text-[11.5px]">
+              {[false, true].map((value) => (
+                <button
+                  key={String(value)}
+                  type="button"
+                  aria-pressed={original === value}
+                  onClick={() => setShowOriginalDesc(value)}
+                  className={`rounded-md px-1.5 py-1 hover:bg-fill ${original === value ? 'bg-accent/10 text-accent' : 'text-ink-3'}`}
+                >
+                  {t(value ? 'ext.translate.original' : 'ext.translate.translated')}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => void translateDescriptions()}
+            disabled={!running && (!count || loading || launching)}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-2 tabular-nums enabled:hover:bg-fill enabled:hover:text-ink disabled:text-ink-3"
+            title={t('ext.translate.tooltip')}
+          >
+            {running && <Spinner size={11} />}
+            <span>{translateLabel}</span>
+            {running && <span className="text-ink-3">· {t('common.cancel')}</span>}
+          </button>
+          <button
+            onClick={() => void reload()}
+            disabled={loading || !account}
+            className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[12px] text-ink-2 hover:bg-fill hover:text-ink disabled:opacity-60"
+            title={t('ext.reload')}
+          >
+            {loading ? <Spinner size={11} /> : <IconRefresh size={12} />} {t('common.refresh')}
+          </button>
+        </div>
       </div>
       <div className="flex shrink-0 flex-wrap gap-0.5 px-2.5 pt-2.5">
         {TABS.map((id) => (

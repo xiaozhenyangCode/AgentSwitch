@@ -1,4 +1,5 @@
 import './legacy' // first: migrates AgentMux userData before other modules read it
+import { flushTranslationCache } from './extensionTranslationCache'
 import { app, BrowserWindow, dialog, nativeImage, screen, shell } from 'electron'
 import { CHAT_CLOSE_EVENT } from '@shared/chat'
 import { IPC } from '@shared/types'
@@ -258,6 +259,11 @@ app.whenReady().then(async () => {
   broadcastAll = ipc.broadcastAll
   // A window can veto quitting while it still has unsaved chats.
   app.on('will-quit', () => {
+    try {
+      flushTranslationCache()
+    } catch {
+      console.warn('[extensions] Could not flush translation cache')
+    }
     ipc.editorWatcher.unwatchAll()
     ipc.orchestrator.stopAll()
     permissions.cancelAll(() => true)

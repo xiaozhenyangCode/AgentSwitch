@@ -6,11 +6,21 @@ export interface SlashTrigger {
   query: string
 }
 
-export function matchSlashTrigger(value: string, caret: number): SlashTrigger | null {
+export function matchSlashTrigger(value: string, caret: number, multiWord = false): SlashTrigger | null {
   if (caret < 1 || caret > value.length || (caret < value.length && !/\s/u.test(value[caret]))) return null
-  const match = /(?:^|\s)[/／]([^\s/／]{0,48})$/u.exec(value.slice(0, caret))
-  if (!match || match.index + match[0].length !== caret) return null
+  const pattern = multiWord ? /(?:^|\s)[/／]([^\s/／]+(?:[ \t\u3000]+[^\s/／]+)+)$/u : /(?:^|\s)[/／]([^\s/／]{0,48})$/u
+  const match = pattern.exec(value.slice(0, caret))
+  if (!match || match[1].length > 48 || match.index + match[0].length !== caret) return null
   return { start: caret - match[1].length - 1, query: match[1] }
+}
+
+const normalize = (text: string): string => text.normalize('NFKC').toLowerCase()
+
+export function matchesExtensionSearch(query: string, ...fields: (string | null | undefined)[]): boolean {
+  const words = normalize(query).trim().split(/\s+/u).filter(Boolean)
+  if (!words.length) return true
+  const candidates = fields.map((field) => normalize(field ?? ''))
+  return words.every((word) => candidates.some((field) => field.includes(word)))
 }
 
 const SOURCE_RANK: Record<ExtSource, number> = { project: 0, global: 1, plugin: 2, builtin: 3 }
@@ -20,7 +30,7 @@ const SOURCE_RANK: Record<ExtSource, number> = { project: 0, global: 1, plugin: 
  * substring, then letters in order; the description is searched last. Project skills first.
  */
 export function filterSkills(items: SkillItem[], query: string, limit = 400): SkillItem[] {
-  const q = query.trim().toLowerCase()
+  const q = normalize(query).trim()
   if (!q) return items.slice(0, limit)
   const subseq = (s: string) => {
     let i = 0
@@ -28,12 +38,12 @@ export function filterSkills(items: SkillItem[], query: string, limit = 400): Sk
     return i === q.length
   }
   const score = (it: SkillItem): number => {
-    const n = it.name.toLowerCase()
+    const n = normalize(it.name)
     if (n.startsWith(q)) return 0
     if (n.split(/[-:_\s]/).some((w) => w.startsWith(q))) return 1
     if (n.includes(q)) return 2
     if (subseq(n)) return 3
-    if (it.description.toLowerCase().includes(q)) return 4
+    if (matchesExtensionSearch(q, n, it.description, it.translatedDescription)) return 4
     return -1
   }
   return items

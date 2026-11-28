@@ -1,3 +1,4 @@
+import type { Locale } from './i18n'
 import type { TranscriptEntry } from './transcript'
 import type { ReplyMarks } from './markers'
 
@@ -747,6 +748,9 @@ export const IPC = {
   extSkills: 'ext:skills',
   extMcp: 'ext:mcp',
   extOverview: 'ext:overview',
+  extTranslateDescriptions: 'extensions:translateDescriptions',
+  extCancelTranslate: 'extensions:cancelTranslate',
+  extTranslateProgress: 'extensions:translateProgress',
   extRead: 'ext:read',
   extReveal: 'ext:reveal',
   extPrepareRule: 'ext:prepare-rule',
@@ -851,10 +855,45 @@ export interface ThemeState {
 /** Where a skill or MCP server comes from. `builtin`: shipped with the CLI itself. */
 export type ExtSource = 'project' | 'global' | 'plugin' | 'builtin'
 
-export interface SkillItem {
+export interface ExtDescription {
+  description: string
+  translatedDescription?: string
+  translationSource?: 'builtin' | 'frontmatter' | 'cache'
+}
+
+interface ExtTranslationSummary {
+  locale?: Locale
+  untranslatedCount?: number
+  hasTranslations?: boolean
+}
+
+export type TranslationProvider = 'google' | 'microsoft'
+
+export interface ExtTranslateRequest {
+  profileId: ProfileId
+  cwd: string | null
+  locale?: Locale
+}
+
+export interface ExtTranslateResult {
+  runId: string
+  locale: Locale
+  status: 'done' | 'cancelled' | 'error' | 'busy' | 'noop'
+  done: number
+  total: number
+  translated: number
+  provider?: TranslationProvider
+  error?: string
+}
+
+export interface ExtTranslateProgressEvent extends Omit<ExtTranslateResult, 'status'> {
+  profileId: ProfileId
+  status: 'running' | 'done' | 'cancelled' | 'error'
+}
+
+export interface SkillItem extends ExtDescription {
   /** As the CLI shows it, e.g. `review` or `figma:figma-use` (plugin skills in Claude). */
   name: string
-  description: string
   source: ExtSource
   plugin?: string
   kind: 'skill' | 'command'
@@ -864,7 +903,7 @@ export interface SkillItem {
   path?: string
 }
 
-export interface SkillList {
+export interface SkillList extends ExtTranslationSummary {
   items: SkillItem[]
   /** Config files that existed but could not be parsed (skipped). */
   errors: number
@@ -909,9 +948,8 @@ export interface McpList {
 }
 
 /** A custom subagent definition (Claude agents/*.md, Codex agent roles). */
-export interface AgentItem {
+export interface AgentItem extends ExtDescription {
   name: string
-  description: string
   source: ExtSource
   plugin?: string
   model: string | null
@@ -956,12 +994,11 @@ export interface HookItem {
   off?: boolean
 }
 
-export interface PluginItem {
+export interface PluginItem extends ExtDescription {
   name: string
   /** e.g. `figma@claude-plugins-official`, `browser@openai-bundled`. */
   key: string
   version: string | null
-  description: string
   enabled: boolean
   source: ExtSource
   marketplace: string | null
@@ -975,7 +1012,7 @@ export interface PluginItem {
 }
 
 /** Everything the extensions panel shows, for one account + project. */
-export interface ExtOverview {
+export interface ExtOverview extends ExtTranslationSummary {
   skills: SkillItem[]
   agents: AgentItem[]
   plugins: PluginItem[]

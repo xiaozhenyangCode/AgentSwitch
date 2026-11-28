@@ -10,7 +10,7 @@ import { usePins, useSkills } from '../state/extensions'
 import { useFileSearch, type ComposerFileCandidate } from '../state/useFileSearch'
 import { openOnboarding } from '../state/onboarding'
 import { useApp, useSortedAccounts } from '../state/AppContext'
-import { groupQuickSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
+import { filterSkills, groupQuickSkills, matchSlashTrigger, type SlashTrigger } from '../lib/slashTrigger'
 import {
   clampFileTreeWidth, clampPanelHeight, clampPanelWidth, EDITOR_CHAT_MIN_W, EDITOR_PANEL_DEFAULT_H,
   EDITOR_PANEL_DEFAULT_W, EDITOR_TREE_DEFAULT_W, setEditorDockPosition, TRAFFIC_LIGHT_SAFE_LEFT_PX,
@@ -2372,7 +2372,18 @@ function Composer({
     const m = /(?:^|[^A-Za-z0-9_.+\-])[@＠]([^\s@＠]{0,24})$/.exec(before)
     if (!m) {
       setMention(null)
-      const trigger = matchSlashTrigger(value, caret)
+      let trigger = matchSlashTrigger(value, caret)
+      if (!trigger) {
+        const phrase = matchSlashTrigger(value, caret, true)
+        if (phrase) {
+          const items = [...(skillItems ?? []), ...builtinSlash]
+          const firstWord = phrase.query.split(/\s+/u)[0].toLowerCase()
+          // A completed command followed by prompt text still dismisses the inline menu.
+          if (!items.some((item) => item.name.toLowerCase() === firstWord) && filterSkills(items, phrase.query, 1).length) {
+            trigger = phrase
+          }
+        }
+      }
       return setSlash((current) => {
         if (!trigger) return null
         if (current?.mode === 'inline' && current.start === trigger.start && current.query === trigger.query) return current

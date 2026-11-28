@@ -64,3 +64,21 @@ describe('groupQuickSkills', () => {
     expect(groupQuickSkills(matches, [], 'unmatched', []).flat).toEqual([])
   })
 })
+
+describe('multilingual search', () => {
+  it.each(['图像 enhance', '影像 處理', '画像 変換', 'image enhance', 'raster 画像'])('matches %j without rewriting the trigger', (query) => {
+    const item = {
+      ...skill('raster-tools', 'plugin', 'Enhance and convert an image'),
+      translatedDescription: '图像处理 · 影像處理 · 画像を変換'
+    }
+    const { flat } = groupQuickSkills([item], [], query, [])
+    expect(flat).toEqual([item])
+    expect(flat[0].insert).toBe('/raster-tools')
+  })
+
+  it('supports an inline phrase without swallowing a trailing space or newline', () => {
+    expect(matchSlashTrigger('say /影像 處理', 10, true)).toEqual({ start: 4, query: '影像 處理' })
+    expect(matchSlashTrigger('/影像 ', 4, true)).toBeNull()
+    expect(matchSlashTrigger('/影像\n處理', 6, true)).toBeNull()
+  })
+})

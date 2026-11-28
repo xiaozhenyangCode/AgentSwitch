@@ -57,6 +57,8 @@ import {
 import { canRevealExtFile, extOverview, listMcp, listSkills, prepareRuleTarget, readExtFile, writeRuleFile } from './extensions'
 import { readSettings, writeSettings } from './appSettings'
 import { t } from './i18n'
+import { LOCALES, type Locale } from '@shared/i18n'
+import { cancelExtensionTranslation, startExtensionTranslation } from './extensionTranslator'
 import { secrets } from './secrets'
 import { permissions } from './acp/permissions'
 import { agyAcpPool } from './acp/pool'
@@ -797,9 +799,27 @@ export function registerIpc(getWindow: () => BrowserWindow | null): {
   })
   // ---- skills / MCP (local config files only; no CLI, no model call) -----------------
   const cwdArg = (cwd: unknown): string | null => (typeof cwd === 'string' && cwd.trim() ? cwd : null)
-  ipcMain.handle(IPC.extSkills, (_e, id: unknown, cwd: unknown, refresh: unknown) => listSkills(assertId(id), cwdArg(cwd), refresh === true))
+  const localeArg = (locale: unknown): Locale | undefined => {
+    if (locale === undefined) return
+    if (LOCALES.includes(locale as Locale)) return locale as Locale
+    throw new Error('bad locale')
+  }
+  ipcMain.handle(IPC.extSkills, (_e, id: unknown, cwd: unknown, refresh: unknown, locale: unknown) =>
+    listSkills(assertId(id), cwdArg(cwd), refresh === true, localeArg(locale)))
   ipcMain.handle(IPC.extMcp, (_e, id: unknown, cwd: unknown, refresh: unknown) => listMcp(assertId(id), cwdArg(cwd), refresh === true))
-  ipcMain.handle(IPC.extOverview, (_e, id: unknown, cwd: unknown, refresh: unknown) => extOverview(assertId(id), cwdArg(cwd), refresh === true))
+  ipcMain.handle(IPC.extOverview, (_e, id: unknown, cwd: unknown, refresh: unknown, locale: unknown) =>
+    extOverview(assertId(id), cwdArg(cwd), refresh === true, localeArg(locale)))
+  ipcMain.handle(IPC.extTranslateDescriptions, (_e, request: unknown) => {
+    if (!request || typeof request !== 'object' || !('profileId' in request)) throw new Error('bad request')
+    const cwd = 'cwd' in request ? cwdArg(request.cwd) : null
+    const locale = 'locale' in request ? localeArg(request.locale) : undefined
+    return startExtensionTranslation({ profileId: assertId(request.profileId), cwd, locale }, (event) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(IPC.extTranslateProgress, event)
+      }
+    })
+  })
+  ipcMain.handle(IPC.extCancelTranslate, () => cancelExtensionTranslation())
   // preview / reveal: only files an extensions scan listed (64 KB cap), never an arbitrary path
   ipcMain.handle(IPC.extRead, (_e, p: unknown) => {
     if (typeof p !== 'string') throw new Error('bad path')

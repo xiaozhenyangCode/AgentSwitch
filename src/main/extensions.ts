@@ -1,9 +1,13 @@
-import { t } from './i18n'
+import { i18nState, t } from './i18n'
+import { translate, type Locale, type MsgKey } from '@shared/i18n'
+import { JSON_SCHEMA, load as parseYaml } from 'js-yaml'
+import { getCachedTranslation, needsTranslation } from './extensionTranslationCache'
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import type {
   AgentItem,
+  ExtDescription,
   ExtFileText,
   ExtOverview,
   ExtSource,
@@ -154,11 +158,68 @@ export function parseFrontmatter(text: string): Record<string, string> {
   return out
 }
 
-const shortDesc = (d: string | undefined): string => (d ?? '').replace(/\s+/g, ' ').trim().slice(0, 300)
+const readDescription = (value: unknown): string => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+type NativeDescriptions = Partial<Record<Locale, string>>
+type Scanned<T> = T & { nativeDescriptions?: NativeDescriptions }
+type DescriptionMetadata = Pick<Scanned<ExtDescription>, 'description' | 'nativeDescriptions'>
+
+const DESCRIPTION_LOCALES: Record<Locale, string[]> = {
+  'zh-CN': ['zh-cn', 'zh-hans', 'zh'],
+  'zh-TW': ['zh-tw', 'zh-hant'],
+  ja: ['ja', 'ja-jp'],
+  en: ['en', 'en-us', 'en-gb']
+}
+
+export function extractDescriptions(metadata: Record<string, unknown>): DescriptionMetadata {
+  const nested = metadata.description && typeof metadata.description === 'object' && !Array.isArray(metadata.description)
+    ? Object.entries(metadata.description)
+    : []
+  const entries = [
+    ...Object.entries(metadata)
+      .filter(([key]) => /^description[_-]/i.test(key))
+      .map(([key, value]): [string, unknown] => [key.slice(12), value]),
+    ...nested
+  ]
+  const byTag = new Map<string, string>()
+  for (const [key, value] of entries) {
+    const description = readDescription(value)
+    if (description) byTag.set(key.toLowerCase().replaceAll('_', '-'), description)
+  }
+  const nativeDescriptions: NativeDescriptions = {}
+  for (const locale of Object.keys(DESCRIPTION_LOCALES) as Locale[]) {
+    for (const tag of DESCRIPTION_LOCALES[locale]) {
+      const text = byTag.get(tag)
+      if (!text) continue
+      nativeDescriptions[locale] = text
+      break
+    }
+  }
+  const description = readDescription(metadata.description) || byTag.get('default') || nativeDescriptions.en ||
+    Object.values(nativeDescriptions)[0] || ''
+  return { description, nativeDescriptions }
+}
+
+export function parseLocalizedFrontmatter(text: string): { fields: Record<string, string>; descriptions: DescriptionMetadata } {
+  const fields = parseFrontmatter(text)
+  const header = /^\uFEFF?---[ \t]*\r?\n/.exec(text)
+  const rest = header ? text.slice(header[0].length) : ''
+  const end = /^---[ \t]*\r?$/m.exec(rest)?.index
+  if (end !== undefined) {
+    try {
+      const metadata = parseYaml(rest.slice(0, end), { schema: JSON_SCHEMA })
+      if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+        return { fields, descriptions: extractDescriptions(metadata as Record<string, unknown>) }
+      }
+    } catch {
+      // Preserve the existing best-effort scalar reader for malformed local metadata.
+    }
+  }
+  return { fields, descriptions: extractDescriptions(fields) }
+}
 
 // ---- skills ----------------------------------------------------------------------------
 
-type Push = (name: string, description: string, source: ExtSource, extra?: { plugin?: string; kind?: 'skill' | 'command'; path?: string }) => void
+type Push = (name: string, descriptions: DescriptionMetadata, source: ExtSource, extra?: { plugin?: string; kind?: 'skill' | 'command'; path?: string }) => void
 
 /** `<dir>/<name>/SKILL.md`; dirs without one are searched one level deeper (e.g. Codex `.system`). */
 function scanSkillDir(dir: string, push: Push, source: ExtSource, opts: { plugin?: string; depth?: number; skip?: (p: string) => boolean; sourceOf?: (sub: string) => ExtSource } = {}): void {
@@ -168,9 +229,9 @@ function scanSkillDir(dir: string, push: Push, source: ExtSource, opts: { plugin
     const md = join(sub, 'SKILL.md')
     if (isFile(md)) {
       if (opts.skip?.(md)) continue
-      const fm = parseFrontmatter(readHead(md))
+      const { fields: fm, descriptions } = parseLocalizedFrontmatter(readHead(md))
       if (fm['user-invocable'] === 'false') continue
-      push(fm.name || n, shortDesc(fm.description), opts.sourceOf?.(n) ?? source, { plugin: opts.plugin, path: md })
+      push(fm.name || n, descriptions, opts.sourceOf?.(n) ?? source, { plugin: opts.plugin, path: md })
     } else if ((opts.depth ?? 1) > 0) {
       scanSkillDir(sub, push, opts.sourceOf?.(n) ?? source, { ...opts, depth: (opts.depth ?? 1) - 1, sourceOf: undefined })
     }
@@ -182,8 +243,8 @@ function scanCommandDir(dir: string, push: Push, source: ExtSource, plugin?: str
   for (const n of list(dir)) {
     const p = join(dir, n)
     if (n.endsWith('.md') && isFile(p)) {
-      const fm = parseFrontmatter(readHead(p))
-      push(n.slice(0, -3), shortDesc(fm.description), source, { plugin, kind: 'command', path: p })
+      const { descriptions } = parseLocalizedFrontmatter(readHead(p))
+      push(n.slice(0, -3), descriptions, source, { plugin, kind: 'command', path: p })
     } else if (depth > 0 && isDir(p)) scanCommandDir(p, push, source, plugin, depth - 1)
   }
 }
@@ -259,10 +320,10 @@ function mcpDetails(v: any, configPath?: string): Partial<McpServer> {
 // ---- per CLI ------------------------------------------------------------------------------
 
 interface Scan {
-  skills: SkillItem[]
+  skills: Scanned<SkillItem>[]
   mcp: McpServer[]
-  agents: AgentItem[]
-  plugins: PluginItem[]
+  agents: Scanned<AgentItem>[]
+  plugins: Scanned<PluginItem>[]
   rules: RuleFile[]
   hooks: HookItem[]
   configDir: string
@@ -277,14 +338,14 @@ const emptyScan = (dir: string): Scan => ({ skills: [], mcp: [], agents: [], plu
  * `display`: the name as the CLI shows it; `trigger`: the prompt token that invokes it.
  */
 function collector(display: (name: string, plugin?: string) => string, trigger: (shown: string) => string) {
-  const skills: SkillItem[] = []
+  const skills: Scanned<SkillItem>[] = []
   const seen = new Set<string>()
-  const push: Push = (name, description, source, extra = {}) => {
+  const push: Push = (name, descriptions, source, extra = {}) => {
     const shown = display(name, extra.plugin)
     if (!shown || seen.has(shown)) return
     seen.add(shown)
     if (extra.path) allow(extra.path)
-    skills.push({ name: shown, description, source, plugin: extra.plugin, kind: extra.kind ?? 'skill', insert: trigger(shown), ...(extra.path ? { path: extra.path } : {}) })
+    skills.push({ name: shown, ...descriptions, source, plugin: extra.plugin, kind: extra.kind ?? 'skill', insert: trigger(shown), ...(extra.path ? { path: extra.path } : {}) })
   }
   return { skills, push }
 }
@@ -391,12 +452,12 @@ const manifestPaths = (base: string, v: unknown, def: string | null): string[] =
   return [...new Set([...(def ? [join(base, def)] : []), ...paths])]
 }
 
-function agentFromMd(p: string, source: ExtSource, plugin?: string): AgentItem {
-  const fm = parseFrontmatter(readHead(p))
+function agentFromMd(p: string, source: ExtSource, plugin?: string): Scanned<AgentItem> {
+  const { fields: fm, descriptions } = parseLocalizedFrontmatter(readHead(p))
   allow(p)
   return {
     name: fm.name || basename(p, '.md'),
-    description: shortDesc(fm.description),
+    ...descriptions,
     source,
     ...(plugin ? { plugin } : {}),
     model: fm.model || null,
@@ -406,8 +467,8 @@ function agentFromMd(p: string, source: ExtSource, plugin?: string): AgentItem {
 }
 
 /** Claude agent definitions in folders or listed files. */
-function claudeAgents(paths: string[], source: ExtSource, plugin?: string): AgentItem[] {
-  const out: AgentItem[] = []
+function claudeAgents(paths: string[], source: ExtSource, plugin?: string): Scanned<AgentItem>[] {
+  const out: Scanned<AgentItem>[] = []
   for (const p of paths) {
     if (isFile(p) && p.endsWith('.md')) out.push(agentFromMd(p, source, plugin))
     else for (const f of mdFiles(p)) out.push(agentFromMd(f, source, plugin))
@@ -613,7 +674,7 @@ function scanClaude(dir: string, cwd: string | null, ctx: Ctx): Scan {
   const managed = readJson(join(MANAGED, 'managed-settings.json'), ctx) ?? {}
   const enabled: Record<string, unknown> = Object.assign({}, settings.enabledPlugins, ...projSettings.map((s) => s.enabledPlugins))
   const installed = readJson(join(dir, 'plugins', 'installed_plugins.json'), ctx)?.plugins ?? {}
-  const plugins: PluginItem[] = []
+  const plugins: Scanned<PluginItem>[] = []
   const active: { name: string; path: string; manifest: any }[] = []
   for (const [key, entries] of Object.entries<any>(installed)) {
     if (!Array.isArray(entries)) continue
@@ -623,11 +684,11 @@ function scanClaude(dir: string, cwd: string | null, ctx: Ctx): Scan {
     const manifest = readJson(join(path, '.claude-plugin', 'plugin.json'), ctx) ?? {}
     const name = String(manifest.name || key.split('@')[0])
     const on = enabled[key] === true
-    const item: PluginItem = {
+    const item: Scanned<PluginItem> = {
       name,
       key,
       version: String(entry.version ?? manifest.version ?? '') || null,
-      description: shortDesc(manifest.description),
+      ...extractDescriptions(manifest),
       enabled: on,
       source: entry?.scope === 'project' || entry?.scope === 'local' ? 'project' : 'global',
       marketplace: key.split('@')[1] ?? null,
@@ -652,9 +713,9 @@ function scanClaude(dir: string, cwd: string | null, ctx: Ctx): Scan {
   }
 
   // agents: project, then user, then plugins (first name wins, like skills)
-  const agents: AgentItem[] = []
+  const agents: Scanned<AgentItem>[] = []
   const agentNames = new Set<string>()
-  const addAgents = (list: AgentItem[]) => {
+  const addAgents = (list: Scanned<AgentItem>[]) => {
     for (const a of list) {
       const key = a.plugin ? `${a.plugin}:${a.name}` : a.name
       if (agentNames.has(key)) continue
@@ -737,13 +798,16 @@ function newestDir(base: string): string | null {
 }
 
 /** Codex agent roles: `[agents.<name>]` tables (with an optional role file) and agents/*.toml. */
-function codexAgents(cfg: Record<string, any>, cfgDir: string, rolesDir: string, source: ExtSource, ctx: Ctx): AgentItem[] {
-  const out: AgentItem[] = []
+function codexAgents(cfg: Record<string, any>, cfgDir: string, rolesDir: string, source: ExtSource, ctx: Ctx): Scanned<AgentItem>[] {
+  const out: Scanned<AgentItem>[] = []
   const fromRole = (name: string, role: Record<string, any>, file: string, extra: Record<string, any> = {}) => {
     allow(file)
+    const roleDescription = extractDescriptions(role)
+    const override = extractDescriptions(extra)
     out.push({
       name: String(role.name ?? name),
-      description: shortDesc(String(extra.description ?? role.description ?? '')),
+      description: extra.description == null ? roleDescription.description || override.description : override.description,
+      nativeDescriptions: { ...roleDescription.nativeDescriptions, ...override.nativeDescriptions },
       source,
       model: typeof role.model === 'string' ? role.model : null,
       tools: null,
@@ -752,7 +816,7 @@ function codexAgents(cfg: Record<string, any>, cfgDir: string, rolesDir: string,
   }
   for (const [name, v] of Object.entries<any>(cfg.agents ?? {})) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) continue
-    if (!v.description && !v.config_file) continue // e.g. [agents] max_threads settings
+    if (!v.description && !v.config_file && !Object.keys(v).some((key) => /^description[_-]/i.test(key))) continue // e.g. [agents] max_threads settings
     const file = typeof v.config_file === 'string' ? (isAbsolute(expandHome(v.config_file)) ? expandHome(v.config_file) : join(cfgDir, v.config_file)) : join(cfgDir, 'config.toml')
     fromRole(name, (isFile(file) && file.endsWith('.toml') && !file.endsWith('config.toml') ? readToml(file, ctx) : null) ?? {}, file, v)
   }
@@ -784,7 +848,7 @@ function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
   const hooks: HookItem[] = []
 
   // plugins: everything in the cache; enabled ones per config.toml [plugins."name@market"]
-  const plugins: PluginItem[] = []
+  const plugins: Scanned<PluginItem>[] = []
   const cacheDir = join(dir, 'plugins', 'cache')
   for (const market of list(cacheDir)) {
     for (const name of list(join(cacheDir, market))) {
@@ -794,11 +858,11 @@ function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
       const on = cfg.plugins?.[key]?.enabled === true
       const mfFile = join(path, '.codex-plugin', 'plugin.json')
       const manifest = readJson(mfFile, ctx) ?? {}
-      const item: PluginItem = {
+      const item: Scanned<PluginItem> = {
         name,
         key,
         version: String(manifest.version ?? basename(path)) || null,
-        description: shortDesc(manifest.description),
+        ...extractDescriptions(manifest),
         enabled: on,
         source: 'plugin',
         marketplace: market,
@@ -838,7 +902,7 @@ function scanCodex(dir: string, cwd: string | null, ctx: Ctx): Scan {
   mcp.sort((a, b) => rank[a.source] - rank[b.source])
 
   // agents
-  const agents: AgentItem[] = []
+  const agents: Scanned<AgentItem>[] = []
   for (const p of chain) agents.push(...codexAgents(readToml(join(p, '.codex', 'config.toml'), ctx) ?? {}, join(p, '.codex'), join(p, '.codex', 'agents'), 'project', ctx))
   agents.push(...codexAgents(cfg, dir, join(dir, 'agents'), 'global', ctx))
 
@@ -891,8 +955,8 @@ function scanAgy(home: string, cwd: string | null, ctx: Ctx): Scan {
   const hooks: HookItem[] = []
   const { rules, add: addRule } = ruleList()
 
-  const plugins: PluginItem[] = []
-  const active: PluginItem[] = []
+  const plugins: Scanned<PluginItem>[] = []
+  const active: Scanned<PluginItem>[] = []
   const findPlugins = (dir: string, source: ExtSource) => {
     for (const n of list(dir)) {
       const p = join(dir, n)
@@ -901,11 +965,11 @@ function scanAgy(home: string, cwd: string | null, ctx: Ctx): Scan {
       const manifest = readJson(mf, ctx) ?? {}
       const name = String(manifest.name || n)
       const on = manifest.enabled !== false
-      const item: PluginItem = {
+      const item: Scanned<PluginItem> = {
         name,
         key: name,
         version: manifest.version ? String(manifest.version) : null,
-        description: shortDesc(manifest.description),
+        ...extractDescriptions(manifest),
         enabled: on,
         source,
         marketplace: null,
@@ -985,11 +1049,56 @@ function tilde(p: string): string {
 }
 
 const SOURCE_RANK: Record<ExtSource, number> = { project: 0, global: 1, plugin: 2, builtin: 3 }
-const sortSkills = (s: SkillItem[]): SkillItem[] => [...s].sort((a, b) => SOURCE_RANK[a.source] - SOURCE_RANK[b.source] || a.name.localeCompare(b.name))
+const sortSkills = (s: Scanned<SkillItem>[]): Scanned<SkillItem>[] => [...s].sort((a, b) => SOURCE_RANK[a.source] - SOURCE_RANK[b.source] || a.name.localeCompare(b.name))
 
-export function listSkills(id: ProfileId, cwd: string | null, refresh = false): SkillList {
+const BUILTIN_COMMANDS = [
+  'clear', 'compact', 'review', 'init', 'help', 'cost', 'status', 'model', 'memory', 'plan', 'diff',
+  'doctor', 'config', 'permissions', 'mcp', 'agents', 'hooks', 'resume', 'export', 'bug', 'login', 'logout', 'vim'
+] as const
+type BuiltinCommand = typeof BUILTIN_COMMANDS[number]
+const builtinKeys: ReadonlySet<string> = new Set(BUILTIN_COMMANDS)
+
+function descriptionLocalizer(locale: Locale) {
+  const pending = new Set<string>()
+  let hasTranslations = false
+  const apply = <T extends ExtDescription>(item: Scanned<T>, builtin?: BuiltinCommand): T => {
+    const { nativeDescriptions, ...result } = item
+    const raw = item.description.trim()
+    const native = nativeDescriptions?.[locale]
+    const cached = !native && !builtin && raw ? getCachedTranslation(locale, raw) : undefined
+    const translatedDescription = native || (builtin && translate(locale, `ext.builtin.${builtin}` satisfies MsgKey)) || cached
+    if (translatedDescription) {
+      if (translatedDescription !== raw) hasTranslations = true
+      return { ...result, translatedDescription, translationSource: native ? 'frontmatter' : builtin ? 'builtin' : 'cache' } as T
+    }
+    if (needsTranslation(raw, locale)) pending.add(raw)
+    return result as T
+  }
+  const skill = (item: Scanned<SkillItem>): SkillItem => {
+    const lower = item.name.toLowerCase()
+    return apply(item,
+      item.source === 'builtin' && !item.plugin && item.insert.toLowerCase() === `/${lower}` && builtinKeys.has(lower)
+        ? lower as BuiltinCommand
+        : undefined
+    )
+  }
+  return { apply, skill, pending, summary: () => ({ locale, untranslatedCount: pending.size, hasTranslations }) }
+}
+
+export function listSkills(id: ProfileId, cwd: string | null, refresh = false, locale = i18nState().locale): SkillList {
   const { scan: s, errors } = scan(id, cwd, refresh)
-  return { items: sortSkills(s.skills), errors }
+  const localize = descriptionLocalizer(locale)
+  const items = sortSkills(s.skills).map(localize.skill)
+  return { items, errors, ...localize.summary() }
+}
+
+export function collectUntranslatedDescriptions(id: ProfileId, cwd: string | null, locale: Locale): string[] {
+  const { scan: s } = scan(id, cwd, true)
+  const localize = descriptionLocalizer(locale)
+  s.skills.forEach(localize.skill)
+  s.agents.forEach((item) => localize.apply(item))
+  s.plugins.forEach((item) => localize.apply(item))
+  return [...localize.pending]
 }
 
 export function listMcp(id: ProfileId, cwd: string | null, refresh = false): McpList {
@@ -997,13 +1106,15 @@ export function listMcp(id: ProfileId, cwd: string | null, refresh = false): Mcp
   return { servers: s.mcp, configDir: tilde(s.configDir), project: cwd ? tilde(cwd) : null, errors, remoteNote: s.remoteNote }
 }
 
-export function extOverview(id: ProfileId, cwd: string | null, refresh = false): ExtOverview {
+export function extOverview(id: ProfileId, cwd: string | null, refresh = false, locale = i18nState().locale): ExtOverview {
   const { scan: s, errors } = scan(id, cwd, refresh)
   const pluginRank = (p: PluginItem) => (p.enabled ? 0 : 1)
+  const localize = descriptionLocalizer(locale)
   return {
-    skills: sortSkills(s.skills),
-    agents: [...s.agents].sort((a, b) => SOURCE_RANK[a.source] - SOURCE_RANK[b.source] || a.name.localeCompare(b.name)),
-    plugins: [...s.plugins].sort((a, b) => pluginRank(a) - pluginRank(b) || a.name.localeCompare(b.name)),
+    skills: sortSkills(s.skills).map(localize.skill),
+    agents: [...s.agents].sort((a, b) => SOURCE_RANK[a.source] - SOURCE_RANK[b.source] || a.name.localeCompare(b.name)).map((item) => localize.apply(item)),
+    plugins: [...s.plugins].sort((a, b) => pluginRank(a) - pluginRank(b) || a.name.localeCompare(b.name)).map((item) => localize.apply(item)),
+    ...localize.summary(),
     mcp: s.mcp,
     rules: s.rules,
     hooks: s.hooks,
